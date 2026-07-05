@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>sql-tauri — модель защиты секретов</title>
+<style>
+  :root {
+    --bg: #09090b;
+    --panel: #131316;
+    --panel-2: #17171b;
+    --border: #27272a;
+    --border-soft: #202024;
+    --text: #e7e7ea;
+    --muted: #a1a1aa;
+    --faint: #71717a;
+    --sky: #38bdf8;
+    --sky-dim: #0ea5e9;
+    --emerald: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa;
+      --panel: #ffffff;
+      --panel-2: #f4f4f5;
+      --border: #e4e4e7;
+      --border-soft: #ececee;
+      --text: #18181b;
+      --muted: #52525b;
+      --faint: #8a8a92;
+      --sky: #0284c7;
+      --sky-dim: #0369a1;
+      --emerald: #059669;
+      --amber: #b45309;
+      --red: #dc2626;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 56px 22px 96px;
+  }
+
+  header.hero { margin-bottom: 40px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sky);
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 30px;
+    line-height: 1.2;
+    margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  .lede { color: var(--muted); font-size: 17px; margin: 0; }
+
+  h2 {
+    font-size: 21px;
+    margin: 52px 0 14px;
+    letter-spacing: -0.01em;
+    scroll-margin-top: 20px;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--faint);
+    margin-right: 10px;
+  }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { margin: 0 0 14px; }
+  strong { color: var(--text); font-weight: 650; }
+  a { color: var(--sky); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    padding: 0.08em 0.4em;
+    color: var(--text);
+  }
+
+  /* TL;DR */
+  .tldr {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--sky);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 28px 0 8px;
+  }
+  .tldr .h {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--sky);
+    margin-bottom: 8px;
+  }
+  .tldr p:last-child { margin-bottom: 0; }
+
+  /* Diagram */
+  .diagram {
+    background:
+      radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--sky) 6%, transparent), transparent 60%),
+      var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 26px 22px;
+    margin: 24px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .doors { display: flex; flex-direction: column; gap: 14px; }
+  .node {
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 13px 15px;
+    background: var(--panel-2);
+    min-width: 168px;
+  }
+  .node .t { font-weight: 650; font-size: 14px; display: flex; align-items: center; gap: 7px; }
+  .node .s { color: var(--faint); font-size: 12px; margin-top: 3px; }
+  .node.pw { border-color: color-mix(in srgb, var(--emerald) 45%, var(--border)); }
+  .node.pw .t { color: var(--emerald); }
+  .node.bio { border-color: color-mix(in srgb, var(--sky) 45%, var(--border)); }
+  .node.bio .t { color: var(--sky); }
+  .node.dek {
+    border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+    background: color-mix(in srgb, var(--amber) 9%, var(--panel-2));
+    text-align: center;
+    min-width: 130px;
+  }
+  .node.dek .t { color: var(--amber); justify-content: center; font-size: 15px; }
+  .node.dek .s { color: var(--muted); }
+  .node.secrets { border-style: dashed; min-width: 120px; text-align: center; }
+  .node.secrets .t { color: var(--muted); justify-content: center; }
+
+  .conns { display: flex; flex-direction: column; gap: 26px; align-items: center; }
+  .conn { display: flex; flex-direction: column; align-items: center; color: var(--faint); }
+  .conn .lbl {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--faint);
+    margin-bottom: 2px;
+    white-space: nowrap;
+  }
+  .conn .arrow { font-size: 18px; line-height: 1; color: color-mix(in srgb, var(--text) 45%, transparent); }
+  .center-col { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .diagram .caption {
+    flex-basis: 100%;
+    text-align: center;
+    color: var(--faint);
+    font-size: 12.5px;
+    margin-top: 6px;
+  }
+
+  /* Pipeline (Argon2 → AES chain) */
+  .pipe {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 18px;
+    margin: 22px 0;
+  }
+  .chip {
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 9px 13px;
+    font-size: 13.5px;
+    font-weight: 600;
+    background: var(--panel-2);
+    white-space: nowrap;
+  }
+  .chip .sub { display: block; font-weight: 400; font-size: 10.5px; color: var(--faint); font-family: var(--mono); margin-top: 1px; }
+  .chip.k { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 40%, var(--border)); }
+  .chip.d { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--border)); background: color-mix(in srgb, var(--amber) 9%, var(--panel-2)); }
+  .chip.s { color: var(--muted); border-style: dashed; }
+
+  /* Callouts */
+  .box {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 15px 17px;
+    margin: 20px 0;
+    background: var(--panel);
+  }
+  .box .lead {
+    font-weight: 650;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  .box p:last-child { margin-bottom: 0; }
+  .box.danger { border-left: 3px solid var(--red); }
+  .box.danger .lead { color: var(--red); }
+  .box.note { border-left: 3px solid var(--amber); }
+  .box.note .lead { color: var(--amber); }
+
+  /* Table */
+  .table-scroll { overflow-x: auto; margin: 20px 0; border: 1px solid var(--border); border-radius: 11px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 520px; }
+  thead th {
+    text-align: left;
+    padding: 12px 15px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th.pw-h { color: var(--emerald); }
+  th.bio-h { color: var(--sky); }
+  th .sub { display: block; color: var(--faint); font-weight: 400; font-size: 11.5px; margin-top: 2px; }
+  tbody td { padding: 12px 15px; border-bottom: 1px solid var(--border-soft); vertical-align: top; color: var(--muted); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td:first-child { color: var(--text); font-weight: 550; width: 30%; }
+
+  /* Reason cards */
+  .reasons { display: flex; flex-direction: column; gap: 12px; margin: 22px 0; }
+  .reason {
+    display: flex;
+    gap: 14px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 15px 17px;
+    background: var(--panel);
+  }
+  .reason .idx {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--sky);
+    flex-shrink: 0;
+    width: 22px;
+    padding-top: 1px;
+  }
+  .reason .body .rt { font-weight: 650; margin-bottom: 3px; }
+  .reason .body p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  ul.loss { margin: 10px 0 0; padding-left: 0; list-style: none; }
+  ul.loss li { position: relative; padding-left: 22px; margin-bottom: 6px; color: var(--muted); }
+  ul.loss li::before { content: "✕"; position: absolute; left: 0; color: var(--red); font-size: 13px; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+    color: var(--faint);
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  footer code { font-size: 12px; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 40px 18px 72px; }
+    h1 { font-size: 25px; }
+    .conns { flex-direction: row; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">sql-tauri · безопасность</div>
+    <h1>Мастер-пароль и Touch ID: кто что защищает</h1>
+    <p class="lede">Как устроена защита сохранённых паролей БД и SSH-passphrase, зачем нужны оба фактора и почему нельзя обойтись одним Touch ID.</p>
+  </header>
+
+  <div class="tldr">
+    <div class="h">Если коротко</div>
+    <p>Все секреты шифруются одним ключом — <strong>DEK</strong>. К нему ведут две двери. <strong style="color:var(--emerald)">Мастер-пароль</strong> — криптографическая дверь: защищает секреты <em>математически и офлайн</em>, работает где угодно, но незаменим. <strong style="color:var(--sky)">Touch ID</strong> — дверь присутствия: быстрый вход <em>на этом Mac</em>, но его можно потерять без последствий. Пароль — фундамент, Touch ID — ярлык поверх него.</p>
+  </div>
+
+  <h2><span class="num">01</span>Центр всего — DEK</h2>
+  <p>При первом запуске приложение генерирует случайный 256-битный ключ — <strong>DEK</strong> (Data Encryption Key). Им, через <code>AES-256-GCM</code>, зашифрованы <em>все</em> секреты одним блобом в файле <code>vault.json</code>. Больше DEK ничего не «знает» — он просто ключ. Разблокировка приложения = получить DEK в память на сессию. А к самому DEK ведут ровно два пути:</p>
+
+  <div class="diagram">
+    <div class="doors">
+      <div class="node pw">
+        <div class="t">🔑 Мастер-пароль</div>
+        <div class="s">только в твоей голове</div>
+      </div>
+      <div class="node bio">
+        <div class="t">👆 Touch ID + keychain</div>
+        <div class="s">только на этом Mac</div>
+      </div>
+    </div>
+
+    <div class="conns">
+      <div class="conn"><span class="lbl">Argon2id → расшифровать</span><span class="arrow">→</span></div>
+      <div class="conn"><span class="lbl">ACL + палец → прочитать</span><span class="arrow">→</span></div>
+    </div>
+
+    <div class="center-col">
+      <div class="node dek">
+        <div class="t">DEK</div>
+        <div class="s">256 бит</div>
+      </div>
+      <div class="conn"><span class="lbl">AES-256-GCM</span><span class="arrow">→</span></div>
+      <div class="node secrets">
+        <div class="t">🔒 секреты</div>
+      </div>
+    </div>
+
+    <div class="caption">Две независимые двери к одному ключу. У каждой — своя защита.</div>
+  </div>
+
+  <h2><span class="num">02</span>Кто шифрует, кто кует ключ</h2>
+  <p>Частый вопрос: «а не зашифровать ли и сами данные через Argon2?». Нет — и вот почему это <strong>невозможно в принципе</strong>, а данные при этом <strong>и так</strong> под защитой Argon2.</p>
+
+  <div class="box note">
+    <div class="lead">▲ Argon2 не шифрует</div>
+    <p>Argon2 — <strong>односторонняя</strong> функция, выдаёт фиксированные 32 байта. «Прогонишь <code>vault.json</code> через Argon2» — получишь хеш, а данные исчезнут навсегда, расшифровать нечем. Шифрование обязано быть обратимым; Argon2 нарочно необратима. Это как «пилить доску термометром» — не тот инструмент. Шифрует всегда <strong>AES-256-GCM</strong>; Argon2 только кует из пароля ключ для него.</p>
+  </div>
+
+  <div class="pipe">
+    <div class="chip k">пароль<span class="sub">в голове</span></div>
+    <div class="conn"><span class="lbl">Argon2id · куёт ключ</span><span class="arrow">→</span></div>
+    <div class="chip">KEK</div>
+    <div class="conn"><span class="lbl">AES · открывает</span><span class="arrow">→</span></div>
+    <div class="chip d">DEK</div>
+    <div class="conn"><span class="lbl">AES-256-GCM</span><span class="arrow">→</span></div>
+    <div class="chip s">🔒 секреты</div>
+  </div>
+
+  <p><strong>Данные уже под зонтиком Argon2.</strong> Единственный путь к DEK из пароля идёт через шаг <code>pwWrap = AES-GCM(Argon2id(пароль), DEK)</code> — то есть перебор пароля упирается в дорогой Argon2 (≈19&nbsp;МБ + время на попытку). Секреты наследуют эту защиту автоматически. Добавлять «ещё Argon2» некуда: узкое место — энтропия пароля, а она уже захеширована один раз; второй прогон лишь удвоит время разблокировки <em>тебе</em>, без выигрыша в стойкости.</p>
+
+  <h3>Зачем вообще слой DEK</h3>
+  <p>Логичный следующий вопрос: почему не шифровать секреты <em>прямо</em> ключом из пароля, без промежуточного DEK?</p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th class="pw-h">С DEK <span class="sub">наш вариант</span></th>
+          <th>«Прямой» <span class="sub">без DEK</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Схема</td>
+          <td><code>AES(Argon2(pw), DEK)</code> + <code>AES(DEK, data)</code></td>
+          <td><code>AES(Argon2(pw), data)</code></td>
+        </tr>
+        <tr>
+          <td>Смена мастер-пароля</td>
+          <td>перешифровать 32 байта DEK</td>
+          <td>перешифровать <strong>все</strong> секреты</td>
+        </tr>
+        <tr>
+          <td>Две двери (пароль <em>и</em> Touch ID)</td>
+          <td>обе достают <strong>один</strong> DEK → одни и те же секреты</td>
+          <td>нужны <strong>две полные копии</strong> зашифрованных секретов, синхронить вручную</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <div class="lead" style="color:var(--amber)">◆ Ради чего DEK и существует</div>
+    <p><strong>Touch ID без DEK не сделать.</strong> И пароль, и палец должны привести к одному ключу, которым расшифрованы секреты. DEK — тот единственный общий ключ, что отпирают обе двери: пароль оборачивает его в <code>pwWrap</code>, keychain хранит его копию под Touch ID. Убери DEK — придётся держать два зашифрованных дубля секретов и держать их в синхроне.</p>
+  </div>
+
+  <h2><span class="num">03</span>Мастер-пароль — криптографическая дверь</h2>
+  <p>В <code>vault.json</code> лежит <code>pwWrap = AES-GCM(Argon2id(пароль), DEK)</code> — то есть DEK, «обёрнутый» ключом, выведенным из твоего пароля.</p>
+  <h3>Что защищает</h3>
+  <p>Сам DEK «на диске», <strong>математически</strong>. Без пароля этот блоб — бесполезный шум. Argon2id делает перебор дорогим (каждая попытка ≈ 19&nbsp;МБ памяти + время), так что даже слабоватый пароль трудно ломать.</p>
+  <h3>От чего защищает</h3>
+  <p>От того, у кого <strong>есть твои файлы, но нет тебя</strong>: утёк <code>vault.json</code> в облачный бэкап, украли диск, синкнул в dotfiles, чужой процесс прочитал файл. Секреты не достать.</p>
+  <div class="box">
+    <div class="lead" style="color:var(--emerald)">◆ Ключевое свойство</div>
+    <p>Не зависит <strong>ни от чего</strong> — ни от Mac, ни от ОС, ни от keychain. Чистая криптография, работает на любой машине. Поэтому же и <strong>невосстановим</strong>: живёт только у тебя в голове, «забыл пароль» = потерял секреты.</p>
+  </div>
+
+  <h2><span class="num">04</span>Touch ID — дверь присутствия</h2>
+  <p>Это <strong>не более сильная дверь, а более быстрая</strong> — шорткат, чтобы не печатать пароль. Копия DEK лежит в login keychain, и её стерегут <strong>три слоя</strong> сразу (Touch ID — лишь один из них):</p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Слой</th><th>Что делает</th><th>От чего защищает</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Шифрование login keychain</td>
+          <td>keychain зашифрован ключом от пароля аккаунта macOS</td>
+          <td>другой Mac / выключенный / разлогиненный — копия DEK нечитаема</td>
+        </tr>
+        <tr>
+          <td>ACL по подписи <span style="color:var(--faint)">(«Always Allow»)</span></td>
+          <td>читать запись может только подписанный <code>sql-tauri</code></td>
+          <td>чужое / вредоносное приложение на твоём же маке</td>
+        </tr>
+        <tr>
+          <td>Touch ID (LAContext)</td>
+          <td>требует живой палец (fallback — пароль аккаунта)</td>
+          <td>человек за твоим <em>разблокированным</em> маком</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <div class="lead" style="color:var(--sky)">◆ Ключевое свойство</div>
+    <p>Привязана к железу: работает только на этом Mac, под этим аккаунтом, для этой подписи. Скопируешь keychain на другую машину — мёртво. Зато защищает от того, у кого есть <strong>твой Mac, но нет твоего пальца</strong>.</p>
+  </div>
+
+  <h2><span class="num">05</span>Как они соотносятся</h2>
+  <p><strong>Мастер-пароль — корень доверия (источник). Touch ID — кэшированный ярлык поверх него.</strong></p>
+  <div class="reasons">
+    <div class="reason">
+      <div class="idx">→</div>
+      <div class="body">
+        <div class="rt">Пароль всегда выводит DEK</div>
+        <p>Это математика — работает всегда и везде. Touch ID работает, только если DEK заранее положили в keychain, а положить его можно, лишь разблокировав <em>паролем</em>.</p>
+      </div>
+    </div>
+    <div class="reason">
+      <div class="idx">→</div>
+      <div class="body">
+        <div class="rt">Touch ID теряется без последствий</div>
+        <p>Новый Mac, сброс keychain, сменил отпечаток — падаешь на пароль, ничего не потеряно. Пароль <strong>незаменим</strong>, Touch ID <strong>расходуем</strong>.</p>
+      </div>
+    </div>
+  </div>
+  <p style="color:var(--muted)">Аналогия: пароль — сейф с кодовым замком (взломостойкий, но код надо помнить). Touch ID — дубликат кода в запертом по пальцу ящике стола: быстро, но только у тебя дома и пока стол твой.</p>
+
+  <h2><span class="num">06</span>Почему нельзя обойтись только Touch ID</h2>
+  <p>Потому что <strong>Touch ID — это не ключ, а вертушка «да / нет».</strong> И на этом всё упирается.</p>
+
+  <div class="box note">
+    <div class="lead">▲ Отпечаток не может быть ключом — принципиально</div>
+    <p>Из пальца нельзя вывести ключ шифрования: отпечаток считывается каждый раз чуть по-разному, его нельзя сменить/отозвать, а Secure Enclave вообще никогда не отдаёт биометрию наружу. Touch ID умеет одно — ответить «человек тут? да/нет». Значит, <strong>настоящий ключ всё равно должен где-то лежать</strong>, и его надо чем-то защитить в покое. Защищает его... пароль (пусть даже пароль аккаунта macOS). Чистого «только Touch ID» не существует — даже системный Touch ID всегда падает на пароль.</p>
+  </div>
+
+  <div class="reasons">
+    <div class="reason">
+      <div class="idx">1</div>
+      <div class="body">
+        <div class="rt">Нужен bootstrap</div>
+        <p>Чтобы положить DEK в keychain (включить Touch ID), надо его уже иметь. На первом запуске DEK ещё нет — кто-то должен создать и защитить его <em>первым</em>. Это и есть пароль. Touch ID всегда появляется вторым.</p>
+      </div>
+    </div>
+    <div class="reason">
+      <div class="idx">2</div>
+      <div class="body">
+        <div class="rt">Переносимость и бэкап</div>
+        <p><code>vault.json</code> — обычный файл: бэкапишь, синкаешь, переносишь на другой мак. Пароль делает его пригодным где угодно. Touch-ID-only привязал бы всё к Secure Enclave одного ноутбука без пути назад.</p>
+      </div>
+    </div>
+    <div class="reason">
+      <div class="idx">3</div>
+      <div class="body">
+        <div class="rt">DEK-в-keychain — это кэш, а не источник</div>
+        <p>Кэш без источника = единая точка отказа. Любой из случаев ниже уничтожил бы секреты безвозвратно:</p>
+        <ul class="loss">
+          <li>новый Mac / переустановка macOS — keychain не переносится</li>
+          <li>keychain сбросился или побился</li>
+          <li>сменил / переоформил отпечатки</li>
+          <li>сдохло железо Touch ID</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <p style="color:var(--muted)">С паролем же ты <strong>всегда</strong> выведешь DEK заново из <code>pwWrap</code> — на любой машине. Поэтому правильная схема — не «пароль <em>или</em> Touch ID», а «пароль <strong>как фундамент</strong> + Touch ID как быстрый вход, который не жалко потерять».</p>
+
+  <h2><span class="num">07</span>Честный нюанс реализации</h2>
+  <div class="box">
+    <div class="lead">◆ Где именно проходит криптозамок</div>
+    <p>В нашей реализации Touch ID навязывает <strong>приложение</strong> (через LAContext), а не сам keychain. То есть настоящий криптозамок на копии DEK — это <strong>ACL по подписи</strong>, а Touch ID — слой присутствия/UX поверх него. Платный «data-protection keychain» путь навязывал бы биометрию самим keychain (строже — палец нельзя обойти в принципе), но требует Apple-профиля с годовым сроком. Мы сознательно выбрали бесплатную схему, работающую везде, — а корневую offline-защиту всё равно держит мастер-пароль, который никуда не девается.</p>
+  </div>
+
+  <footer>
+    <span>sql-tauri — Postgres-клиент</span>
+    <span><code>vault.rs</code> · <code>biometric.rs</code> · <code>vault.json</code></span>
+  </footer>
+
+</div>
+</body>
+</html>

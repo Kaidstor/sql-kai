@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --color-zinc-925: #101013;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+.selectable {
+  user-select: text;
+  cursor: auto;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(63 63 70 / 0.7);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(82 82 91);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.cm-editor {
+  height: 100%;
+  font-size: 13px;
+}
+.cm-editor .cm-scroller {
+  font-family: var(--font-mono);
+}
+.cm-editor.cm-focused {
+  outline: none;
+}

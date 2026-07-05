@@ -1,0 +1,130 @@
+//! Touch ID fast path for the vault DEK (macOS only).
+//!
+//! Implementation: the app itself runs the biometry check via
+//! `LocalAuthentication` (`LAContext`), and only after it succeeds reads the
+//! DEK from a regular login-keychain item. Unlike an access-controlled
+//! data-protection keychain item this needs **no entitlements, provisioning
+//! profiles or Apple developer membership**, so it works in every build —
+//! including `tauri dev`. The trade-off: biometry is enforced by the app, not
+//! by the keychain item itself; at rest the DEK is protected by the login
+//! keychain encryption plus its per-app ACL (signed builds keep a stable
+//! code signature, so there are no repeat ACL prompts).
+//!
+//! The master password always remains the app-level fallback.
+
+/// Outcomes the vault must handle differently from generic failures.
+pub enum BioError {
+    /// The user dismissed the system prompt — not an error to display.
+    Cancelled,
+    /// The stored key is missing/unreadable — disable and re-enroll.
+    Stale,
+    Other(String),
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::sync::mpsc;
+
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSError, NSString};
+    use objc2_local_authentication::{LAContext, LAPolicy};
+    use security_framework::passwords;
+
+    use super::BioError;
+
+    const SERVICE: &str = "com.kaidstor.sql-tauri.vault";
+    const ACCOUNT: &str = "dek";
+
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+    /// LAError codes meaning "the user chose not to proceed":
+    /// userCancel (-2), userFallback (-3), systemCancel (-4), appCancel (-9).
+    const LA_CANCEL_CODES: [isize; 4] = [-2, -3, -4, -9];
+
+    /// True when actual biometrics (Touch ID) are available and enrolled.
+    pub fn supported() -> bool {
+        let ctx = unsafe { LAContext::new() };
+        unsafe { ctx.canEvaluatePolicy_error(LAPolicy::DeviceOwnerAuthenticationWithBiometrics) }
+            .is_ok()
+    }
+
+    /// Blocks on the system authentication sheet (Touch ID, with the account
+    /// password as the built-in system fallback). Call off the main thread.
+    fn authenticate(reason: &str) -> Result<(), BioError> {
+        let ctx = unsafe { LAContext::new() };
+        let (tx, rx) = mpsc::channel::<Result<(), (isize, String)>>();
+        let block = RcBlock::new(move |success: Bool, error: *mut NSError| {
+            let outcome = if success.as_bool() {
+                Ok(())
+            } else if error.is_null() {
+                Err((0, "authentication failed".to_string()))
+            } else {
+                let e = unsafe { &*error };
+                Err((e.code(), e.localizedDescription().to_string()))
+            };
+            let _ = tx.send(outcome);
+        });
+        unsafe {
+            ctx.evaluatePolicy_localizedReason_reply(
+                LAPolicy::DeviceOwnerAuthentication,
+                &NSString::from_str(reason),
+                &block,
+            );
+        }
+        // `ctx` must stay alive until the reply lands (dropping it cancels).
+        match rx.recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err((code, _))) if LA_CANCEL_CODES.contains(&code) => Err(BioError::Cancelled),
+            Ok(Err((_, msg))) => Err(BioError::Other(msg)),
+            Err(_) => Err(BioError::Other("authentication callback was dropped".into())),
+        }
+    }
+
+    /// Stores the DEK in the login keychain (replaces any previous copy).
+    pub fn store_dek(dek: &[u8]) -> Result<(), BioError> {
+        passwords::set_generic_password(SERVICE, ACCOUNT, dek)
+            .map_err(|e| BioError::Other(format!("keychain error: {e}")))
+    }
+
+    /// Touch ID gate, then the keychain read.
+    pub fn read_dek() -> Result<Vec<u8>, BioError> {
+        authenticate("unlock your saved database passwords")?;
+        passwords::get_generic_password(SERVICE, ACCOUNT).map_err(|e| {
+            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                BioError::Stale
+            } else {
+                BioError::Other(format!("keychain error: {e}"))
+            }
+        })
+    }
+
+    /// Best-effort removal of the stored DEK (both on disable and re-enroll).
+    pub fn delete_dek() {
+        let _ = passwords::delete_generic_password(SERVICE, ACCOUNT);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod imp {
+    use super::BioError;
+
+    pub fn supported() -> bool {
+        false
+    }
+
+    pub fn store_dek(_dek: &[u8]) -> Result<(), BioError> {
+        Err(BioError::Other(
+            "biometric unlock is not supported on this OS".into(),
+        ))
+    }
+
+    pub fn read_dek() -> Result<Vec<u8>, BioError> {
+        Err(BioError::Other(
+            "biometric unlock is not supported on this OS".into(),
+        ))
+    }
+
+    pub fn delete_dek() {}
+}
+
+pub use imp::{delete_dek, read_dek, store_dek, supported};

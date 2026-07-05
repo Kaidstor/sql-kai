@@ -1,0 +1,724 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use serde::Serialize;
+use tauri::State;
+use tokio_postgres::{Client, NoTls};
+
+use crate::db::{self, ExecResult, Session, StatementResult};
+use crate::error::AppError;
+use crate::store::{self, Profile, SavedQuery};
+use crate::vault;
+
+#[derive(Default)]
+pub struct AppState {
+    pub sessions: Mutex<HashMap<String, Session>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub profile_id: String,
+    pub server_version: String,
+    pub tunnel_port: Option<u16>,
+}
+
+fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
+    let sessions = state.sessions.lock().unwrap();
+    let session = sessions
+        .get(session_id)
+        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?;
+    Ok(session.client.clone())
+}
+
+#[tauri::command]
+pub fn list_profiles() -> Result<Vec<Profile>, AppError> {
+    Ok(store::load_profiles()?
+        .into_iter()
+        .map(|p| p.for_frontend())
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultStatus {
+    /// A vault file exists on disk (i.e. a master password was set up before).
+    pub exists: bool,
+    /// The DEK is decrypted and held in memory for this session.
+    pub unlocked: bool,
+    /// This platform can offer Touch ID at all (macOS).
+    pub biometrics_supported: bool,
+    /// A DEK copy is enrolled in the biometric keychain for this vault.
+    pub biometrics_enrolled: bool,
+}
+
+#[tauri::command]
+pub fn vault_status() -> VaultStatus {
+    VaultStatus {
+        exists: vault::exists(),
+        unlocked: vault::is_unlocked(),
+        biometrics_supported: vault::biometric_supported(),
+        biometrics_enrolled: vault::biometric_enrolled(),
+    }
+}
+
+/// First run: create the vault protected by `password` and unlock it.
+#[tauri::command]
+pub fn vault_setup(password: String) -> Result<(), AppError> {
+    vault::setup(&password)
+}
+
+/// Unlock an existing vault with the master password.
+#[tauri::command]
+pub fn vault_unlock(password: String) -> Result<(), AppError> {
+    vault::unlock_password(&password)
+}
+
+/// Unlock via Touch ID. The keychain read blocks on the system prompt, so it
+/// runs on a blocking thread instead of stalling the main/async runtime.
+#[tauri::command]
+pub async fn vault_unlock_biometric() -> Result<(), AppError> {
+    tokio::task::spawn_blocking(vault::unlock_biometric)
+        .await
+        .map_err(|e| AppError::Msg(format!("unlock task failed: {e}")))?
+}
+
+/// Enroll the current session DEK behind Touch ID (vault must be unlocked).
+#[tauri::command]
+pub fn vault_enable_biometric() -> Result<(), AppError> {
+    vault::enable_biometric()
+}
+
+#[tauri::command]
+pub fn vault_disable_biometric() -> Result<(), AppError> {
+    vault::disable_biometric()
+}
+
+/// Drop the in-memory DEK and all live sessions (secrets become unreadable).
+#[tauri::command]
+pub fn vault_lock(state: State<'_, AppState>) {
+    state.sessions.lock().unwrap().clear();
+    vault::lock();
+}
+
+#[tauri::command]
+pub fn save_profile(
+    profile: Profile,
+    password: Option<String>,
+    ssh_passphrase: Option<String>,
+) -> Result<Profile, AppError> {
+    store::upsert_profile(profile, password, ssh_passphrase)
+}
+
+#[tauri::command]
+pub fn duplicate_profile(id: String) -> Result<Profile, AppError> {
+    store::duplicate_profile(&id)
+}
+
+#[tauri::command]
+pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .retain(|_, s| s.profile_id != id);
+    store::delete_profile(&id)
+}
+
+/// Live sessions, so a reloaded webview can re-adopt them instead of
+/// starting from scratch (connections and tunnels survive page reloads).
+#[tauri::command]
+pub fn list_sessions(state: State<'_, AppState>) -> Vec<SessionInfo> {
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, s)| SessionInfo {
+            session_id: id.clone(),
+            profile_id: s.profile_id.clone(),
+            server_version: s.server_version.clone(),
+            tunnel_port: s.tunnel_port,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_queries() -> Result<Vec<SavedQuery>, AppError> {
+    store::load_queries()
+}
+
+#[tauri::command]
+pub fn save_query(query: SavedQuery) -> Result<SavedQuery, AppError> {
+    store::upsert_query(query)
+}
+
+#[tauri::command]
+pub fn delete_query(id: String) -> Result<(), AppError> {
+    store::delete_query(&id)
+}
+
+#[tauri::command]
+pub async fn connect_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<SessionInfo, AppError> {
+    let profile = store::find_profile(&profile_id)?;
+    let connected = db::connect(&profile, None, None).await?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let info = SessionInfo {
+        session_id: session_id.clone(),
+        profile_id,
+        server_version: connected.server_version,
+        tunnel_port: connected.tunnel_port,
+    };
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session_id, connected.session);
+    Ok(info)
+}
+
+#[tauri::command]
+pub fn disconnect_session(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
+    state.sessions.lock().unwrap().remove(&session_id);
+    Ok(())
+}
+
+/// Connects with the given (possibly unsaved) profile, checks the DB responds, tears down.
+#[tauri::command]
+pub async fn test_profile(
+    profile: Profile,
+    password: Option<String>,
+    ssh_passphrase: Option<String>,
+) -> Result<String, AppError> {
+    let password = password.filter(|p| !p.is_empty());
+    let ssh_passphrase = ssh_passphrase.filter(|p| !p.is_empty());
+    let connected = db::connect(&profile, password, ssh_passphrase).await?;
+    let version = connected.server_version;
+    drop(connected.session);
+    Ok(if version.is_empty() {
+        "connected".to_string()
+    } else {
+        format!("PostgreSQL {version}")
+    })
+}
+
+#[tauri::command]
+pub async fn execute_sql(
+    state: State<'_, AppState>,
+    session_id: String,
+    sql: String,
+    max_rows: Option<usize>,
+) -> Result<ExecResult, AppError> {
+    let client = client_of(&state, &session_id)?;
+    if client.is_closed() {
+        state.sessions.lock().unwrap().remove(&session_id);
+        return Err(AppError::Msg(
+            "connection lost (tunnel or server dropped) — reconnect the profile".into(),
+        ));
+    }
+    db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await
+}
+
+#[tauri::command]
+pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
+    let cancel = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions
+            .get(&session_id)
+            .map(|s| s.cancel.clone())
+            .ok_or_else(|| AppError::Msg("session not found".into()))?
+    };
+    cancel.cancel_query(NoTls).await?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableInfo {
+    pub schema: String,
+    pub name: String,
+    pub kind: String,
+}
+
+const TABLES_SQL: &str = "\
+SELECT n.nspname, c.relname, c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','v','m','f')
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY n.nspname, c.relname";
+
+#[tauri::command]
+pub async fn get_tables(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<TableInfo>, AppError> {
+    let client = client_of(&state, &session_id)?;
+    let exec = db::execute(&client, TABLES_SQL, 100_000).await?;
+    let mut out = Vec::new();
+    for row in exec.results.iter().flat_map(|r| r.rows.iter()) {
+        let kind = match row.get(2).and_then(|v| v.as_deref()) {
+            Some("v") => "view",
+            Some("m") => "matview",
+            Some("f") => "foreign",
+            _ => "table",
+        };
+        out.push(TableInfo {
+            schema: row[0].clone().unwrap_or_default(),
+            name: row[1].clone().unwrap_or_default(),
+            kind: kind.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableColumns {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+}
+
+/// Column names for every user relation in one round-trip — feeds the SQL
+/// editor's schema autocomplete, so only names are selected (no types/PKs).
+const ALL_COLUMNS_SQL: &str = "\
+SELECT n.nspname, c.relname, a.attname
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','v','m','f')
+  AND a.attnum > 0 AND NOT a.attisdropped
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY n.nspname, c.relname, a.attnum";
+
+#[tauri::command]
+pub async fn get_all_columns(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<TableColumns>, AppError> {
+    let client = client_of(&state, &session_id)?;
+    let exec = db::execute(&client, ALL_COLUMNS_SQL, 500_000).await?;
+    let mut out: Vec<TableColumns> = Vec::new();
+    // Rows arrive ordered by schema+table, so grouping consecutively works.
+    for row in exec.results.iter().flat_map(|r| r.rows.iter()) {
+        let schema = row[0].clone().unwrap_or_default();
+        let table = row[1].clone().unwrap_or_default();
+        let column = row[2].clone().unwrap_or_default();
+        match out.last_mut() {
+            Some(last) if last.schema == schema && last.table == table => {
+                last.columns.push(column);
+            }
+            _ => out.push(TableColumns {
+                schema,
+                table,
+                columns: vec![column],
+            }),
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnInfo {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub is_pk: bool,
+    pub default_expr: Option<String>,
+    pub comment: Option<String>,
+}
+
+fn regclass_literal(schema: &str, table: &str) -> String {
+    db::quote_literal(&format!(
+        "{}.{}",
+        db::quote_ident(schema),
+        db::quote_ident(table)
+    ))
+}
+
+async fn introspect_rows(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    sql: &str,
+) -> Result<Vec<Vec<Option<String>>>, AppError> {
+    let client = client_of(state, session_id)?;
+    let exec = db::execute(&client, sql, 10_000).await?;
+    Ok(exec.results.into_iter().flat_map(|r| r.rows).collect())
+}
+
+#[tauri::command]
+pub async fn get_columns(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<ColumnInfo>, AppError> {
+    let sql = db::columns_sql(&regclass_literal(&schema, &table));
+    let rows = introspect_rows(&state, &session_id, &sql).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ColumnInfo {
+            name: row[0].clone().unwrap_or_default(),
+            data_type: row[1].clone().unwrap_or_default(),
+            nullable: row[2].as_deref() == Some("true"),
+            is_pk: row[3].as_deref() == Some("true"),
+            default_expr: row[4].clone(),
+            comment: row[5].clone(),
+        })
+        .collect())
+}
+
+/** Postgres has no SHOW CREATE TABLE — assemble the DDL from the catalogs:
+ *  columns (types/defaults/identity), constraints, secondary indexes,
+ *  partition key and comments. Views return their stored definition. */
+#[tauri::command]
+pub async fn get_table_ddl(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<String, AppError> {
+    let rel = format!("{}::regclass", regclass_literal(&schema, &table));
+    let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
+
+    let kind = introspect_rows(
+        &state,
+        &session_id,
+        &format!("SELECT relkind::text FROM pg_class WHERE oid = {rel}"),
+    )
+    .await?
+    .first()
+    .and_then(|r| r[0].clone())
+    .unwrap_or_default();
+
+    if kind == "v" || kind == "m" {
+        let body = introspect_rows(
+            &state,
+            &session_id,
+            &format!("SELECT pg_get_viewdef({rel}, true)"),
+        )
+        .await?
+        .first()
+        .and_then(|r| r[0].clone())
+        .unwrap_or_default();
+        let head = if kind == "m" {
+            "CREATE MATERIALIZED VIEW"
+        } else {
+            "CREATE OR REPLACE VIEW"
+        };
+        return Ok(format!("{head} {qualified} AS\n{body}"));
+    }
+
+    let cols = introspect_rows(
+        &state,
+        &session_id,
+        &format!(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull::text, \
+             pg_get_expr(d.adbin, d.adrelid), a.attidentity::text, a.attgenerated::text \
+             FROM pg_attribute a \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum"
+        ),
+    )
+    .await?;
+    let mut lines: Vec<String> = Vec::new();
+    for row in &cols {
+        let mut line = format!(
+            "  {} {}",
+            db::quote_ident(row[0].as_deref().unwrap_or_default()),
+            row[1].as_deref().unwrap_or_default()
+        );
+        let default = row[3].as_deref();
+        match (row[5].as_deref(), row[4].as_deref()) {
+            (Some("s"), _) => line.push_str(&format!(
+                " GENERATED ALWAYS AS ({}) STORED",
+                default.unwrap_or_default()
+            )),
+            (_, Some("a")) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
+            (_, Some("d")) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+            _ => {
+                if let Some(d) = default {
+                    line.push_str(&format!(" DEFAULT {d}"));
+                }
+            }
+        }
+        if row[2].as_deref() == Some("true") {
+            line.push_str(" NOT NULL");
+        }
+        lines.push(line);
+    }
+
+    // NOT NULL lives inline above — 'n' rows (PG18+) would duplicate it.
+    let cons = introspect_rows(
+        &state,
+        &session_id,
+        &format!(
+            "SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint \
+             WHERE conrelid = {rel} AND contype IN ('p','u','f','c','x') \
+             ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname"
+        ),
+    )
+    .await?;
+    for row in &cons {
+        lines.push(format!(
+            "  CONSTRAINT {} {}",
+            db::quote_ident(row[0].as_deref().unwrap_or_default()),
+            row[1].as_deref().unwrap_or_default()
+        ));
+    }
+
+    let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n)", lines.join(",\n"));
+    if kind == "p" {
+        if let Some(part) = introspect_rows(
+            &state,
+            &session_id,
+            &format!("SELECT pg_get_partkeydef({rel})"),
+        )
+        .await?
+        .first()
+        .and_then(|r| r[0].clone())
+        {
+            ddl.push_str(&format!(" PARTITION BY {part}"));
+        }
+    }
+    ddl.push(';');
+
+    let idx = introspect_rows(
+        &state,
+        &session_id,
+        &format!(
+            "SELECT pg_get_indexdef(i.indexrelid, 0, true) FROM pg_index i \
+             WHERE i.indrelid = {rel} \
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid) \
+             ORDER BY 1"
+        ),
+    )
+    .await?;
+    for row in &idx {
+        if let Some(def) = row[0].as_deref() {
+            ddl.push_str(&format!("\n{def};"));
+        }
+    }
+
+    if let Some(c) = introspect_rows(
+        &state,
+        &session_id,
+        &format!("SELECT obj_description({rel}, 'pg_class')"),
+    )
+    .await?
+    .first()
+    .and_then(|r| r[0].clone())
+    {
+        ddl.push_str(&format!(
+            "\nCOMMENT ON TABLE {qualified} IS {};",
+            db::quote_literal(&c)
+        ));
+    }
+    let comments = introspect_rows(
+        &state,
+        &session_id,
+        &format!(
+            "SELECT a.attname, col_description(a.attrelid, a.attnum) \
+             FROM pg_attribute a \
+             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
+               AND col_description(a.attrelid, a.attnum) IS NOT NULL \
+             ORDER BY a.attnum"
+        ),
+    )
+    .await?;
+    for row in &comments {
+        if let Some(c) = row[1].as_deref() {
+            ddl.push_str(&format!(
+                "\nCOMMENT ON COLUMN {qualified}.{} IS {};",
+                db::quote_ident(row[0].as_deref().unwrap_or_default()),
+                db::quote_literal(c)
+            ));
+        }
+    }
+
+    Ok(ddl)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub unique: bool,
+    pub primary: bool,
+    pub columns: Option<String>,
+    pub definition: String,
+}
+
+#[tauri::command]
+pub async fn get_indexes(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<IndexInfo>, AppError> {
+    let sql = db::indexes_sql(&regclass_literal(&schema, &table));
+    let rows = introspect_rows(&state, &session_id, &sql).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| IndexInfo {
+            name: row[0].clone().unwrap_or_default(),
+            unique: row[1].as_deref() == Some("true"),
+            primary: row[2].as_deref() == Some("true"),
+            columns: row[3].clone(),
+            definition: row[4].clone().unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationInfo {
+    pub name: String,
+    pub columns: Option<String>,
+    pub ref_table: String,
+    pub ref_columns: Option<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+#[tauri::command]
+pub async fn get_relations(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<RelationInfo>, AppError> {
+    let sql = db::relations_sql(&regclass_literal(&schema, &table));
+    let rows = introspect_rows(&state, &session_id, &sql).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| RelationInfo {
+            name: row[0].clone().unwrap_or_default(),
+            columns: row[1].clone(),
+            ref_table: row[2].clone().unwrap_or_default(),
+            ref_columns: row[3].clone(),
+            on_update: row[4].clone().unwrap_or_default(),
+            on_delete: row[5].clone().unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerInfo {
+    pub name: String,
+    pub timing: String,
+    pub events: String,
+    pub definition: String,
+}
+
+#[tauri::command]
+pub async fn get_triggers(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<TriggerInfo>, AppError> {
+    let sql = db::triggers_sql(&regclass_literal(&schema, &table));
+    let rows = introspect_rows(&state, &session_id, &sql).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| TriggerInfo {
+            name: row[0].clone().unwrap_or_default(),
+            timing: row[1].clone().unwrap_or_default(),
+            events: row[2].clone().unwrap_or_default(),
+            definition: row[3].clone().unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TablePage {
+    pub result: StatementResult,
+    pub duration_ms: u64,
+    pub approx_rows: i64,
+}
+
+#[tauri::command]
+pub async fn get_table_page(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+    limit: u32,
+    offset: u64,
+    order_by: Option<String>,
+    order_dir: Option<String>,
+) -> Result<TablePage, AppError> {
+    let client = client_of(&state, &session_id)?;
+    let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
+    let limit = limit.clamp(1, 1000);
+
+    let mut sql = format!("SELECT * FROM {qualified}");
+    if let Some(col) = order_by.filter(|c| !c.is_empty()) {
+        let dir = match order_dir.as_deref() {
+            Some("desc") | Some("DESC") => "DESC",
+            _ => "ASC",
+        };
+        sql.push_str(&format!(" ORDER BY {} {dir}", db::quote_ident(&col)));
+    }
+    sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+
+    let exec = db::execute(&client, &sql, limit as usize).await?;
+    let result = exec
+        .results
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| StatementResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: None,
+            truncated: false,
+        });
+
+    let approx_sql = format!(
+        "SELECT reltuples::bigint FROM pg_class WHERE oid = {}::regclass",
+        db::quote_literal(&qualified)
+    );
+    let approx_rows = match db::execute(&client, &approx_sql, 1).await {
+        Ok(r) => r
+            .results
+            .first()
+            .and_then(|res| res.rows.first())
+            .and_then(|row| row[0].as_deref())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(-1),
+        Err(_) => -1,
+    };
+
+    Ok(TablePage {
+        result,
+        duration_ms: exec.duration_ms,
+        approx_rows,
+    })
+}
+
+/// Copies text marked as concealed (`org.nspasteboard.ConcealedType` on macOS)
+/// so clipboard-history managers skip it.
+#[tauri::command]
+pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| AppError::Msg(e.to_string()))?;
+    let set = clipboard.set();
+    #[cfg(target_os = "macos")]
+    let set = arboard::SetExtApple::exclude_from_history(set);
+    set.text(text).map_err(|e| AppError::Msg(e.to_string()))
+}
+
