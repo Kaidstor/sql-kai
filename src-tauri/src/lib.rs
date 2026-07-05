@@ -19,7 +19,7 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Emitter;
 
     let handle = app.handle();
-    let app_menu = SubmenuBuilder::new(handle, "sql-tauri")
+    let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
         .separator()
         .services()
@@ -77,6 +77,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]

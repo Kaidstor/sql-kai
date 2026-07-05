@@ -12,6 +12,7 @@ import { TabsBar } from "./components/TabsBar";
 import { VaultGate } from "./components/VaultGate";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
+import { initUpdater } from "./lib/updater";
 
 // ⌘K chord window: a ⌘W within this many ms closes ALL tabs.
 const CHORD_MS = 5000;
@@ -33,6 +34,8 @@ function App() {
     void init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => initUpdater(), []);
 
   // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘⌥O connection
   // palette, ⌘P saved-queries palette, ⌘S save query, ⌘R refresh table/

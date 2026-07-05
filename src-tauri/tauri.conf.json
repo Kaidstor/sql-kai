@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sql-tauri",
+  "productName": "sql-kai",
   "version": "0.1.0",
-  "identifier": "com.kaidstor.sql-tauri",
+  "identifier": "com.kaidstor.sql-kai",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "sql-tauri — Postgres client",
+        "title": "sql-kai — Postgres client",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
@@ -32,6 +32,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,6 +42,15 @@
     ],
     "macOS": {
       "signingIdentity": "Apple Development: kaidstor@gmail.com (4Q86T46QBB)"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2NUE2OUQxQzcwMzFBMTQKUldRVUdnUEgwV2xhOWw2MmxOOXJpTSs2SlB1aS9QZzZQZllpSWFkM0hJWWdDRlhtNlpLRzRnNVoK",
+      "endpoints": [
+        "https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/latest.json"
+      ]
     }
   }
 }
