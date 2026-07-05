@@ -238,6 +238,67 @@ pub fn delete_query(id: &str) -> Result<(), AppError> {
     save_queries(&all)
 }
 
+// --- Query history ------------------------------------------------------------
+
+/// Newest-first list of queries the user ran from a query tab.
+pub const HISTORY_CAP: usize = 200;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub id: String,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub sql: String,
+    /// Epoch milliseconds.
+    pub at: i64,
+    pub ok: bool,
+}
+
+pub fn load_history() -> Result<Vec<HistoryEntry>, AppError> {
+    load_list("history.json")
+}
+
+pub fn save_history(entries: &[HistoryEntry]) -> Result<(), AppError> {
+    save_list("history.json", entries)
+}
+
+/// Prepends `entry`; a rerun of the same SQL on the same profile just bumps
+/// it to the top. Returns the updated list.
+pub fn record_history(entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppError> {
+    let mut all = load_history()?;
+    all.retain(|h| !(h.profile_id == entry.profile_id && h.sql == entry.sql));
+    all.insert(0, entry);
+    all.truncate(HISTORY_CAP);
+    save_history(&all)?;
+    Ok(all)
+}
+
+pub fn delete_history_entry(id: &str) -> Result<Vec<HistoryEntry>, AppError> {
+    let mut all = load_history()?;
+    all.retain(|h| h.id != id);
+    save_history(&all)?;
+    Ok(all)
+}
+
+/// One-time import of the pre-disk localStorage history: entries already on
+/// disk win, imported ones fill in behind by recency.
+pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, AppError> {
+    let mut all = load_history()?;
+    for e in entries {
+        if !all
+            .iter()
+            .any(|h| h.profile_id == e.profile_id && h.sql == e.sql)
+        {
+            all.push(e);
+        }
+    }
+    all.sort_by_key(|h| std::cmp::Reverse(h.at));
+    all.truncate(HISTORY_CAP);
+    save_history(&all)?;
+    Ok(all)
+}
+
 pub fn get_password(profile: &Profile) -> Option<String> {
     vault::get_secret(&profile.id)
 }

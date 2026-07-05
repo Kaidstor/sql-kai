@@ -2,14 +2,13 @@ import { create } from "zustand";
 import { api, errText } from "./api";
 import {
   CLOSED_CAP,
-  HISTORY_CAP,
+  dropLegacyHistory,
   loadClosedTabs,
-  loadHistory,
+  loadLegacyHistory,
   persistClosedTabs,
   persistWorkspace,
   removeWorkspace,
   restoreWorkspace,
-  saveHistory,
   type ClosedTab,
 } from "./persist";
 import { structureDdl, tableDml } from "./sqlgen";
@@ -386,6 +385,21 @@ export const useApp = create<AppStore>((set, get) => {
     await loadWorkspace();
   };
 
+  /** Loads history.json, importing what an older build left in localStorage.
+   *  History is a convenience — a failure here never blocks startup. */
+  const loadHistoryFromDisk = async () => {
+    try {
+      const legacy = loadLegacyHistory();
+      const history = legacy.length
+        ? await api.importHistory(legacy)
+        : await api.listHistory();
+      if (legacy.length) dropLegacyHistory();
+      set({ history });
+    } catch {
+      // stays empty; the next recordHistory repopulates the in-memory list
+    }
+  };
+
   /** Drops cached column info after DDL changed the table. */
   const invalidateColumns = (profileId: string, schema: string, table: string) =>
     set((s) => {
@@ -454,7 +468,7 @@ export const useApp = create<AppStore>((set, get) => {
   dialog: { open: false },
   toast: null,
   queries: [],
-  history: loadHistory(),
+  history: [],
   palette: null,
   closedTabs: loadClosedTabs(),
   saveDialogFor: null,
@@ -479,19 +493,17 @@ export const useApp = create<AppStore>((set, get) => {
   },
 
   deleteHistoryEntry: (id) => {
-    set((s) => {
-      const history = s.history.filter((h) => h.id !== id);
-      saveHistory(history);
-      return { history };
-    });
+    set((s) => ({ history: s.history.filter((h) => h.id !== id) }));
+    api.deleteHistoryEntry(id).catch((e) => get().showToast(errText(e)));
   },
 
   clearHistory: () => {
-    saveHistory([]);
     set({ history: [] });
+    api.clearHistory().catch((e) => get().showToast(errText(e)));
   },
 
   init: async () => {
+    void loadHistoryFromDisk();
     try {
       const vault = await api.vaultStatus();
       set({ vault, vaultError: null });
@@ -1031,25 +1043,22 @@ export const useApp = create<AppStore>((set, get) => {
     if (!sql) return;
     const pushHistory = (ok: boolean) => {
       const profile = get().profiles.find((p) => p.id === tab.profileId);
-      set((s) => {
-        const entry: HistoryEntry = {
-          id: crypto.randomUUID(),
-          profileId: tab.profileId,
-          profileName: profile?.name ?? "?",
-          sql,
-          at: Date.now(),
-          ok,
-        };
-        // re-running the same sql just bumps it to the top
-        const history = [
-          entry,
-          ...s.history.filter(
-            (h) => !(h.profileId === entry.profileId && h.sql === entry.sql),
-          ),
-        ].slice(0, HISTORY_CAP);
-        saveHistory(history);
-        return { history };
-      });
+      const entry: HistoryEntry = {
+        id: crypto.randomUUID(),
+        profileId: tab.profileId,
+        profileName: profile?.name ?? "?",
+        sql,
+        at: Date.now(),
+        ok,
+      };
+      // the disk store dedups (a rerun bumps to the top) and caps the list
+      api
+        .recordHistory(entry)
+        .then((history) => set({ history }))
+        .catch(() => {
+          // keep at least the in-memory trail for this session
+          set((s) => ({ history: [entry, ...s.history] }));
+        });
     };
     patchTab<QueryTabState>(tabId, { running: true, error: undefined });
     try {

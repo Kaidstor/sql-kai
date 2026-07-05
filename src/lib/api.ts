@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnInfo,
   ExecResult,
+  HistoryEntry,
   IndexInfo,
   Profile,
   RelationInfo,
@@ -47,6 +48,19 @@ export const api = {
   saveQuery: (query: SavedQuery) => invoke<SavedQuery>("save_query", { query }),
 
   deleteQuery: (id: string) => invoke<void>("delete_query", { id }),
+
+  listHistory: () => invoke<HistoryEntry[]>("list_history"),
+
+  recordHistory: (entry: HistoryEntry) =>
+    invoke<HistoryEntry[]>("record_history", { entry }),
+
+  deleteHistoryEntry: (id: string) =>
+    invoke<HistoryEntry[]>("delete_history_entry", { id }),
+
+  clearHistory: () => invoke<void>("clear_history"),
+
+  importHistory: (entries: HistoryEntry[]) =>
+    invoke<HistoryEntry[]>("import_history", { entries }),
 
   connect: (profileId: string) =>
     invoke<SessionInfo>("connect_profile", { profileId }),

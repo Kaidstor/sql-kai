@@ -26,16 +26,23 @@ function writeJson(key: string, value: unknown) {
   }
 }
 
-// --- Query history -----------------------------------------------------------
+// --- Query history (legacy) ---------------------------------------------------
+// History now lives on disk (history.json via the Rust store); localStorage is
+// read once to migrate what an older build left behind.
 
 const HISTORY_KEY = "sqlt.history";
-export const HISTORY_CAP = 200;
 
-export const loadHistory = (): HistoryEntry[] =>
+export const loadLegacyHistory = (): HistoryEntry[] =>
   readJson<HistoryEntry[]>(HISTORY_KEY) ?? [];
 
-export const saveHistory = (history: HistoryEntry[]) =>
-  writeJson(HISTORY_KEY, history);
+/** Call only after the entries made it into the disk store. */
+export function dropLegacyHistory() {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
+  } catch {
+    // best-effort
+  }
+}
 
 // --- Workspace (open tabs + raw SQL, per profile) ----------------------------
 

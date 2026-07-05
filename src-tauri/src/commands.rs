@@ -7,7 +7,7 @@ use tokio_postgres::{Client, NoTls};
 
 use crate::db::{self, ExecResult, Session, StatementResult};
 use crate::error::AppError;
-use crate::store::{self, Profile, SavedQuery};
+use crate::store::{self, HistoryEntry, Profile, SavedQuery};
 use crate::vault;
 
 #[derive(Default)]
@@ -176,6 +176,31 @@ pub fn save_query(query: SavedQuery) -> Result<SavedQuery, AppError> {
 #[tauri::command]
 pub fn delete_query(id: String) -> Result<(), AppError> {
     store::delete_query(&id)
+}
+
+#[tauri::command]
+pub fn list_history() -> Result<Vec<HistoryEntry>, AppError> {
+    store::load_history()
+}
+
+#[tauri::command]
+pub fn record_history(entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppError> {
+    store::record_history(entry)
+}
+
+#[tauri::command]
+pub fn delete_history_entry(id: String) -> Result<Vec<HistoryEntry>, AppError> {
+    store::delete_history_entry(&id)
+}
+
+#[tauri::command]
+pub fn clear_history() -> Result<(), AppError> {
+    store::save_history(&[])
+}
+
+#[tauri::command]
+pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, AppError> {
+    store::import_history(entries)
 }
 
 #[tauri::command]
