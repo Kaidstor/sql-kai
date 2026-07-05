@@ -2,7 +2,7 @@ import { Cable, ChevronUp, Lock, Plug, ShieldCheck } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
 import { accentColor } from "../lib/colors";
-import { profileAddr } from "../lib/profile";
+import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
 import { ColorDot, Popover, cn } from "./ui";
 
@@ -12,7 +12,7 @@ function ConnectionSwitcher() {
     useApp();
   const [open, setOpen] = useState(false);
 
-  const connected = profiles.filter((p) => sessions[p.id]);
+  const connected = connectedProfiles(profiles, sessions);
   const active = profiles.find((p) => p.id === activeProfileId);
   const activeColor = accentColor(active?.color);
 
@@ -155,7 +155,11 @@ export function StatusBar() {
         <span
           className={cn(
             "ml-auto truncate max-w-[70%] pr-1.5",
-            toast.kind === "error" ? "text-red-400" : "text-zinc-300",
+            toast.kind === "error"
+              ? "text-red-400"
+              : toast.kind === "success"
+                ? "text-emerald-400"
+                : "text-zinc-300",
           )}
           title={toast.message}
         >

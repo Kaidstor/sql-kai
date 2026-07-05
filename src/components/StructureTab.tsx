@@ -1,4 +1,4 @@
-import { Check, Loader2, Plus, RefreshCw, Undo2, X } from "lucide-react";
+import { Check, Plus, Undo2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   useApp,
@@ -8,7 +8,15 @@ import {
   type Tab,
 } from "../lib/store";
 import { quoteIdent as qi } from "../lib/sql";
-import { Button, ErrorPre, IconBtn, Input, cn } from "./ui";
+import {
+  Button,
+  ErrorPre,
+  IconBtn,
+  Input,
+  PendingChangesBar,
+  RefreshBtn,
+  cn,
+} from "./ui";
 
 const SECTIONS: { key: StructureSection; label: string }[] = [
   { key: "columns", label: "Columns" },
@@ -103,12 +111,16 @@ function Td({
   );
 }
 
-/** Sticky header row shared by all four structure tables. */
-function THead({ children }: { children: ReactNode }) {
+/** Full-width monospace table with the sticky header row shared by all
+ *  four structure sections. */
+function SectionTable({ head, children }: { head: ReactNode; children: ReactNode }) {
   return (
-    <thead className="sticky top-0 z-10 bg-zinc-950">
-      <tr className="border-b border-zinc-800">{children}</tr>
-    </thead>
+    <table className="w-full text-[12px] font-mono">
+      <thead className="sticky top-0 z-10 bg-zinc-950">
+        <tr className="border-b border-zinc-800">{head}</tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
   );
 }
 
@@ -258,17 +270,13 @@ export function StructureTab({ tab }: { tab: Tab }) {
           </button>
         ))}
         {state.section === "columns" && dirty > 0 && (
-          <div className="flex items-center gap-1.5 pl-2">
-            <Button
-              variant="primary"
-              disabled={state.loading}
-              onClick={() => void applyStructureEdits(tab.id)}
-              title="⌘S — runs all staged DDL in one transaction"
-            >
-              <Check size={13} /> Apply {dirty}
-            </Button>
-            <Button onClick={() => discardStructureEdits(tab.id)}>Discard</Button>
-          </div>
+          <PendingChangesBar
+            count={dirty}
+            busy={state.loading}
+            applyTitle="⌘S — runs all staged DDL in one transaction"
+            onApply={() => void applyStructureEdits(tab.id)}
+            onDiscard={() => discardStructureEdits(tab.id)}
+          />
         )}
         <div className="ml-auto flex items-center gap-0.5">
           {state.section === "columns" && (
@@ -276,17 +284,10 @@ export function StructureTab({ tab }: { tab: Tab }) {
               <Plus size={14} />
             </IconBtn>
           )}
-          <IconBtn
-            title="Refresh"
-            disabled={state.loading}
+          <RefreshBtn
+            loading={state.loading}
             onClick={() => void loadStructure(tab.id)}
-          >
-            {state.loading ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <RefreshCw size={13} />
-            )}
-          </IconBtn>
+          />
         </div>
       </div>
 
@@ -294,8 +295,9 @@ export function StructureTab({ tab }: { tab: Tab }) {
         {state.error && <ErrorPre>{state.error}</ErrorPre>}
 
         {!state.error && state.section === "columns" && (
-          <table className="w-full text-[12px] font-mono">
-            <THead>
+          <SectionTable
+            head={
+              <>
                 <Th className="w-[22%]">Name</Th>
                 <Th className="w-[18%]">Type</Th>
                 <Th className="w-16 text-center!">Nullable</Th>
@@ -303,8 +305,9 @@ export function StructureTab({ tab }: { tab: Tab }) {
                 <Th className="w-[18%]">Comment</Th>
                 <Th className="w-14">Primary</Th>
                 <Th className="w-10" />
-            </THead>
-            <tbody>
+              </>
+            }
+          >
               {state.columns?.map((col, i) => {
                 const patch = state.colEdits[col.name] ?? {};
                 const dropped = state.colDrops.includes(col.name);
@@ -454,29 +457,30 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   </Td>
                 </tr>
               ))}
-              {adding && (
-                <AddColumnRow
-                  onCancel={() => setAdding(false)}
-                  onAdd={(c) => {
-                    setAdding(false);
-                    stageColumnAdd(tab.id, c);
-                  }}
-                />
-              )}
-            </tbody>
-          </table>
+            {adding && (
+              <AddColumnRow
+                onCancel={() => setAdding(false)}
+                onAdd={(c) => {
+                  setAdding(false);
+                  stageColumnAdd(tab.id, c);
+                }}
+              />
+            )}
+          </SectionTable>
         )}
 
         {!state.error && state.section === "indexes" && (
-          <table className="w-full text-[12px] font-mono">
-            <THead>
+          <SectionTable
+            head={
+              <>
                 <Th className="w-[30%]">Name</Th>
                 <Th className="w-16">Unique</Th>
                 <Th className="w-16">Primary</Th>
                 <Th>Columns</Th>
                 <Th className="w-10" />
-            </THead>
-            <tbody>
+              </>
+            }
+          >
               {state.indexes?.map((idx, i) => (
                 <ZTr key={idx.name} index={i}>
                   <Td className="text-zinc-100" >
@@ -504,22 +508,23 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   </Td>
                 </ZTr>
               ))}
-            </tbody>
-          </table>
+          </SectionTable>
         )}
 
         {!state.error && state.section === "relations" && (
-          <table className="w-full text-[12px] font-mono">
-            <THead>
+          <SectionTable
+            head={
+              <>
                 <Th className="w-[26%]">Name</Th>
                 <Th>Columns</Th>
                 <Th>References</Th>
                 <Th>Ref. columns</Th>
                 <Th className="w-28">On update</Th>
                 <Th className="w-28">On delete</Th>
-            </THead>
-            <tbody>
-              {state.relations?.map((r, i) => (
+              </>
+            }
+          >
+            {state.relations?.map((r, i) => (
                 <ZTr key={r.name} index={i}>
                   <Td className="text-zinc-100">{r.name}</Td>
                   <Td className="text-zinc-400">{r.columns}</Td>
@@ -529,20 +534,21 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   <Td className="text-zinc-500">{r.onDelete}</Td>
                 </ZTr>
               ))}
-            </tbody>
-          </table>
+          </SectionTable>
         )}
 
         {!state.error && state.section === "triggers" && (
-          <table className="w-full text-[12px] font-mono">
-            <THead>
+          <SectionTable
+            head={
+              <>
                 <Th className="w-[26%]">Name</Th>
                 <Th className="w-28">Timing</Th>
                 <Th className="w-44">Events</Th>
                 <Th>Definition</Th>
-            </THead>
-            <tbody>
-              {state.triggers?.map((t, i) => (
+              </>
+            }
+          >
+            {state.triggers?.map((t, i) => (
                 <ZTr key={t.name} index={i}>
                   <Td className="text-zinc-100">{t.name}</Td>
                   <Td className="text-zinc-400">{t.timing}</Td>
@@ -552,15 +558,13 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   </Td>
                 </ZTr>
               ))}
-            </tbody>
-          </table>
+          </SectionTable>
         )}
 
         {!state.error &&
           !state.loading &&
-          ((state.section === "indexes" && state.indexes?.length === 0) ||
-            (state.section === "relations" && state.relations?.length === 0) ||
-            (state.section === "triggers" && state.triggers?.length === 0)) && (
+          state.section !== "columns" &&
+          state[state.section]?.length === 0 && (
             <div className="flex h-32 items-center justify-center text-[13px] text-zinc-600">
               No {state.section}
             </div>

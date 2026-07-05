@@ -147,33 +147,40 @@ function ProfileRow({ profile }: { profile: Profile }) {
     </ContextMenuTrigger>
     <ContextMenuContent>
       {connected ? (
-        <ContextMenuItem onClick={() => void disconnect(profile.id)}>
-          <Unplug size={13} className="text-zinc-500" /> Disconnect
+        <ContextMenuItem icon={Unplug} onClick={() => void disconnect(profile.id)}>
+          Disconnect
         </ContextMenuItem>
       ) : (
-        <ContextMenuItem disabled={busy} onClick={() => void connect(profile.id)}>
-          <Plug size={13} className="text-zinc-500" /> Connect
+        <ContextMenuItem
+          icon={Plug}
+          disabled={busy}
+          onClick={() => void connect(profile.id)}
+        >
+          Connect
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
       <ContextMenuItem
+        icon={CopyPlus}
         onClick={() => void duplicateProfile(profile.id)}
         title="Fork: the copy shares the group and its saved queries"
       >
-        <CopyPlus size={13} className="text-zinc-500" /> Duplicate
+        Duplicate
       </ContextMenuItem>
-      <ContextMenuItem onClick={() => openDialog(profile)}>
-        <Pencil size={13} className="text-zinc-500" /> Edit…
+      <ContextMenuItem icon={Pencil} onClick={() => openDialog(profile)}>
+        Edit…
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem
+        icon={Trash2}
+        iconClassName="text-red-400/80"
         onClick={() => {
           if (confirm(`Delete connection "${profile.name}"?`)) {
             void deleteProfile(profile.id);
           }
         }}
       >
-        <Trash2 size={13} className="text-red-400/80" /> Delete
+        Delete
       </ContextMenuItem>
     </ContextMenuContent>
     </ContextMenu>
@@ -241,23 +248,25 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem
+            icon={Table2}
             onClick={() => openTableTab(profileId, table.schema, table.name)}
           >
-            <Table2 size={13} className="text-zinc-500" /> Open data
+            Open data
           </ContextMenuItem>
           <ContextMenuItem
+            icon={Wrench}
             onClick={() => openStructureTab(profileId, table.schema, table.name)}
           >
-            <Wrench size={13} className="text-zinc-500" /> Structure
+            Structure
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
+            icon={Copy}
             onClick={() => void copyText(`${table.schema}.${table.name}`)}
           >
-            <Copy size={13} className="text-zinc-500" /> Copy name
+            Copy name
           </ContextMenuItem>
-          <ContextMenuItem onClick={() => void copyDdl()}>
-            <FileCode2 size={13} className="text-zinc-500" />
+          <ContextMenuItem icon={FileCode2} onClick={() => void copyDdl()}>
             Copy CREATE{" "}
             {table.kind === "view" || table.kind === "matview"
               ? "VIEW"

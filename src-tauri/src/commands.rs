@@ -24,12 +24,31 @@ pub struct SessionInfo {
     pub tunnel_port: Option<u16>,
 }
 
-fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
+/// Runs `f` on the live session, or errors if it was already disconnected.
+fn with_session<T>(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    f: impl FnOnce(&Session) -> T,
+) -> Result<T, AppError> {
     let sessions = state.sessions.lock().unwrap();
     let session = sessions
         .get(session_id)
         .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?;
-    Ok(session.client.clone())
+    Ok(f(session))
+}
+
+fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
+    with_session(state, session_id, |s| s.client.clone())
+}
+
+/// Cell text at `i`; "" for NULL or a missing column.
+fn cell(row: &[Option<String>], i: usize) -> String {
+    row.get(i).cloned().flatten().unwrap_or_default()
+}
+
+/// Boolean cell rendered by Postgres as "true"/"false".
+fn cell_bool(row: &[Option<String>], i: usize) -> bool {
+    row.get(i).and_then(|v| v.as_deref()) == Some("true")
 }
 
 #[tauri::command]
@@ -225,13 +244,7 @@ pub async fn execute_sql(
 
 #[tauri::command]
 pub async fn cancel_query(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
-    let cancel = {
-        let sessions = state.sessions.lock().unwrap();
-        sessions
-            .get(&session_id)
-            .map(|s| s.cancel.clone())
-            .ok_or_else(|| AppError::Msg("session not found".into()))?
-    };
+    let cancel = with_session(&state, &session_id, |s| s.cancel.clone())?;
     cancel.cancel_query(NoTls).await?;
     Ok(())
 }
@@ -270,8 +283,8 @@ pub async fn get_tables(
             _ => "table",
         };
         out.push(TableInfo {
-            schema: row[0].clone().unwrap_or_default(),
-            name: row[1].clone().unwrap_or_default(),
+            schema: cell(row, 0),
+            name: cell(row, 1),
             kind: kind.to_string(),
         });
     }
@@ -310,9 +323,9 @@ pub async fn get_all_columns(
     let mut out: Vec<TableColumns> = Vec::new();
     // Rows arrive ordered by schema+table, so grouping consecutively works.
     for row in exec.results.iter().flat_map(|r| r.rows.iter()) {
-        let schema = row[0].clone().unwrap_or_default();
-        let table = row[1].clone().unwrap_or_default();
-        let column = row[2].clone().unwrap_or_default();
+        let schema = cell(row, 0);
+        let table = cell(row, 1);
+        let column = cell(row, 2);
         match out.last_mut() {
             Some(last) if last.schema == schema && last.table == table => {
                 last.columns.push(column);
@@ -356,6 +369,18 @@ async fn introspect_rows(
     Ok(exec.results.into_iter().flat_map(|r| r.rows).collect())
 }
 
+/// First column of the first row — for single-value catalog lookups.
+async fn introspect_scalar(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    sql: &str,
+) -> Result<Option<String>, AppError> {
+    Ok(introspect_rows(state, session_id, sql)
+        .await?
+        .first()
+        .and_then(|r| r[0].clone()))
+}
+
 #[tauri::command]
 pub async fn get_columns(
     state: State<'_, AppState>,
@@ -368,10 +393,10 @@ pub async fn get_columns(
     Ok(rows
         .into_iter()
         .map(|row| ColumnInfo {
-            name: row[0].clone().unwrap_or_default(),
-            data_type: row[1].clone().unwrap_or_default(),
-            nullable: row[2].as_deref() == Some("true"),
-            is_pk: row[3].as_deref() == Some("true"),
+            name: cell(&row, 0),
+            data_type: cell(&row, 1),
+            nullable: cell_bool(&row, 2),
+            is_pk: cell_bool(&row, 3),
             default_expr: row[4].clone(),
             comment: row[5].clone(),
         })
@@ -391,25 +416,21 @@ pub async fn get_table_ddl(
     let rel = format!("{}::regclass", regclass_literal(&schema, &table));
     let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
 
-    let kind = introspect_rows(
+    let kind = introspect_scalar(
         &state,
         &session_id,
         &format!("SELECT relkind::text FROM pg_class WHERE oid = {rel}"),
     )
     .await?
-    .first()
-    .and_then(|r| r[0].clone())
     .unwrap_or_default();
 
     if kind == "v" || kind == "m" {
-        let body = introspect_rows(
+        let body = introspect_scalar(
             &state,
             &session_id,
             &format!("SELECT pg_get_viewdef({rel}, true)"),
         )
         .await?
-        .first()
-        .and_then(|r| r[0].clone())
         .unwrap_or_default();
         let head = if kind == "m" {
             "CREATE MATERIALIZED VIEW"
@@ -434,11 +455,7 @@ pub async fn get_table_ddl(
     .await?;
     let mut lines: Vec<String> = Vec::new();
     for row in &cols {
-        let mut line = format!(
-            "  {} {}",
-            db::quote_ident(row[0].as_deref().unwrap_or_default()),
-            row[1].as_deref().unwrap_or_default()
-        );
+        let mut line = format!("  {} {}", db::quote_ident(&cell(row, 0)), cell(row, 1));
         let default = row[3].as_deref();
         match (row[5].as_deref(), row[4].as_deref()) {
             (Some("s"), _) => line.push_str(&format!(
@@ -453,7 +470,7 @@ pub async fn get_table_ddl(
                 }
             }
         }
-        if row[2].as_deref() == Some("true") {
+        if cell_bool(row, 2) {
             line.push_str(" NOT NULL");
         }
         lines.push(line);
@@ -473,21 +490,19 @@ pub async fn get_table_ddl(
     for row in &cons {
         lines.push(format!(
             "  CONSTRAINT {} {}",
-            db::quote_ident(row[0].as_deref().unwrap_or_default()),
-            row[1].as_deref().unwrap_or_default()
+            db::quote_ident(&cell(row, 0)),
+            cell(row, 1)
         ));
     }
 
     let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n)", lines.join(",\n"));
     if kind == "p" {
-        if let Some(part) = introspect_rows(
+        if let Some(part) = introspect_scalar(
             &state,
             &session_id,
             &format!("SELECT pg_get_partkeydef({rel})"),
         )
         .await?
-        .first()
-        .and_then(|r| r[0].clone())
         {
             ddl.push_str(&format!(" PARTITION BY {part}"));
         }
@@ -511,14 +526,12 @@ pub async fn get_table_ddl(
         }
     }
 
-    if let Some(c) = introspect_rows(
+    if let Some(c) = introspect_scalar(
         &state,
         &session_id,
         &format!("SELECT obj_description({rel}, 'pg_class')"),
     )
     .await?
-    .first()
-    .and_then(|r| r[0].clone())
     {
         ddl.push_str(&format!(
             "\nCOMMENT ON TABLE {qualified} IS {};",
@@ -541,7 +554,7 @@ pub async fn get_table_ddl(
         if let Some(c) = row[1].as_deref() {
             ddl.push_str(&format!(
                 "\nCOMMENT ON COLUMN {qualified}.{} IS {};",
-                db::quote_ident(row[0].as_deref().unwrap_or_default()),
+                db::quote_ident(&cell(row, 0)),
                 db::quote_literal(c)
             ));
         }
@@ -572,11 +585,11 @@ pub async fn get_indexes(
     Ok(rows
         .into_iter()
         .map(|row| IndexInfo {
-            name: row[0].clone().unwrap_or_default(),
-            unique: row[1].as_deref() == Some("true"),
-            primary: row[2].as_deref() == Some("true"),
+            name: cell(&row, 0),
+            unique: cell_bool(&row, 1),
+            primary: cell_bool(&row, 2),
             columns: row[3].clone(),
-            definition: row[4].clone().unwrap_or_default(),
+            definition: cell(&row, 4),
         })
         .collect())
 }
@@ -604,12 +617,12 @@ pub async fn get_relations(
     Ok(rows
         .into_iter()
         .map(|row| RelationInfo {
-            name: row[0].clone().unwrap_or_default(),
+            name: cell(&row, 0),
             columns: row[1].clone(),
-            ref_table: row[2].clone().unwrap_or_default(),
+            ref_table: cell(&row, 2),
             ref_columns: row[3].clone(),
-            on_update: row[4].clone().unwrap_or_default(),
-            on_delete: row[5].clone().unwrap_or_default(),
+            on_update: cell(&row, 4),
+            on_delete: cell(&row, 5),
         })
         .collect())
 }
@@ -635,10 +648,10 @@ pub async fn get_triggers(
     Ok(rows
         .into_iter()
         .map(|row| TriggerInfo {
-            name: row[0].clone().unwrap_or_default(),
-            timing: row[1].clone().unwrap_or_default(),
-            events: row[2].clone().unwrap_or_default(),
-            definition: row[3].clone().unwrap_or_default(),
+            name: cell(&row, 0),
+            timing: cell(&row, 1),
+            events: cell(&row, 2),
+            definition: cell(&row, 3),
         })
         .collect())
 }
@@ -677,16 +690,7 @@ pub async fn get_table_page(
     sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
     let exec = db::execute(&client, &sql, limit as usize).await?;
-    let result = exec
-        .results
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| StatementResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: None,
-            truncated: false,
-        });
+    let result = exec.results.into_iter().next().unwrap_or_default();
 
     let approx_sql = format!(
         "SELECT reltuples::bigint FROM pg_class WHERE oid = {}::regclass",

@@ -53,16 +53,18 @@ function HistoryRow({
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={() => deleteHistoryEntry(entry.id)}>
-          <X size={13} className="text-zinc-500" /> Delete entry
+        <ContextMenuItem icon={X} onClick={() => deleteHistoryEntry(entry.id)}>
+          Delete entry
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
+          icon={Trash2}
+          iconClassName="text-red-400/80"
           onClick={() => {
             if (confirm("Clear the whole query history?")) clearHistory();
           }}
         >
-          <Trash2 size={13} className="text-red-400/80" /> Clear all history
+          Clear all history
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

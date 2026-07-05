@@ -2,6 +2,7 @@ pub mod biometric;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod fsio;
 pub mod store;
 pub mod tunnel;
 pub mod vault;

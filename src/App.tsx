@@ -10,6 +10,7 @@ import { StructureTab } from "./components/StructureTab";
 import { TableTab } from "./components/TableTab";
 import { TabsBar } from "./components/TabsBar";
 import { VaultGate } from "./components/VaultGate";
+import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
 
 // ⌘K chord window: a ⌘W within this many ms closes ALL tabs.
@@ -46,8 +47,7 @@ function App() {
       const key = e.key.toLowerCase();
 
       if (e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-        const connected = s.profiles.filter((p) => s.sessions[p.id]);
-        const target = connected[Number(e.key) - 1];
+        const target = connectedProfiles(s.profiles, s.sessions)[Number(e.key) - 1];
         if (!target) return;
         e.preventDefault();
         s.selectProfile(target.id);

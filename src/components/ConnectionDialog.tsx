@@ -66,6 +66,60 @@ function fromProfile(p: Profile): FormState {
   };
 }
 
+/** Secret argument for save/test: null = keep saved, "" = forget, else replace. */
+const secretArg = (value: string, clear: boolean) => value || (clear ? "" : null);
+
+/** Password input that can also stage forgetting the stored secret: while
+ *  empty and a secret is saved, an ✕ appears that stages the removal. */
+function SecretInput({
+  value,
+  hasSaved,
+  cleared,
+  emptyPlaceholder = "",
+  clearTitle,
+  onChange,
+  onClear,
+}: {
+  value: string;
+  /** A secret is stored in the vault for the profile being edited. */
+  hasSaved: boolean;
+  /** Removal is staged (applied on save). */
+  cleared: boolean;
+  emptyPlaceholder?: string;
+  clearTitle: string;
+  onChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  const canClear = hasSaved && !cleared && !value;
+  return (
+    <div className="relative">
+      <Input
+        type="password"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={
+          cleared
+            ? "(removed on save)"
+            : hasSaved
+              ? "•••••• (keep saved)"
+              : emptyPlaceholder
+        }
+        className={canClear ? "pr-6" : undefined}
+      />
+      {canClear && (
+        <button
+          type="button"
+          title={clearTitle}
+          onClick={onClear}
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:text-red-400 transition-colors"
+        >
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function toProfile(form: FormState, existing?: Profile): Profile {
   return {
     id: existing?.id ?? "",
@@ -115,17 +169,8 @@ export function ConnectionDialog() {
     setTestResult(null);
   };
 
-  // null = keep saved, "" = forget saved, non-empty = replace.
-  const passwordArg = form.password
-    ? form.password
-    : form.clearPassword
-      ? ""
-      : null;
-  const sshPassphraseArg = form.sshPassphrase
-    ? form.sshPassphrase
-    : form.clearSshPassphrase
-      ? ""
-      : null;
+  const passwordArg = secretArg(form.password, form.clearPassword);
+  const sshPassphraseArg = secretArg(form.sshPassphrase, form.clearSshPassphrase);
 
   const onTest = async () => {
     setTesting(true);
@@ -223,37 +268,14 @@ export function ConnectionDialog() {
               />
             </Field>
             <Field label="Password">
-              <div className="relative">
-                <Input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => set({ password: e.target.value })}
-                  placeholder={
-                    form.clearPassword
-                      ? "(removed on save)"
-                      : editing?.hasPassword
-                        ? "•••••• (keep saved)"
-                        : ""
-                  }
-                  className={
-                    editing?.hasPassword && !form.clearPassword && !form.password
-                      ? "pr-6"
-                      : undefined
-                  }
-                />
-                {editing?.hasPassword &&
-                  !form.clearPassword &&
-                  !form.password && (
-                    <button
-                      type="button"
-                      title="Forget saved password"
-                      onClick={() => set({ clearPassword: true })}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:text-red-400 transition-colors"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-              </div>
+              <SecretInput
+                value={form.password}
+                hasSaved={Boolean(editing?.hasPassword)}
+                cleared={form.clearPassword}
+                clearTitle="Forget saved password"
+                onChange={(password) => set({ password })}
+                onClear={() => set({ clearPassword: true })}
+              />
             </Field>
           </div>
 
@@ -321,39 +343,15 @@ export function ConnectionDialog() {
                   />
                 </Field>
                 <Field label="Key passphrase (optional)">
-                  <div className="relative">
-                    <Input
-                      type="password"
-                      value={form.sshPassphrase}
-                      onChange={(e) => set({ sshPassphrase: e.target.value })}
-                      placeholder={
-                        form.clearSshPassphrase
-                          ? "(removed on save)"
-                          : editing?.hasSshPassphrase
-                            ? "•••••• (keep saved)"
-                            : "if the key is encrypted"
-                      }
-                      className={
-                        editing?.hasSshPassphrase &&
-                        !form.clearSshPassphrase &&
-                        !form.sshPassphrase
-                          ? "pr-6"
-                          : undefined
-                      }
-                    />
-                    {editing?.hasSshPassphrase &&
-                      !form.clearSshPassphrase &&
-                      !form.sshPassphrase && (
-                        <button
-                          type="button"
-                          title="Forget saved passphrase"
-                          onClick={() => set({ clearSshPassphrase: true })}
-                          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:text-red-400 transition-colors"
-                        >
-                          <X size={12} />
-                        </button>
-                      )}
-                  </div>
+                  <SecretInput
+                    value={form.sshPassphrase}
+                    hasSaved={Boolean(editing?.hasSshPassphrase)}
+                    cleared={form.clearSshPassphrase}
+                    emptyPlaceholder="if the key is encrypted"
+                    clearTitle="Forget saved passphrase"
+                    onChange={(sshPassphrase) => set({ sshPassphrase })}
+                    onClear={() => set({ clearSshPassphrase: true })}
+                  />
                 </Field>
               </div>
               <Field label="Identity file (optional)">

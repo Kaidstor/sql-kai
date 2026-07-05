@@ -169,6 +169,14 @@ export function ResultsGrid({
   const gridRef = useRef<HTMLDivElement>(null);
   const focusGrid = () => gridRef.current?.focus();
 
+  /** Focuses a single cell, replacing any row selection. */
+  const focusCell = (ri: number, ci: number) => {
+    setSelected(new Set());
+    setAnchor(null);
+    setFocused({ row: ri, col: ci });
+    setCellSel({ a: { row: ri, col: ci }, b: { row: ri, col: ci } });
+  };
+
   // Mouse-drag cell selection: anchor on mousedown, extend while the button
   // is held over other cells; mouseup anywhere (incl. outside) ends it.
   const dragSel = useRef(false);
@@ -324,14 +332,16 @@ export function ResultsGrid({
 
   const copied = (what: string) => showToast(what, "info");
 
+  /** Copies and reports success in the status bar. */
+  const copyAndToast = (text: string, message: string) =>
+    void copyText(text).then((ok) => ok && copied(message));
+
   const copyRows = (sep: string, suffix: string) => {
     if (!n) return;
     const text = selRows
       .map((i) => result.rows[i].map((v) => v ?? "").join(sep))
       .join("\n");
-    void copyText(text).then(
-      (ok) => ok && copied(`Copied ${n} row(s) ${suffix}`),
-    );
+    copyAndToast(text, `Copied ${n} row(s) ${suffix}`);
   };
 
   const copyJson = () => {
@@ -339,8 +349,9 @@ export function ResultsGrid({
     const objs = selRows.map((i) =>
       Object.fromEntries(result.columns.map((c, ci) => [c, result.rows[i][ci]])),
     );
-    void copyText(JSON.stringify(n === 1 ? objs[0] : objs, null, 2)).then(
-      (ok) => ok && copied(`Copied ${n} row(s) as JSON`),
+    copyAndToast(
+      JSON.stringify(n === 1 ? objs[0] : objs, null, 2),
+      `Copied ${n} row(s) as JSON`,
     );
   };
 
@@ -356,16 +367,14 @@ export function ResultsGrid({
           .map((v) => (v === null ? "NULL" : quoteLit(v)))
           .join(", ")})`,
     );
-    const sql = `INSERT INTO ${rel} (${cols}) VALUES\n${tuples.join(",\n")};`;
-    void copyText(sql).then(
-      (ok) => ok && copied(`Copied ${n} row(s) as INSERT`),
+    copyAndToast(
+      `INSERT INTO ${rel} (${cols}) VALUES\n${tuples.join(",\n")};`,
+      `Copied ${n} row(s) as INSERT`,
     );
   };
 
-  const copyCellAt = (ri: number, ci: number) => {
-    const value = result.rows[ri]?.[ci] ?? "";
-    void copyText(value).then((ok) => ok && copied("Cell copied"));
-  };
+  const copyCellAt = (ri: number, ci: number) =>
+    copyAndToast(result.rows[ri]?.[ci] ?? "", "Cell copied");
 
   const copyCell = () => {
     if (!menuCell || menuCell.col < 0) return;
@@ -386,9 +395,7 @@ export function ResultsGrid({
           .join("\t"),
       );
     }
-    void copyText(lines.join("\n")).then(
-      (ok) => ok && copied(`Copied ${rectCount} cell(s) as TSV`),
-    );
+    copyAndToast(lines.join("\n"), `Copied ${rectCount} cell(s) as TSV`);
   };
 
   const copyAll = () => {
@@ -396,9 +403,7 @@ export function ResultsGrid({
       result.columns.join("\t"),
       ...result.rows.map((r) => r.map((v) => v ?? "").join("\t")),
     ].join("\n");
-    void copyText(text).then(
-      (ok) => ok && copied(`Copied ${result.rows.length} row(s) with header`),
-    );
+    copyAndToast(text, `Copied ${result.rows.length} row(s) with header`);
   };
 
   const dirty = Boolean(
@@ -759,20 +764,16 @@ export function ResultsGrid({
                         key={cell.id}
                         title={shown ?? undefined}
                         onClick={(e) => {
-                          // cell selection replaces row selection
-                          setSelected(new Set());
-                          setAnchor(null);
                           // shift+click grows a cell range from the anchor
+                          // (cell selection replaces row selection either way)
                           const anchorCell = cellSel?.a ?? focused;
                           if (e.shiftKey && anchorCell) {
+                            setSelected(new Set());
+                            setAnchor(null);
                             setCellSel({ a: anchorCell, b: { row: ri, col: ci } });
                             return;
                           }
-                          setFocused({ row: ri, col: ci });
-                          setCellSel({
-                            a: { row: ri, col: ci },
-                            b: { row: ri, col: ci },
-                          });
+                          focusCell(ri, ci);
                         }}
                         onMouseDown={(e) => {
                           if (
@@ -793,13 +794,7 @@ export function ResultsGrid({
                             focusGrid();
                           }
                           dragSel.current = true;
-                          setSelected(new Set());
-                          setAnchor(null);
-                          setFocused({ row: ri, col: ci });
-                          setCellSel({
-                            a: { row: ri, col: ci },
-                            b: { row: ri, col: ci },
-                          });
+                          focusCell(ri, ci);
                         }}
                         onMouseEnter={() => {
                           // a gutter-started drag keeps extending the row
@@ -885,47 +880,40 @@ export function ResultsGrid({
       </ContextMenuTrigger>
 
       <ContextMenuContent>
-        <ContextMenuItem disabled={!menuCellOk} onClick={copyCell}>
-          <Copy size={13} className="text-zinc-500" />
+        <ContextMenuItem icon={Copy} disabled={!menuCellOk} onClick={copyCell}>
           Copy cell
           {rectCount <= 1 && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
         </ContextMenuItem>
         {rectCount > 1 && (
-          <ContextMenuItem onClick={copyCells}>
-            <Sheet size={13} className="text-zinc-500" />
+          <ContextMenuItem icon={Sheet} onClick={copyCells}>
             Copy {rectCount} cells (TSV)
             <ContextMenuShortcut>⌘C</ContextMenuShortcut>
           </ContextMenuItem>
         )}
-        <ContextMenuItem disabled={!n} onClick={() => copyRows(" ", "")}>
-          <Copy size={13} className="text-zinc-500" />
+        <ContextMenuItem icon={Copy} disabled={!n} onClick={() => copyRows(" ", "")}>
           Copy {rowsLabel}
         </ContextMenuItem>
-        <ContextMenuItem disabled={!n} onClick={() => copyRows("\t", "as TSV")}>
-          <Sheet size={13} className="text-zinc-500" />
+        <ContextMenuItem icon={Sheet} disabled={!n} onClick={() => copyRows("\t", "as TSV")}>
           Copy {rowsLabel} as TSV
         </ContextMenuItem>
-        <ContextMenuItem disabled={!n} onClick={copyJson}>
-          <Braces size={13} className="text-zinc-500" />
+        <ContextMenuItem icon={Braces} disabled={!n} onClick={copyJson}>
           Copy {rowsLabel} as JSON
         </ContextMenuItem>
         {insertTarget && (
-          <ContextMenuItem disabled={!n} onClick={copyInsert}>
-            <Database size={13} className="text-zinc-500" />
+          <ContextMenuItem icon={Database} disabled={!n} onClick={copyInsert}>
             Copy {rowsLabel} as INSERT
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem disabled={!result.rows.length} onClick={copyAll}>
-          <Sheet size={13} className="text-zinc-500" />
+        <ContextMenuItem icon={Sheet} disabled={!result.rows.length} onClick={copyAll}>
           Copy all with header (TSV)
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
+          icon={SquarePen}
           disabled={!menuCellOk}
           onClick={() => menuCell && openCellDialog(menuCell.row, menuCell.col)}
         >
-          <SquarePen size={13} className="text-zinc-500" />
           Open cell in editor
           <ContextMenuShortcut>⌘⏎</ContextMenuShortcut>
         </ContextMenuItem>
@@ -933,23 +921,24 @@ export function ResultsGrid({
           <>
             <ContextMenuSeparator />
             <ContextMenuItem
+              icon={Pencil}
               disabled={!canEdit || !menuCellOk}
               onClick={() => menuCell && startEdit(menuCell.row, menuCell.col)}
             >
-              <Pencil size={13} className="text-zinc-500" />
               Edit cell
             </ContextMenuItem>
             <ContextMenuItem
+              icon={Eraser}
               disabled={!canEdit || !menuCellOk}
               onClick={() =>
                 menuCell && editing.onEdit(menuCell.row, menuCell.col, null)
               }
             >
-              <Eraser size={13} className="text-zinc-500" />
               Set cell NULL
             </ContextMenuItem>
             {menuCellStaged && (
               <ContextMenuItem
+                icon={Undo2}
                 onClick={() =>
                   menuCell &&
                   editing.onEdit(
@@ -959,34 +948,25 @@ export function ResultsGrid({
                   )
                 }
               >
-                <Undo2 size={13} className="text-zinc-500" />
                 Revert cell
               </ContextMenuItem>
             )}
             <ContextMenuItem
+              icon={CopyPlus}
               disabled={!canEdit || !n}
               onClick={() => editing.onDuplicate(selRows)}
               title="Copies stay pending until Apply; generated keys are regenerated"
             >
-              <CopyPlus size={13} className="text-zinc-500" />
               Duplicate {rowsLabel}
               <ContextMenuShortcut>⌘D</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuItem
+              icon={allSelectedDeleted ? Undo2 : Trash2}
+              iconClassName={allSelectedDeleted ? undefined : "text-red-400/80"}
               disabled={!canEdit || !n}
               onClick={() => editing.onToggleDelete(selRows, !allSelectedDeleted)}
             >
-              {allSelectedDeleted ? (
-                <>
-                  <Undo2 size={13} className="text-zinc-500" />
-                  Restore {rowsLabel}
-                </>
-              ) : (
-                <>
-                  <Trash2 size={13} className="text-red-400/80" />
-                  Delete {rowsLabel}
-                </>
-              )}
+              {allSelectedDeleted ? "Restore" : "Delete"} {rowsLabel}
               <ContextMenuShortcut>⌫</ContextMenuShortcut>
             </ContextMenuItem>
           </>
@@ -1034,13 +1014,7 @@ export function ResultsGrid({
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              <Button
-                onClick={() =>
-                  void copyText(dialog.text).then(
-                    (ok) => ok && copied("Cell copied"),
-                  )
-                }
-              >
+              <Button onClick={() => copyAndToast(dialog.text, "Cell copied")}>
                 Copy
               </Button>
               {canEdit && (

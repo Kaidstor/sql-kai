@@ -1,18 +1,15 @@
 import {
-  Check,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileCode2,
-  Loader2,
-  RefreshCw,
   X,
 } from "lucide-react";
 import { useEffect } from "react";
 import { quoteIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
 import { ResultsGrid } from "./ResultsGrid";
-import { Button, ErrorPre, IconBtn, Select } from "./ui";
+import { ErrorPre, IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
 
 function formatApprox(n: number): string {
   if (n < 0) return "~?";
@@ -106,17 +103,11 @@ export function TableTab({ tab }: { tab: Tab }) {
         <span className="font-mono text-zinc-300">
           {state.schema}.{state.table}
         </span>
-        <IconBtn
+        <RefreshBtn
           title="Refresh (⌘R)"
+          loading={state.loading}
           onClick={() => void loadTablePage(tab.id)}
-          disabled={state.loading}
-        >
-          {state.loading ? (
-            <Loader2 size={13} className="animate-spin" />
-          ) : (
-            <RefreshCw size={13} />
-          )}
-        </IconBtn>
+        />
         <IconBtn
           title="Current view as query — open this grid's SQL in a new tab"
           onClick={() =>
@@ -127,19 +118,14 @@ export function TableTab({ tab }: { tab: Tab }) {
         </IconBtn>
 
         {dirty > 0 && (
-          <div className="flex items-center gap-1.5 pl-1">
-            <Button
-              variant="primary"
-              disabled={state.loading}
-              onClick={() => void applyEdits(tab.id)}
-              title="⌘S — runs INSERT/UPDATE/DELETE in one transaction"
-            >
-              <Check size={13} /> Apply {dirty}
-            </Button>
-            <Button title="Esc" onClick={() => discardEdits(tab.id)}>
-              Discard
-            </Button>
-          </div>
+          <PendingChangesBar
+            count={dirty}
+            busy={state.loading}
+            applyTitle="⌘S — runs INSERT/UPDATE/DELETE in one transaction"
+            discardTitle="Esc"
+            onApply={() => void applyEdits(tab.id)}
+            onDiscard={() => discardEdits(tab.id)}
+          />
         )}
         {isView ? (
           <span className="pl-1 text-[11px] text-zinc-600">

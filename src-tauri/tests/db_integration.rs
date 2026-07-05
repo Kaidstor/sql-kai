@@ -17,9 +17,7 @@ fn test_profile() -> Profile {
         ssh: None,
         group: None,
         color: None,
-        password_plain: Some("testpw".into()),
-        has_password: true,
-        ssh_passphrase_plain: None,
+        has_password: false,
         has_ssh_passphrase: false,
     }
 }
@@ -27,7 +25,10 @@ fn test_profile() -> Profile {
 #[tokio::test]
 #[ignore]
 async fn connect_execute_paginate() {
-    let connected = db::connect(&test_profile(), None, None).await.expect("connect");
+    // the password rides in as an override — the vault stays out of the test
+    let connected = db::connect(&test_profile(), Some("testpw".into()), None)
+        .await
+        .expect("connect");
     assert!(!connected.server_version.is_empty());
     let client = connected.session.client.clone();
 

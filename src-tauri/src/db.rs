@@ -58,7 +58,7 @@ pub async fn connect(
         .port(port)
         .user(&profile.user)
         .dbname(&profile.database)
-        .application_name("sql-tauri")
+        .application_name("sql-kai")
         .connect_timeout(Duration::from_secs(10));
     let password = password_override.or_else(|| store::get_password(profile));
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
@@ -101,7 +101,7 @@ pub async fn connect(
     })
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementResult {
     pub columns: Vec<String>,
@@ -111,12 +111,11 @@ pub struct StatementResult {
 }
 
 impl StatementResult {
-    fn new() -> Self {
+    /// Empty result carrying just the column names.
+    fn with_columns(columns: Vec<String>) -> Self {
         StatementResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: None,
-            truncated: false,
+            columns,
+            ..Default::default()
         }
     }
 }
@@ -139,15 +138,15 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
     for msg in messages {
         match msg {
             SimpleQueryMessage::RowDescription(cols) => {
-                let mut res = StatementResult::new();
-                res.columns = cols.iter().map(|c| c.name().to_string()).collect();
-                current = Some(res);
+                current = Some(StatementResult::with_columns(
+                    cols.iter().map(|c| c.name().to_string()).collect(),
+                ));
             }
             SimpleQueryMessage::Row(row) => {
                 let cur = current.get_or_insert_with(|| {
-                    let mut res = StatementResult::new();
-                    res.columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                    res
+                    StatementResult::with_columns(
+                        row.columns().iter().map(|c| c.name().to_string()).collect(),
+                    )
                 });
                 if cur.rows.len() < max_rows {
                     cur.rows
@@ -157,7 +156,7 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
                 }
             }
             SimpleQueryMessage::CommandComplete(n) => {
-                let mut res = current.take().unwrap_or_else(StatementResult::new);
+                let mut res = current.take().unwrap_or_default();
                 res.rows_affected = Some(n);
                 results.push(res);
             }

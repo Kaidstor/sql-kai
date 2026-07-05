@@ -1,6 +1,9 @@
 import { ContextMenu as BaseMenu } from "@base-ui/react/context-menu";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ComponentType } from "react";
 import { cn } from "./ui";
+
+/** Lucide-compatible icon component. */
+type MenuIcon = ComponentType<{ size?: number | string; className?: string }>;
 
 export const ContextMenu = BaseMenu.Root;
 export const ContextMenuTrigger = BaseMenu.Trigger;
@@ -33,8 +36,15 @@ export function ContextMenuContent({
 
 export function ContextMenuItem({
   className,
+  icon: Icon,
+  iconClassName,
+  children,
   ...props
-}: ComponentProps<typeof BaseMenu.Item>) {
+}: ComponentProps<typeof BaseMenu.Item> & {
+  /** Leading 13px icon, zinc-500 unless iconClassName says otherwise. */
+  icon?: MenuIcon;
+  iconClassName?: string;
+}) {
   return (
     <BaseMenu.Item
       className={cn(
@@ -45,7 +55,10 @@ export function ContextMenuItem({
         className,
       )}
       {...props}
-    />
+    >
+      {Icon && <Icon size={13} className={iconClassName ?? "text-zinc-500"} />}
+      {children}
+    </BaseMenu.Item>
   );
 }
 

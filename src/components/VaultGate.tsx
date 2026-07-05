@@ -1,8 +1,33 @@
 import { Fingerprint, Loader2, Lock, ShieldAlert, ShieldPlus } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { errText } from "../lib/api";
 import { useApp } from "../lib/store";
-import { Button, Field, Input } from "./ui";
+import { Button, Field, Input, cn } from "./ui";
+
+/** Full-width gate action; shows a spinner while busy. */
+function WideButton({
+  busy,
+  className,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { busy: boolean }) {
+  return (
+    <Button
+      variant="primary"
+      className={cn("w-full justify-center py-1.5", className)}
+      {...props}
+    >
+      {busy && <Loader2 size={13} className="animate-spin" />}
+      {children}
+    </Button>
+  );
+}
 
 // Auto-prompt Touch ID only once per app launch: on start it's welcome, but
 // right after an explicit Lock it would feel like the app fighting the user.
@@ -84,18 +109,16 @@ function ErrorScreen({ message }: { message: string }) {
         <div className="selectable rounded-md border border-red-900 bg-red-950/40 px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-red-300">
           {message}
         </div>
-        <Button
-          variant="primary"
-          className="w-full justify-center py-1.5"
+        <WideButton
+          busy={busy}
           disabled={busy}
           onClick={() => {
             setBusy(true);
             void init().finally(() => setBusy(false));
           }}
         >
-          {busy && <Loader2 size={13} className="animate-spin" />}
           Retry
-        </Button>
+        </WideButton>
       </div>
     </Shell>
   );
@@ -158,15 +181,9 @@ function SetupScreen() {
           </div>
         )}
         {error && <div className="text-[11px] text-red-400">{error}</div>}
-        <Button
-          variant="primary"
-          className="w-full justify-center py-1.5"
-          disabled={!canSubmit}
-          onClick={() => void submit()}
-        >
-          {busy && <Loader2 size={13} className="animate-spin" />}
+        <WideButton busy={busy} disabled={!canSubmit} onClick={() => void submit()}>
           Create vault
-        </Button>
+        </WideButton>
       </div>
     </Shell>
   );
@@ -231,16 +248,10 @@ function UnlockScreen() {
       <div className="space-y-3">
         {enrolled && (
           <>
-            <Button
-              variant="primary"
-              className="w-full justify-center py-1.5"
-              disabled={busy}
-              onClick={() => void bioUnlock()}
-            >
-              {busy && <Loader2 size={13} className="animate-spin" />}
+            <WideButton busy={busy} disabled={busy} onClick={() => void bioUnlock()}>
               {!busy && <Fingerprint size={14} />}
               Unlock with Touch ID
-            </Button>
+            </WideButton>
             <div className="flex items-center gap-2 text-[10px] text-zinc-600">
               <div className="h-px flex-1 bg-zinc-800" />
               or use the master password
@@ -273,21 +284,15 @@ function UnlockScreen() {
             lost, connections stay).
           </p>
         )}
-        <Button
+        <WideButton
+          busy={busy && !bioBusy.current}
           variant={enrolled ? "ghost" : "primary"}
-          className={
-            enrolled
-              ? "w-full justify-center py-1.5 border border-zinc-700"
-              : "w-full justify-center py-1.5"
-          }
+          className={enrolled ? "border border-zinc-700" : undefined}
           disabled={!pw || busy}
           onClick={() => void submit()}
         >
-          {busy && !bioBusy.current && (
-            <Loader2 size={13} className="animate-spin" />
-          )}
           Unlock
-        </Button>
+        </WideButton>
       </div>
     </Shell>
   );

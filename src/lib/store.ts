@@ -12,7 +12,7 @@ import {
   saveHistory,
   type ClosedTab,
 } from "./persist";
-import { quoteIdent, quoteLit } from "./sql";
+import { structureDdl, tableDml } from "./sqlgen";
 import type {
   ColumnInfo,
   ExecResult,
@@ -118,7 +118,7 @@ export interface Tab {
 
 interface Toast {
   message: string;
-  kind: "error" | "info";
+  kind: "error" | "info" | "success";
 }
 
 export type PaletteKind = "connections" | "queries";
@@ -292,52 +292,23 @@ function patchState<S extends Tab["state"]>(
 export const columnsKey = (profileId: string, schema: string, table: string) =>
   `${profileId}|${schema}.${table}`;
 
-/** Staged structure changes → DDL statements. Edits reference the ORIGINAL
- *  column name (renames run last), edits of dropped columns are skipped. */
-function structureDdl(st: StructureTabState): string[] {
-  const rel = `${quoteIdent(st.schema)}.${quoteIdent(st.table)}`;
-  const alter = (rest: string) => `ALTER TABLE ${rel} ${rest}`;
-  const drops = new Set(st.colDrops);
-  const stmts: string[] = [];
-  for (const [col, patch] of Object.entries(st.colEdits)) {
-    if (drops.has(col)) continue;
-    const c = quoteIdent(col);
-    if (patch.type) stmts.push(alter(`ALTER COLUMN ${c} TYPE ${patch.type}`));
-    if (patch.nullable !== undefined) {
-      stmts.push(
-        alter(`ALTER COLUMN ${c} ${patch.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`),
-      );
-    }
-    if (patch.default !== undefined) {
-      stmts.push(
-        alter(
-          patch.default
-            ? `ALTER COLUMN ${c} SET DEFAULT ${patch.default}`
-            : `ALTER COLUMN ${c} DROP DEFAULT`,
-        ),
-      );
-    }
-    if (patch.comment !== undefined) {
-      stmts.push(
-        `COMMENT ON COLUMN ${rel}.${c} IS ${patch.comment ? quoteLit(patch.comment) : "NULL"}`,
-      );
-    }
-    if (patch.name) stmts.push(alter(`RENAME COLUMN ${c} TO ${quoteIdent(patch.name)}`));
-  }
-  for (const col of st.colDrops) {
-    stmts.push(alter(`DROP COLUMN ${quoteIdent(col)}`));
-  }
-  for (const a of st.colAdds) {
-    stmts.push(
-      alter(
-        `ADD COLUMN ${quoteIdent(a.name)} ${a.type}` +
-          (a.nullable ? "" : " NOT NULL") +
-          (a.def ? ` DEFAULT ${a.def}` : ""),
-      ),
-    );
-  }
-  return stmts;
-}
+/** Blank table staging — for new tabs, discard, and post-apply resets. */
+const noTableEdits = (): Pick<
+  TableTabState,
+  "edits" | "deletes" | "inserts" | "applyFailed" | "applyError"
+> => ({
+  edits: {},
+  deletes: [],
+  inserts: [],
+  applyFailed: false,
+  applyError: undefined,
+});
+
+/** Blank structure staging. */
+const noStructureEdits = (): Pick<
+  StructureTabState,
+  "colEdits" | "colDrops" | "colAdds"
+> => ({ colEdits: {}, colDrops: [], colAdds: [] });
 
 export const useApp = create<AppStore>((set, get) => {
   /** Restores the persisted workspace for a profile; false if nothing restored.
@@ -396,6 +367,33 @@ export const useApp = create<AppStore>((set, get) => {
       : null;
   };
 
+  /** Immutably merges a patch into one tab's state (caller vouches for the kind). */
+  const patchTab = <S extends Tab["state"]>(tabId: string, patch: Partial<S>) =>
+    set((s) => ({ tabs: patchState<S>(s.tabs, tabId, patch) }));
+
+  /** Post-unlock tail shared by setup/unlock/Touch ID: optional biometric
+   *  enrollment, refreshed vault status, workspace load. */
+  const finishUnlock = async (enableBiometric: boolean) => {
+    if (enableBiometric) {
+      try {
+        await api.vaultEnableBiometric();
+      } catch (e) {
+        // Non-fatal: the vault works, only the fast path is missing.
+        get().showToast(`Touch ID not enabled: ${errText(e)}`);
+      }
+    }
+    set({ vault: await api.vaultStatus() });
+    await loadWorkspace();
+  };
+
+  /** Drops cached column info after DDL changed the table. */
+  const invalidateColumns = (profileId: string, schema: string, table: string) =>
+    set((s) => {
+      const tableColumns = { ...s.tableColumns };
+      delete tableColumns[columnsKey(profileId, schema, table)];
+      return { tableColumns };
+    });
+
   /** Data/structure tabs are per-relation singletons: focus if open, else create. */
   const openRelationTab = (
     kind: "table" | "structure",
@@ -429,9 +427,7 @@ export const useApp = create<AppStore>((set, get) => {
               pageSize: 100,
               orderDir: "asc",
               loading: false,
-              edits: {},
-              deletes: [],
-              inserts: [],
+              ...noTableEdits(),
             }
           : {
               kind: "structure",
@@ -439,9 +435,7 @@ export const useApp = create<AppStore>((set, get) => {
               table,
               section: "columns",
               loading: false,
-              colEdits: {},
-              colDrops: [],
-              colAdds: [],
+              ...noStructureEdits(),
             },
     };
     // no explicit fetch: the tab becomes active and loads itself on mount
@@ -512,35 +506,17 @@ export const useApp = create<AppStore>((set, get) => {
 
   setupVault: async (password, enableBiometric) => {
     await api.vaultSetup(password);
-    if (enableBiometric) {
-      try {
-        await api.vaultEnableBiometric();
-      } catch (e) {
-        // Non-fatal: the vault works, only the fast path is missing.
-        get().showToast(`Touch ID not enabled: ${errText(e)}`);
-      }
-    }
-    set({ vault: await api.vaultStatus() });
-    await loadWorkspace();
+    await finishUnlock(enableBiometric);
   },
 
   unlockVault: async (password, enableBiometric) => {
     await api.vaultUnlock(password);
-    if (enableBiometric) {
-      try {
-        await api.vaultEnableBiometric();
-      } catch (e) {
-        get().showToast(`Touch ID not enabled: ${errText(e)}`);
-      }
-    }
-    set({ vault: await api.vaultStatus() });
-    await loadWorkspace();
+    await finishUnlock(enableBiometric);
   },
 
   unlockVaultBiometric: async () => {
     await api.vaultUnlockBiometric();
-    set({ vault: await api.vaultStatus() });
-    await loadWorkspace();
+    await finishUnlock(false);
   },
 
   lockVault: async () => {
@@ -594,9 +570,7 @@ export const useApp = create<AppStore>((set, get) => {
       active.state.kind === "query" &&
       (!active.state.sql.trim() || active.state.sql === q.sql)
     ) {
-      set((st) => ({
-        tabs: patchState<QueryTabState>(st.tabs, active.id, { sql: q.sql }),
-      }));
+      patchTab<QueryTabState>(active.id, { sql: q.sql });
       get().linkQueryTab(active.id, q);
     } else {
       get().openQueryTab(profileId, q.sql, q.name, q.id);
@@ -786,7 +760,7 @@ export const useApp = create<AppStore>((set, get) => {
     openRelationTab("structure", profileId, schema, table),
 
   setStructureSection: (tabId, section) => {
-    set((s) => ({ tabs: patchState<StructureTabState>(s.tabs, tabId, { section }) }));
+    patchTab<StructureTabState>(tabId, { section });
     void get().loadStructure(tabId);
   },
 
@@ -796,39 +770,31 @@ export const useApp = create<AppStore>((set, get) => {
     const session = sessionFor(tab.profileId);
     if (!session) return;
     const { schema, table, section } = tab.state;
-    set((s) => ({
-      tabs: patchState<StructureTabState>(s.tabs, tabId, {
-        loading: true,
-        error: undefined,
+    const fetch: Record<
+      StructureSection,
+      () => Promise<Partial<StructureTabState>>
+    > = {
+      columns: async () => ({
+        columns: await api.getColumns(session.sessionId, schema, table),
       }),
-    }));
+      indexes: async () => ({
+        indexes: await api.getIndexes(session.sessionId, schema, table),
+      }),
+      relations: async () => ({
+        relations: await api.getRelations(session.sessionId, schema, table),
+      }),
+      triggers: async () => ({
+        triggers: await api.getTriggers(session.sessionId, schema, table),
+      }),
+    };
+    patchTab<StructureTabState>(tabId, { loading: true, error: undefined });
     try {
-      const patch: Partial<StructureTabState> = { loading: false };
-      if (section === "columns") {
-        patch.columns = await api.getColumns(session.sessionId, schema, table);
-      } else if (section === "indexes") {
-        patch.indexes = await api.getIndexes(session.sessionId, schema, table);
-      } else if (section === "relations") {
-        patch.relations = await api.getRelations(
-          session.sessionId,
-          schema,
-          table,
-        );
-      } else {
-        patch.triggers = await api.getTriggers(
-          session.sessionId,
-          schema,
-          table,
-        );
-      }
-      set((s) => ({ tabs: patchState<StructureTabState>(s.tabs, tabId, patch) }));
+      patchTab<StructureTabState>(tabId, {
+        loading: false,
+        ...(await fetch[section]()),
+      });
     } catch (e) {
-      set((s) => ({
-        tabs: patchState<StructureTabState>(s.tabs, tabId, {
-          loading: false,
-          error: errText(e),
-        }),
-      }));
+      patchTab<StructureTabState>(tabId, { loading: false, error: errText(e) });
     }
   },
 
@@ -845,12 +811,8 @@ export const useApp = create<AppStore>((set, get) => {
       return false;
     }
     // sidebar column cache is stale now
-    set((s) => {
-      const tableColumns = { ...s.tableColumns };
-      delete tableColumns[columnsKey(tab.profileId, schema, table)];
-      return { tableColumns };
-    });
-    get().showToast("Applied", "info");
+    invalidateColumns(tab.profileId, schema, table);
+    get().showToast("Applied", "success");
     await get().loadStructure(tabId);
     return true;
   },
@@ -869,7 +831,7 @@ export const useApp = create<AppStore>((set, get) => {
     const colEdits = { ...tab.state.colEdits };
     if (Object.keys(cur).length > 0) colEdits[column] = cur;
     else delete colEdits[column];
-    set((s) => ({ tabs: patchState<StructureTabState>(s.tabs, tabId, { colEdits }) }));
+    patchTab<StructureTabState>(tabId, { colEdits });
   },
 
   toggleColumnDrop: (tabId, column) => {
@@ -878,27 +840,23 @@ export const useApp = create<AppStore>((set, get) => {
     const colDrops = tab.state.colDrops.includes(column)
       ? tab.state.colDrops.filter((c) => c !== column)
       : [...tab.state.colDrops, column];
-    set((s) => ({ tabs: patchState<StructureTabState>(s.tabs, tabId, { colDrops }) }));
+    patchTab<StructureTabState>(tabId, { colDrops });
   },
 
   stageColumnAdd: (tabId, col) => {
     const tab = tabOf(tabId, "structure");
     if (!tab) return;
-    set((s) => ({
-      tabs: patchState<StructureTabState>(s.tabs, tabId, {
-        colAdds: [...tab.state.colAdds, col],
-      }),
-    }));
+    patchTab<StructureTabState>(tabId, {
+      colAdds: [...tab.state.colAdds, col],
+    });
   },
 
   unstageColumnAdd: (tabId, index) => {
     const tab = tabOf(tabId, "structure");
     if (!tab) return;
-    set((s) => ({
-      tabs: patchState<StructureTabState>(s.tabs, tabId, {
-        colAdds: tab.state.colAdds.filter((_, i) => i !== index),
-      }),
-    }));
+    patchTab<StructureTabState>(tabId, {
+      colAdds: tab.state.colAdds.filter((_, i) => i !== index),
+    });
   },
 
   discardStructureEdits: (tabId) => {
@@ -911,13 +869,7 @@ export const useApp = create<AppStore>((set, get) => {
     ) {
       return;
     }
-    set((s) => ({
-      tabs: patchState<StructureTabState>(s.tabs, tabId, {
-        colEdits: {},
-        colDrops: [],
-        colAdds: [],
-      }),
-    }));
+    patchTab<StructureTabState>(tabId, noStructureEdits());
     get().showToast("Pending changes discarded", "info");
   },
 
@@ -928,34 +880,20 @@ export const useApp = create<AppStore>((set, get) => {
     if (stmts.length === 0) return;
     const session = sessionFor(tab.profileId);
     if (!session) return;
-    set((s) => ({
-      tabs: patchState<StructureTabState>(s.tabs, tabId, { loading: true }),
-    }));
+    patchTab<StructureTabState>(tabId, { loading: true });
     // One simple-query message = one implicit transaction: atomic, and an
     // error auto-rolls-back without leaving the session in an aborted tx.
     try {
       await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
     } catch (e) {
-      set((s) => ({
-        tabs: patchState<StructureTabState>(s.tabs, tabId, { loading: false }),
-      }));
+      patchTab<StructureTabState>(tabId, { loading: false });
       get().showToast(errText(e)); // rolled back, edits stay staged
       return;
     }
     // clear staged + drop the stale sidebar column cache before reloading
-    set((s) => {
-      const tableColumns = { ...s.tableColumns };
-      delete tableColumns[columnsKey(tab.profileId, tab.state.schema, tab.state.table)];
-      return {
-        tableColumns,
-        tabs: patchState<StructureTabState>(s.tabs, tabId, {
-          colEdits: {},
-          colDrops: [],
-          colAdds: [],
-        }),
-      };
-    });
-    get().showToast(`Applied ${stmts.length} change(s)`, "info");
+    invalidateColumns(tab.profileId, tab.state.schema, tab.state.table);
+    patchTab<StructureTabState>(tabId, noStructureEdits());
+    get().showToast(`Applied ${stmts.length} change(s)`, "success");
     await get().loadStructure(tabId);
   },
 
@@ -988,14 +926,8 @@ export const useApp = create<AppStore>((set, get) => {
             tab.state.kind === "query"
               ? { ...tab.state, running: false }
               : tab.state.kind === "table"
-                ? { ...tab.state, loading: false, edits: {}, deletes: [], inserts: [] }
-                : {
-                    ...tab.state,
-                    loading: false,
-                    colEdits: {},
-                    colDrops: [],
-                    colAdds: [],
-                  };
+                ? { ...tab.state, loading: false, ...noTableEdits() }
+                : { ...tab.state, loading: false, ...noStructureEdits() };
           return { tab: { ...tab, state }, index };
         });
       const tabs = s.tabs.filter((t) => !idSet.has(t.id));
@@ -1086,11 +1018,9 @@ export const useApp = create<AppStore>((set, get) => {
       return { tabs };
     }),
 
-  setTabSql: (tabId, sql) =>
-    set((s) => ({ tabs: patchState<QueryTabState>(s.tabs, tabId, { sql }) })),
+  setTabSql: (tabId, sql) => patchTab<QueryTabState>(tabId, { sql }),
 
-  setTabMaxRows: (tabId, maxRows) =>
-    set((s) => ({ tabs: patchState<QueryTabState>(s.tabs, tabId, { maxRows }) })),
+  setTabMaxRows: (tabId, maxRows) => patchTab<QueryTabState>(tabId, { maxRows }),
 
   runQuery: async (tabId) => {
     const tab = tabOf(tabId, "query");
@@ -1121,12 +1051,7 @@ export const useApp = create<AppStore>((set, get) => {
         return { history };
       });
     };
-    set((s) => ({
-      tabs: patchState<QueryTabState>(s.tabs, tabId, {
-        running: true,
-        error: undefined,
-      }),
-    }));
+    patchTab<QueryTabState>(tabId, { running: true, error: undefined });
     try {
       const result = await api.executeSql(
         session.sessionId,
@@ -1134,19 +1059,15 @@ export const useApp = create<AppStore>((set, get) => {
         tab.state.maxRows,
       );
       pushHistory(true);
-      set((s) => ({
-        tabs: patchState<QueryTabState>(s.tabs, tabId, { result, running: false }),
-      }));
+      patchTab<QueryTabState>(tabId, { result, running: false });
     } catch (e) {
       pushHistory(false);
       const message = errText(e);
-      set((s) => ({
-        tabs: patchState<QueryTabState>(s.tabs, tabId, {
-          error: message,
-          result: undefined,
-          running: false,
-        }),
-      }));
+      patchTab<QueryTabState>(tabId, {
+        error: message,
+        result: undefined,
+        running: false,
+      });
       if (message.includes("connection lost")) {
         set((s) => {
           const sessions = { ...s.sessions };
@@ -1183,13 +1104,7 @@ export const useApp = create<AppStore>((set, get) => {
       return;
     }
     const next = { ...tab.state, ...patch };
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        ...patch,
-        loading: true,
-        error: undefined,
-      }),
-    }));
+    patchTab<TableTabState>(tabId, { ...patch, loading: true, error: undefined });
     try {
       const data = await api.getTablePage(
         session.sessionId,
@@ -1200,23 +1115,17 @@ export const useApp = create<AppStore>((set, get) => {
         next.orderBy,
         next.orderDir,
       );
-      set((s) => ({
-        tabs: patchState<TableTabState>(s.tabs, tabId, {
-          data,
-          loading: false,
-          edits: {},
-          deletes: [],
-          applyFailed: false,
-          applyError: undefined,
-        }),
-      }));
+      // Pending inserts survive a reload (not tied to row indices).
+      patchTab<TableTabState>(tabId, {
+        data,
+        loading: false,
+        edits: {},
+        deletes: [],
+        applyFailed: false,
+        applyError: undefined,
+      });
     } catch (e) {
-      set((s) => ({
-        tabs: patchState<TableTabState>(s.tabs, tabId, {
-          error: errText(e),
-          loading: false,
-        }),
-      }));
+      patchTab<TableTabState>(tabId, { error: errText(e), loading: false });
     }
   },
 
@@ -1231,7 +1140,7 @@ export const useApp = create<AppStore>((set, get) => {
     const edits = { ...st.edits };
     if (Object.keys(rowEdits).length > 0) edits[row] = rowEdits;
     else delete edits[row];
-    set((s) => ({ tabs: patchState<TableTabState>(s.tabs, tabId, { edits }) }));
+    patchTab<TableTabState>(tabId, { edits });
   },
 
   toggleRowDeletes: (tabId, rows, del) => {
@@ -1242,11 +1151,9 @@ export const useApp = create<AppStore>((set, get) => {
       if (del) next.add(r);
       else next.delete(r);
     }
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        deletes: [...next].sort((a, b) => a - b),
-      }),
-    }));
+    patchTab<TableTabState>(tabId, {
+      deletes: [...next].sort((a, b) => a - b),
+    });
   },
 
   duplicateRows: (tabId, rows) => {
@@ -1272,11 +1179,9 @@ export const useApp = create<AppStore>((set, get) => {
         cut.has(ci) ? undefined : v,
       ),
     }));
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        inserts: [...tab.state.inserts, ...copies],
-      }),
-    }));
+    patchTab<TableTabState>(tabId, {
+      inserts: [...tab.state.inserts, ...copies],
+    });
   },
 
   stageInsertCell: (tabId, index, col, value) => {
@@ -1287,17 +1192,15 @@ export const useApp = create<AppStore>((set, get) => {
         ? { ...row, values: row.values.map((v, ci) => (ci === col ? value : v)) }
         : row,
     );
-    set((s) => ({ tabs: patchState<TableTabState>(s.tabs, tabId, { inserts }) }));
+    patchTab<TableTabState>(tabId, { inserts });
   },
 
   removeInsertRow: (tabId, index) => {
     const tab = tabOf(tabId, "table");
     if (!tab) return;
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        inserts: tab.state.inserts.filter((_, i) => i !== index),
-      }),
-    }));
+    patchTab<TableTabState>(tabId, {
+      inserts: tab.state.inserts.filter((_, i) => i !== index),
+    });
   },
 
   discardEdits: (tabId) => {
@@ -1311,15 +1214,7 @@ export const useApp = create<AppStore>((set, get) => {
     ) {
       return;
     }
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        edits: {},
-        deletes: [],
-        inserts: [],
-        applyFailed: false,
-        applyError: undefined,
-      }),
-    }));
+    patchTab<TableTabState>(tabId, noTableEdits());
     get().showToast("Pending changes discarded", "info");
   },
 
@@ -1332,136 +1227,70 @@ export const useApp = create<AppStore>((set, get) => {
     if (!data) return;
     const session = sessionFor(tab.profileId);
     if (!session) return;
-    const rel = `${quoteIdent(st.schema)}.${quoteIdent(st.table)}`;
-    const stmts: string[] = [];
-
-    // UPDATE/DELETE match rows by primary key; INSERTs below don't need one.
-    if (Object.keys(st.edits).length > 0 || st.deletes.length > 0) {
-      const cols =
-        get().tableColumns[columnsKey(tab.profileId, st.schema, st.table)];
-      const pk = (cols ?? []).filter((c) => c.isPk);
-      if (pk.length === 0) {
-        get().showToast("Table has no primary key — editing is disabled");
-        return;
-      }
-      const colIdx = new Map(data.result.columns.map((c, i) => [c, i] as const));
-      const pkIdx: { name: string; idx: number }[] = [];
-      for (const c of pk) {
-        const idx = colIdx.get(c.name);
-        if (idx === undefined) {
-          get().showToast(`Primary key column "${c.name}" is missing from the page`);
-          return;
-        }
-        pkIdx.push({ name: c.name, idx });
-      }
-      // WHERE always uses the ORIGINAL row values, even if a pk cell was edited.
-      const cond = (ri: number) =>
-        pkIdx
-          .map(({ name, idx }) => {
-            const v = data.result.rows[ri][idx];
-            return v === null
-              ? `${quoteIdent(name)} IS NULL`
-              : `${quoteIdent(name)} = ${quoteLit(v)}`;
-          })
-          .join(" AND ");
-      const deletes = new Set(st.deletes);
-      for (const [riStr, rowEdits] of Object.entries(st.edits)) {
-        const ri = Number(riStr);
-        if (deletes.has(ri) || !data.result.rows[ri]) continue;
-        const sets = Object.entries(rowEdits).map(([ciStr, v]) => {
-          const name = data.result.columns[Number(ciStr)];
-          return `${quoteIdent(name)} = ${v === null ? "NULL" : quoteLit(v)}`;
-        });
-        stmts.push(`UPDATE ${rel} SET ${sets.join(", ")} WHERE ${cond(ri)}`);
-      }
-      for (const ri of deletes) {
-        if (data.result.rows[ri]) stmts.push(`DELETE FROM ${rel} WHERE ${cond(ri)}`);
-      }
+    const dml = tableDml(
+      st,
+      data,
+      get().tableColumns[columnsKey(tab.profileId, st.schema, st.table)],
+    );
+    if ("error" in dml) {
+      get().showToast(dml.error);
+      return;
     }
-
-    for (const row of st.inserts) {
-      const names: string[] = [];
-      const vals: string[] = [];
-      row.values.forEach((v, ci) => {
-        if (v === undefined) return; // generated — let the DB default it
-        names.push(quoteIdent(data.result.columns[ci]));
-        vals.push(v === null ? "NULL" : quoteLit(v));
-      });
-      stmts.push(
-        names.length > 0
-          ? `INSERT INTO ${rel} (${names.join(", ")}) VALUES (${vals.join(", ")})`
-          : `INSERT INTO ${rel} DEFAULT VALUES`,
-      );
-    }
-
+    const { stmts, updates, deletes } = dml;
     if (stmts.length === 0) return;
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        loading: true,
-        applyFailed: false,
-        applyError: undefined,
-      }),
-    }));
+    patchTab<TableTabState>(tabId, {
+      loading: true,
+      applyFailed: false,
+      applyError: undefined,
+    });
     // One simple-query message = one implicit transaction: atomic, and an
     // error auto-rolls-back without leaving the session in an aborted tx.
     try {
       await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
     } catch (e) {
-      set((s) => ({
-        tabs: patchState<TableTabState>(s.tabs, tabId, {
-          loading: false,
-          // the whole tx rolled back — every staged cell is unsaved
-          applyFailed: true,
-          applyError: errText(e),
-        }),
-      }));
+      patchTab<TableTabState>(tabId, {
+        loading: false,
+        // the whole tx rolled back — every staged cell is unsaved
+        applyFailed: true,
+        applyError: errText(e),
+      });
       get().showToast(errText(e)); // rolled back, edits stay staged
       return;
     }
-    get().showToast(`Applied ${stmts.length} change(s)`, "info");
+    const done = [
+      updates > 0 && `updated ${updates} row(s)`,
+      deletes > 0 && `deleted ${deletes} row(s)`,
+      st.inserts.length > 0 && `inserted ${st.inserts.length} row(s)`,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    get().showToast(done.charAt(0).toUpperCase() + done.slice(1), "success");
     // No auto-refetch: under a sort, reloading makes just-edited rows jump
     // to their new position. Patch the page in place instead; ⌘R re-syncs.
     // Inserts are the exception — the DB generated their keys/defaults, so
     // only a reload can show them.
     if (st.inserts.length > 0) {
-      set((s) => ({
-        tabs: patchState<TableTabState>(s.tabs, tabId, {
-          edits: {},
-          deletes: [],
-          inserts: [],
-          applyFailed: false,
-          applyError: undefined,
-        }),
-      }));
+      patchTab<TableTabState>(tabId, noTableEdits());
       await get().loadTablePage(tabId);
       return;
     }
-    const deleted = new Set(st.deletes);
+    const deletedRows = new Set(st.deletes);
     const rows = data.result.rows
       .map((row, ri) =>
         st.edits[ri]
           ? row.map((v, ci) => (st.edits[ri][ci] === undefined ? v : st.edits[ri][ci]))
           : row,
       )
-      .filter((_, ri) => !deleted.has(ri));
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, {
-        data: { ...data, result: { ...data.result, rows } },
-        loading: false,
-        edits: {},
-        deletes: [],
-        inserts: [],
-        applyFailed: false,
-        applyError: undefined,
-      }),
-    }));
+      .filter((_, ri) => !deletedRows.has(ri));
+    patchTab<TableTabState>(tabId, {
+      data: { ...data, result: { ...data.result, rows } },
+      loading: false,
+      ...noTableEdits(),
+    });
   },
 
-  dismissApplyError: (tabId) => {
-    set((s) => ({
-      tabs: patchState<TableTabState>(s.tabs, tabId, { applyError: undefined }),
-    }));
-  },
+  dismissApplyError: (tabId) =>
+    patchTab<TableTabState>(tabId, { applyError: undefined }),
   };
 });
 

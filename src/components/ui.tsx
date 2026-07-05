@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type {
   ButtonHTMLAttributes,
@@ -159,6 +159,56 @@ export function IconBtn({
       )}
       {...props}
     />
+  );
+}
+
+/** Refresh icon button that swaps to a spinner while loading. */
+export function RefreshBtn({
+  loading,
+  onClick,
+  title = "Refresh",
+}: {
+  loading: boolean;
+  onClick: () => void;
+  title?: string;
+}) {
+  return (
+    <IconBtn title={title} disabled={loading} onClick={onClick}>
+      {loading ? (
+        <Loader2 size={13} className="animate-spin" />
+      ) : (
+        <RefreshCw size={13} />
+      )}
+    </IconBtn>
+  );
+}
+
+/** Apply/Discard pair shown in a tab toolbar while changes are staged. */
+export function PendingChangesBar({
+  count,
+  busy,
+  applyTitle,
+  discardTitle,
+  onApply,
+  onDiscard,
+}: {
+  count: number;
+  busy: boolean;
+  /** Tooltip explaining what Apply runs (⌘S hint etc.). */
+  applyTitle: string;
+  discardTitle?: string;
+  onApply: () => void;
+  onDiscard: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 pl-1">
+      <Button variant="primary" disabled={busy} onClick={onApply} title={applyTitle}>
+        <Check size={13} /> Apply {count}
+      </Button>
+      <Button title={discardTitle} onClick={onDiscard}>
+        Discard
+      </Button>
+    </div>
   );
 }
 

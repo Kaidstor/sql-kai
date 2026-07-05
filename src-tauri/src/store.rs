@@ -1,9 +1,9 @@
 use std::fs;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::fsio::{config_path, write_atomic};
 use crate::vault;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,14 +62,6 @@ fn ssh_secret_key(profile_id: &str) -> String {
     format!("{profile_id}#ssh")
 }
 
-fn config_path(file: &str) -> Result<PathBuf, AppError> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| AppError::Msg("cannot resolve user config dir".into()))?
-        .join("sql-tauri");
-    fs::create_dir_all(&dir)?;
-    Ok(dir.join(file))
-}
-
 fn load_list<T: serde::de::DeserializeOwned>(file: &str) -> Result<Vec<T>, AppError> {
     let path = config_path(file)?;
     if !path.exists() {
@@ -84,7 +76,7 @@ fn load_list<T: serde::de::DeserializeOwned>(file: &str) -> Result<Vec<T>, AppEr
 
 fn save_list<T: Serialize>(file: &str, items: &[T]) -> Result<(), AppError> {
     let path = config_path(file)?;
-    vault::write_atomic(&path, serde_json::to_string_pretty(items).unwrap().as_bytes())?;
+    write_atomic(&path, serde_json::to_string_pretty(items).unwrap().as_bytes())?;
     Ok(())
 }
 

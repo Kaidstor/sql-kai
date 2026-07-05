@@ -161,35 +161,36 @@ export function TabsBar() {
     </ContextMenuTrigger>
     <ContextMenuContent>
       <ContextMenuItem
+        icon={X}
         disabled={menuIdx < 0}
         onClick={() => menuTabId && closeTab(menuTabId)}
       >
-        <X size={13} className="text-zinc-500" />
         Close
         <ContextMenuShortcut>⌘W</ContextMenuShortcut>
       </ContextMenuItem>
       <ContextMenuItem
+        icon={X}
         disabled={menuIdx < 0 || tabs.length <= 1}
         onClick={() =>
           closeTabs(tabs.filter((t) => t.id !== menuTabId).map((t) => t.id))
         }
       >
-        <X size={13} className="text-zinc-500" />
         Close Others
       </ContextMenuItem>
       <ContextMenuItem
+        icon={X}
         disabled={menuIdx < 0 || menuIdx >= tabs.length - 1}
         onClick={() => closeTabs(tabs.slice(menuIdx + 1).map((t) => t.id))}
       >
-        <X size={13} className="text-zinc-500" />
         Close Tabs to the Right
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem
+        icon={X}
+        iconClassName="text-red-400/80"
         disabled={tabs.length === 0}
         onClick={() => closeTabs(tabs.map((t) => t.id))}
       >
-        <X size={13} className="text-red-400/80" />
         Close All Tabs
         <ContextMenuShortcut>⌘K ⌘W</ContextMenuShortcut>
       </ContextMenuItem>
