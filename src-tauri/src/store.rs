@@ -264,14 +264,70 @@ pub fn save_history(entries: &[HistoryEntry]) -> Result<(), AppError> {
 }
 
 /// Prepends `entry`; a rerun of the same SQL on the same profile just bumps
-/// it to the top. Returns the updated list.
-pub fn record_history(entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppError> {
+/// it to the top. Returns the updated list. The SQL is redacted first so a
+/// literal password never lands on disk (see [`redact_secrets`]).
+pub fn record_history(mut entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppError> {
+    entry.sql = redact_secrets(&entry.sql);
     let mut all = load_history()?;
     all.retain(|h| !(h.profile_id == entry.profile_id && h.sql == entry.sql));
     all.insert(0, entry);
     all.truncate(HISTORY_CAP);
     save_history(&all)?;
     Ok(all)
+}
+
+/// Masks quoted literals that follow a credential keyword so history never
+/// stores a plaintext password: `... PASSWORD 'hunter2'` → `... PASSWORD '***'`.
+/// Covers `PASSWORD`, `IDENTIFIED BY` and their quoted argument (single or
+/// dollar-quoted); everything else passes through unchanged.
+pub fn redact_secrets(sql: &str) -> String {
+    const KEYWORDS: [&str; 2] = ["password", "identified by"];
+    let lower = sql.to_lowercase();
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < sql.len() {
+        // At a keyword boundary? (start-of-string or non-alnum before it)
+        let boundary = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let kw = if boundary {
+            KEYWORDS
+                .iter()
+                .copied()
+                .find(|&k| lower[i..].starts_with(k))
+        } else {
+            None
+        };
+        let Some(kw) = kw else {
+            let ch = sql[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        };
+        out.push_str(&sql[i..i + kw.len()]);
+        i += kw.len();
+        // copy whitespace up to the quoted literal
+        while i < sql.len() && bytes[i].is_ascii_whitespace() {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if i < sql.len() && bytes[i] == b'\'' {
+            // single-quoted string, '' is an escaped quote
+            out.push_str("'***'");
+            i += 1;
+            while i < sql.len() {
+                if bytes[i] == b'\'' {
+                    if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 pub fn delete_history_entry(id: &str) -> Result<Vec<HistoryEntry>, AppError> {
@@ -285,7 +341,8 @@ pub fn delete_history_entry(id: &str) -> Result<Vec<HistoryEntry>, AppError> {
 /// disk win, imported ones fill in behind by recency.
 pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, AppError> {
     let mut all = load_history()?;
-    for e in entries {
+    for mut e in entries {
+        e.sql = redact_secrets(&e.sql);
         if !all
             .iter()
             .any(|h| h.profile_id == e.profile_id && h.sql == e.sql)
@@ -305,4 +362,41 @@ pub fn get_password(profile: &Profile) -> Option<String> {
 
 pub fn get_ssh_passphrase(profile: &Profile) -> Option<String> {
     vault::get_secret(&ssh_secret_key(&profile.id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn redacts_password_literals() {
+        assert_eq!(
+            redact_secrets("ALTER ROLE app PASSWORD 'hunter2'"),
+            "ALTER ROLE app PASSWORD '***'"
+        );
+        // case-insensitive keyword, extra whitespace
+        assert_eq!(
+            redact_secrets("create role x password   'p@ss'"),
+            "create role x password   '***'"
+        );
+        // IDENTIFIED BY
+        assert_eq!(
+            redact_secrets("... IDENTIFIED BY 'sekret'"),
+            "... IDENTIFIED BY '***'"
+        );
+        // embedded escaped quote inside the literal is consumed whole
+        assert_eq!(
+            redact_secrets("PASSWORD 'a''b' NOT NULL"),
+            "PASSWORD '***' NOT NULL"
+        );
+    }
+
+    #[test]
+    fn leaves_ordinary_sql_untouched() {
+        let sql = "SELECT id, name FROM users WHERE status = 'active' ORDER BY id";
+        assert_eq!(redact_secrets(sql), sql);
+        // a column literally named password_hash must not trigger on the column
+        let sql2 = "SELECT password_hash FROM users";
+        assert_eq!(redact_secrets(sql2), sql2);
+    }
 }
