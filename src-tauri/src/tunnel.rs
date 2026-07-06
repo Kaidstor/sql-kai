@@ -1,6 +1,7 @@
+use std::fs;
 use std::io::Read;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -14,11 +15,11 @@ const ASKPASS_ENV: &str = "SQL_TAURI_SSH_PASSPHRASE";
 /// run SSH_ASKPASS — this keeps the secret out of argv (env only).
 fn ensure_askpass_script() -> Result<PathBuf, AppError> {
     let path = std::env::temp_dir().join("sql-tauri-askpass.sh");
-    std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_ENV}\"\n"))?;
+    fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_ENV}\"\n"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(path)
 }
@@ -41,23 +42,32 @@ pub fn free_port() -> Result<u16, AppError> {
     Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
 
-/// Spawns `ssh -N -L 127.0.0.1:<local>:<db_host>:<db_port> <target>` and waits until
-/// the forwarded port accepts connections (ssh binds it only after auth succeeds).
-///
+// --- ssh target / auth helpers ----------------------------------------------
+
+fn ssh_target(ssh: &SshConfig) -> String {
+    match ssh.user.as_deref().filter(|u| !u.trim().is_empty()) {
+        Some(user) => format!("{user}@{}", ssh.host),
+        None => ssh.host.clone(),
+    }
+}
+
+/// Connection-identifying args (`-p`/`-i` then the target) — identical between
+/// the master and its forward client so ssh treats them as the same host.
+fn push_target(cmd: &mut Command, ssh: &SshConfig) {
+    if let Some(port) = ssh.port {
+        cmd.arg("-p").arg(port.to_string());
+    }
+    if let Some(key) = ssh.key_path.as_deref().filter(|k| !k.trim().is_empty()) {
+        cmd.arg("-i").arg(key);
+    }
+    cmd.arg(ssh_target(ssh));
+}
+
 /// Without a passphrase: BatchMode=yes — auth must come from keys / ssh-agent /
 /// ~/.ssh/config, since a GUI child process cannot answer interactive prompts.
 /// With a passphrase: SSH_ASKPASS feeds it to ssh for decrypting the key;
 /// password/keyboard-interactive auth stays off (parity with BatchMode).
-pub async fn open_tunnel(
-    ssh: &SshConfig,
-    db_host: &str,
-    db_port: u16,
-    passphrase: Option<&str>,
-) -> Result<Tunnel, AppError> {
-    let local_port = free_port()?;
-
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-N");
+fn apply_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppError> {
     match passphrase {
         Some(pp) if !pp.is_empty() => {
             cmd.args(["-o", "PasswordAuthentication=no"])
@@ -76,24 +86,199 @@ pub async fn open_tunnel(
             cmd.args(["-o", "BatchMode=yes"]);
         }
     }
+    Ok(())
+}
+
+// --- ControlMaster multiplexing (CLI: reuse ssh auth across kai runs) --------
+//
+// The slow part of a tunnel is the ssh handshake + auth, not the forward. With
+// a persistent ControlMaster the first run pays for auth and leaves a
+// background master alive (ControlPersist); later runs attach their `-L`
+// forward to it in ~1 RTT — no re-auth. The forward client is still held by the
+// process and dies on Drop; only the master persists.
+
+/// Short dir for control sockets. Unix socket paths cap at ~104 bytes, so this
+/// deliberately avoids the long Application Support path. Per-user under /tmp, 0700.
+fn mux_dir() -> Result<PathBuf, AppError> {
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let dir = Path::new("/tmp").join(format!("kai-ssh-mux-{user}"));
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
+}
+
+/// Socket name fully identifies the target so every run to the same host+port+user
+/// shares one master (`:` and `@` are legal in unix filenames).
+fn control_name(ssh: &SshConfig) -> String {
+    let port = ssh.port.unwrap_or(22);
+    match ssh.user.as_deref().filter(|u| !u.trim().is_empty()) {
+        Some(user) => format!("{user}@{}:{port}", ssh.host),
+        None => format!("{}:{port}", ssh.host),
+    }
+}
+
+fn control_path(ssh: &SshConfig) -> Result<PathBuf, AppError> {
+    Ok(mux_dir()?.join(control_name(ssh)))
+}
+
+/// Host portion of a `[user@]host:port` socket name (for `ssh -O` commands).
+fn host_of(name: &str) -> String {
+    let after_user = name.rsplit_once('@').map(|(_, h)| h).unwrap_or(name);
+    after_user
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(after_user)
+        .to_string()
+}
+
+fn master_alive(ctl: &Path, target: &str) -> bool {
+    Command::new("ssh")
+        .arg("-O")
+        .arg("check")
+        .arg("-S")
+        .arg(ctl)
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Best-effort: ensure a background auth master exists so the forward can attach
+/// without re-authenticating. Failure is non-fatal — the forward then falls back
+/// to a direct (slower) connection.
+fn ensure_master(ssh: &SshConfig, passphrase: Option<&str>, ttl: u32, ctl: &Path) {
+    let target = ssh_target(ssh);
+    if master_alive(ctl, &target) {
+        return;
+    }
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-M")
+        .arg("-S")
+        .arg(ctl)
+        .arg("-f") // fork to background after auth
+        .arg("-N")
+        .args(["-o", &format!("ControlPersist={ttl}")])
+        .args(["-o", "ConnectTimeout=10"])
+        .args(["-o", "ServerAliveInterval=15"])
+        .args(["-o", "ServerAliveCountMax=3"]);
+    if apply_auth(&mut cmd, passphrase).is_err() {
+        return;
+    }
+    push_target(&mut cmd, ssh);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // `-f` returns once the master is up; ignore the result (forward will report
+    // any real auth failure).
+    let _ = cmd.status();
+}
+
+/// One live ssh master, for `kai tunnel list`.
+pub struct MasterInfo {
+    pub target: String,
+    pub alive: bool,
+}
+
+pub fn list_masters() -> Vec<MasterInfo> {
+    let dir = match mux_dir() {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let alive = master_alive(&e.path(), &host_of(&name));
+            out.push(MasterInfo { target: name, alive });
+        }
+    }
+    out
+}
+
+/// Closes masters (`ssh -O exit` then removes the socket). `only` matches a
+/// socket name or its host part; None closes all. Returns how many were closed.
+pub fn close_masters(only: Option<&str>) -> usize {
+    let dir = match mux_dir() {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let mut n = 0;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some(f) = only {
+                if name != f && host_of(&name) != f {
+                    continue;
+                }
+            }
+            let _ = Command::new("ssh")
+                .arg("-O")
+                .arg("exit")
+                .arg("-S")
+                .arg(e.path())
+                .arg(host_of(&name))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = fs::remove_file(e.path());
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Spawns `ssh -N -L 127.0.0.1:<local>:<db_host>:<db_port> <target>` and waits until
+/// the forwarded port accepts connections (ssh binds it only after auth succeeds).
+///
+/// `mux_ttl`: Some(ttl) reuses a persistent ControlMaster (CLI — the master
+/// lingers `ttl` seconds idle so later runs skip re-auth); None opens a plain
+/// standalone tunnel (GUI, which already holds one for the whole session).
+pub async fn open_tunnel(
+    ssh: &SshConfig,
+    db_host: &str,
+    db_port: u16,
+    passphrase: Option<&str>,
+    mux_ttl: Option<u32>,
+) -> Result<Tunnel, AppError> {
+    let local_port = free_port()?;
+
+    let ctl = match mux_ttl {
+        Some(ttl) => match control_path(ssh) {
+            Ok(p) => {
+                ensure_master(ssh, passphrase, ttl, &p);
+                Some(p)
+            }
+            Err(_) => None,
+        },
+        None => None,
+    };
+
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-N");
+    apply_auth(&mut cmd, passphrase)?;
     cmd.args(["-o", "ExitOnForwardFailure=yes"])
         .args(["-o", "ConnectTimeout=10"])
         .args(["-o", "ServerAliveInterval=15"])
-        .args(["-o", "ServerAliveCountMax=3"])
-        .arg("-L")
+        .args(["-o", "ServerAliveCountMax=3"]);
+    if let Some(ctl) = &ctl {
+        // Attach to the shared master (fast). If it's gone, ssh falls back to a
+        // direct connection instead of creating a new master.
+        cmd.args(["-o", "ControlMaster=no"]).arg("-S").arg(ctl);
+    }
+    cmd.arg("-L")
         .arg(format!("127.0.0.1:{local_port}:{db_host}:{db_port}"));
-    if let Some(port) = ssh.port {
-        cmd.arg("-p").arg(port.to_string());
-    }
-    if let Some(key) = ssh.key_path.as_deref().filter(|k| !k.trim().is_empty()) {
-        cmd.arg("-i").arg(key);
-    }
-    let target = match ssh.user.as_deref().filter(|u| !u.trim().is_empty()) {
-        Some(user) => format!("{user}@{}", ssh.host),
-        None => ssh.host.clone(),
-    };
-    cmd.arg(target);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    push_target(&mut cmd, ssh);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()

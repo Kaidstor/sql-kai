@@ -26,9 +26,15 @@ fn test_profile() -> Profile {
 #[ignore]
 async fn connect_execute_paginate() {
     // the password rides in as an override — the vault stays out of the test
-    let connected = db::connect(&test_profile(), Some("testpw".into()), None)
-        .await
-        .expect("connect");
+    let connected = db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
     assert!(!connected.server_version.is_empty());
     let client = connected.session.client.clone();
 

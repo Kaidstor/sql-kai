@@ -20,6 +20,7 @@ use clap::{Args, Parser, Subcommand};
 use sql_tauri_lib::db;
 use sql_tauri_lib::error::AppError;
 use sql_tauri_lib::store::{self, HistoryEntry, Profile};
+use sql_tauri_lib::tunnel;
 use sql_tauri_lib::vault;
 
 use output::Format;
@@ -70,6 +71,11 @@ enum Cmd {
     Saved {
         #[command(subcommand)]
         cmd: SavedCmd,
+    },
+    /// Персистентные ssh-туннели (ControlMaster), переиспользуемые между вызовами
+    Tunnel {
+        #[command(subcommand)]
+        cmd: Option<TunnelCmd>,
     },
     /// Vault с паролями БД
     Vault {
@@ -129,6 +135,9 @@ struct QueryArgs {
     /// Не записывать запрос в историю
     #[arg(long)]
     no_history: bool,
+    /// Не переиспользовать ssh-туннель (без ControlMaster)
+    #[arg(long)]
+    no_mux: bool,
     /// Показать, куда подключились
     #[arg(short, long)]
     verbose: bool,
@@ -224,8 +233,25 @@ enum SavedCmd {
         write: bool,
         #[arg(long, value_name = "VAR")]
         password_env: Option<String>,
+        /// Не переиспользовать ssh-туннель (без ControlMaster)
+        #[arg(long)]
+        no_mux: bool,
         #[arg(short, long)]
         verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TunnelCmd {
+    /// Показать живые ssh-мастера (по умолчанию)
+    List,
+    /// Закрыть мастер(а): по хосту/имени сокета или все
+    Close {
+        /// Хост или имя сокета; без него — все
+        target: Option<String>,
+        /// Закрыть все
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -246,7 +272,7 @@ enum VaultCmd {
 fn preprocess_args() -> Vec<OsString> {
     const KNOWN: &[&str] = &[
         "q", "query", "exec", "discover", "profiles", "tables", "columns", "ddl", "indexes",
-        "history", "saved", "vault", "help",
+        "history", "saved", "tunnel", "vault", "help",
     ];
     let mut args: Vec<OsString> = std::env::args_os().collect();
     if let Some(first) = args.get(1) {
@@ -285,6 +311,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Indexes(a) => cmd_table_info(a, TableInfoKind::Indexes).await,
         Cmd::History(a) => cmd_history(a),
         Cmd::Saved { cmd } => cmd_saved(cmd).await,
+        Cmd::Tunnel { cmd } => cmd_tunnel(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd_vault(cmd),
     }
 }
@@ -293,8 +320,14 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
 
 async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
     let sql = session::collect_sql(&a.commands, &a.files)?;
-    let (profile, connected) =
-        session::open_for(&a.alias, a.password_env.as_deref(), a.write, a.verbose).await?;
+    let (profile, connected) = session::open_for(
+        &a.alias,
+        a.password_env.as_deref(),
+        a.write,
+        a.verbose,
+        !a.no_mux,
+    )
+    .await?;
 
     let outcome = db::execute(&connected.session.client, &sql, a.max_rows.max(1)).await;
     if !a.no_history {
@@ -329,7 +362,7 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
 
 async fn cmd_tables(a: TablesArgs) -> Result<ExitCode, AppError> {
     let (_, connected) =
-        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose).await?;
+        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose, true).await?;
     let rows = db::query_rows(&connected.session.client, db::TABLES_SQL).await?;
     let mapped: Vec<Vec<Option<String>>> = rows
         .into_iter()
@@ -364,7 +397,7 @@ fn split_table(spec: &str) -> (String, String) {
 async fn cmd_table_info(a: TableArgs, kind: TableInfoKind) -> Result<ExitCode, AppError> {
     let (schema, table) = split_table(&a.table);
     let (_, connected) =
-        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose).await?;
+        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose, true).await?;
     let client = &connected.session.client;
     match kind {
         TableInfoKind::Ddl => {
@@ -536,6 +569,7 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
             max_rows,
             write,
             password_env,
+            no_mux,
             verbose,
         } => {
             let profile = session::resolve_profile(&alias)?;
@@ -559,11 +593,47 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 write,
                 password_env,
                 no_history: false,
+                no_mux,
                 verbose,
             })
             .await
         }
     }
+}
+
+// --- tunnel -----------------------------------------------------------------------
+
+fn cmd_tunnel(cmd: TunnelCmd) -> Result<ExitCode, AppError> {
+    match cmd {
+        TunnelCmd::List => {
+            let masters = tunnel::list_masters();
+            if masters.is_empty() {
+                println!("нет живых ssh-мастеров");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let rows: Vec<Vec<Option<String>>> = masters
+                .iter()
+                .map(|m| {
+                    vec![
+                        Some(m.target.clone()),
+                        Some(if m.alive { "alive" } else { "stale" }.into()),
+                    ]
+                })
+                .collect();
+            output::print_rows(&["target", "state"], &rows, false);
+        }
+        TunnelCmd::Close { target, all } => {
+            let only = if all { None } else { target.as_deref() };
+            if only.is_none() && !all {
+                return Err(AppError::Msg(
+                    "укажи хост/имя сокета или --all".into(),
+                ));
+            }
+            let n = tunnel::close_masters(only);
+            println!("закрыто мастеров: {n}");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 // --- vault ------------------------------------------------------------------------

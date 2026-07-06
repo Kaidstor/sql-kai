@@ -153,14 +153,33 @@ pub fn read_new_password() -> Result<String, AppError> {
     Ok(pw)
 }
 
+/// TTL персистентного ssh-мастера (сек): env KAI_SSH_MUX_TTL, иначе 5 минут.
+fn mux_ttl() -> u32 {
+    std::env::var("KAI_SSH_MUX_TTL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(300)
+}
+
 /// Подключение к профилю; без `write` сессия сразу переводится в read-only.
+/// `mux` включает переиспользование ssh-туннеля через ControlMaster.
 pub async fn open(
     profile: &Profile,
     password_override: Option<String>,
     write: bool,
     verbose: bool,
+    mux: bool,
 ) -> Result<db::Connected, AppError> {
-    let connected = db::connect(profile, password_override, None).await?;
+    let connected = db::connect(
+        profile,
+        db::ConnectOptions {
+            password_override,
+            ssh_mux_ttl: if mux { Some(mux_ttl()) } else { None },
+            ..Default::default()
+        },
+    )
+    .await?;
     if !write {
         db::execute(
             &connected.session.client,
@@ -195,10 +214,11 @@ pub async fn open_for(
     password_env: Option<&str>,
     write: bool,
     verbose: bool,
+    mux: bool,
 ) -> Result<(Profile, db::Connected), AppError> {
     let profile = resolve_profile(alias)?;
     let pw = password_override(password_env)?;
     ensure_vault(&profile, pw.is_some())?;
-    let connected = open(&profile, pw, write, verbose).await?;
+    let connected = open(&profile, pw, write, verbose, mux).await?;
     Ok((profile, connected))
 }

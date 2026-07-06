@@ -32,18 +32,34 @@ pub struct Connected {
     pub tunnel_port: Option<u16>,
 }
 
-pub async fn connect(
-    profile: &Profile,
-    password_override: Option<String>,
-    ssh_passphrase_override: Option<String>,
-) -> Result<Connected, AppError> {
+/// Knobs for [`connect`]. Defaults (all None) = pull secrets from the vault,
+/// no ssh multiplexing — the GUI's behavior.
+#[derive(Default)]
+pub struct ConnectOptions {
+    /// Use this DB password instead of the vault's (`--password-env`, tests).
+    pub password_override: Option<String>,
+    /// Use this SSH key passphrase instead of the vault's.
+    pub ssh_passphrase_override: Option<String>,
+    /// Some(ttl) → reuse ssh auth via a persistent ControlMaster that lingers
+    /// `ttl` seconds idle (CLI). None → standalone tunnel (GUI).
+    pub ssh_mux_ttl: Option<u32>,
+}
+
+pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connected, AppError> {
     let tunnel = match &profile.ssh {
         Some(ssh) if !ssh.host.trim().is_empty() => {
-            let passphrase =
-                ssh_passphrase_override.or_else(|| store::get_ssh_passphrase(profile));
+            let passphrase = opts
+                .ssh_passphrase_override
+                .or_else(|| store::get_ssh_passphrase(profile));
             Some(
-                tunnel::open_tunnel(ssh, &profile.host, profile.port, passphrase.as_deref())
-                    .await?,
+                tunnel::open_tunnel(
+                    ssh,
+                    &profile.host,
+                    profile.port,
+                    passphrase.as_deref(),
+                    opts.ssh_mux_ttl,
+                )
+                .await?,
             )
         }
         _ => None,
@@ -60,7 +76,7 @@ pub async fn connect(
         .dbname(&profile.database)
         .application_name("sql-kai")
         .connect_timeout(Duration::from_secs(10));
-    let password = password_override.or_else(|| store::get_password(profile));
+    let password = opts.password_override.or_else(|| store::get_password(profile));
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
         cfg.password(&pw);
     }

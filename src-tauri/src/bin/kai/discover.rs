@@ -176,7 +176,15 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
     }
 
     eprintln!("проверка подключения…");
-    match db::connect(&profile, d.password.clone(), None).await {
+    let check = db::connect(
+        &profile,
+        db::ConnectOptions {
+            password_override: d.password.clone(),
+            ..Default::default()
+        },
+    )
+    .await;
+    match check {
         Ok(c) => {
             println!("ok: PostgreSQL {}", c.server_version);
             Ok(ExitCode::SUCCESS)

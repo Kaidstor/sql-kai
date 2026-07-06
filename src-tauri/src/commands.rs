@@ -199,7 +199,7 @@ pub async fn connect_profile(
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
     let profile = store::find_profile(&profile_id)?;
-    let connected = db::connect(&profile, None, None).await?;
+    let connected = db::connect(&profile, db::ConnectOptions::default()).await?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let info = SessionInfo {
         session_id: session_id.clone(),
@@ -228,9 +228,15 @@ pub async fn test_profile(
     password: Option<String>,
     ssh_passphrase: Option<String>,
 ) -> Result<String, AppError> {
-    let password = password.filter(|p| !p.is_empty());
-    let ssh_passphrase = ssh_passphrase.filter(|p| !p.is_empty());
-    let connected = db::connect(&profile, password, ssh_passphrase).await?;
+    let connected = db::connect(
+        &profile,
+        db::ConnectOptions {
+            password_override: password.filter(|p| !p.is_empty()),
+            ssh_passphrase_override: ssh_passphrase.filter(|p| !p.is_empty()),
+            ..Default::default()
+        },
+    )
+    .await?;
     let version = connected.server_version;
     drop(connected.session);
     Ok(if version.is_empty() {
