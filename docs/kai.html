@@ -101,6 +101,7 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><td><code>kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
 <tr><td><code>kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
 <tr><td><code>kai saved list [&lt;alias&gt;]</code> / <code>kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
+<tr><td><code>kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
 <tr><td><code>kai profiles list|show|rm</code></td><td>Профили</td></tr>
 <tr><td><code>kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
 </table>
@@ -157,6 +158,33 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
 
+<h2 id="mux">Переиспользование ssh (быстрее запросы)</h2>
+<p>Медленная часть подключения через ssh — не форвард, а рукопожатие и
+аутентификация ssh (~1–2 с). Каждый <code>kai</code> — короткий процесс, поэтому
+без переиспользования каждый запрос платил бы за авторизацию заново.</p>
+<p>Для профилей с ssh <code>kai</code> держит <strong>персистентный
+ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый вызов проходит
+аутентификацию и оставляет фоновый мастер-коннект, последующие цепляют свой
+<code>-L</code> форвард к нему за ~один round-trip — без повторной авторизации.
+Мастер живёт в фоне и сам гаснет после простоя (<code>ControlPersist</code>,
+по умолчанию 5 мин).</p>
+<div class="scheme"><pre>
+1-й запрос:  ssh-auth (полная) ─► фоновый мастер (живёт ControlPersist)
+                                     │
+2-й, 3-й…:   форвард ── attach ──────┘   (без auth, ~1 RTT → БД)
+</pre></div>
+<ul>
+  <li>Включено по умолчанию. <code>--no-mux</code> — разовый обычный туннель;
+      <code>KAI_SSH_MUX_TTL=&lt;сек&gt;</code> — сколько мастер живёт после простоя.</li>
+  <li>Управляющие сокеты — в <code>/tmp/kai-ssh-mux-&lt;user&gt;/</code> (0700),
+      имя сокета = <code>[user@]host:port</code>.</li>
+  <li><code>kai tunnel list</code> — живые мастера; <code>kai tunnel close &lt;host&gt;</code>
+      или <code>--all</code> — закрыть (<code>ssh -O exit</code>).</li>
+  <li>Мастер поднимается best-effort: если не удался, форвард просто откатывается
+      к обычному прямому соединению (медленнее, но работает).</li>
+  <li>GUI это не затрагивает — он и так держит один туннель на всю сессию.</li>
+</ul>
+
 <h2 id="vault">Vault: как CLI читает пароли</h2>
 <p>Пароли БД и ssh-пассфразы лежат в <code>vault.json</code>, зашифрованные одним случайным
 ключом — <strong>DEK</strong> (AES-256-GCM). Сам DEK в открытом виде нигде не хранится:
@@ -208,6 +236,7 @@ env-переменной, vault не трогается вовсе.</p>
 <table>
 <tr><th>Переменная</th><th>Назначение</th></tr>
 <tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>)</td></tr>
+<tr><td><code>KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-tauri</code>) — изолированные окружения и тесты</td></tr>
 </table>
 
@@ -237,6 +266,9 @@ env-переменной, vault не трогается вовсе.</p>
     <td>Так и задумано: добавь <code>--write</code>, если запись действительно согласована.</td></tr>
 <tr><td>Внешний managed-Postgres (не в docker на хосте)</td>
     <td>discover его не найдёт — завести профиль руками в GUI (или найти DSN в .env/Infisical).</td></tr>
+<tr><td>ssh-мастер держит коннект к хосту после работы</td>
+    <td>Это ожидаемо — он гаснет сам после простоя (<code>KAI_SSH_MUX_TTL</code>, 5 мин).
+        Закрыть сразу: <code>kai tunnel close --all</code>; разовый запрос без мастера — <code>--no-mux</code>.</td></tr>
 </table>
 
 <p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/kai/</code> ·

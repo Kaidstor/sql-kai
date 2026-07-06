@@ -39,6 +39,7 @@ kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/--js
 kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
 kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
 kai tables|columns|ddl|indexes <alias> [schema.]table
+kai tunnel list|close [--all]   # персистентные ssh-туннели (ControlMaster)
 kai vault trust                 # тихий доступ CLI к паролям vault (keychain)
 ```
 
@@ -50,6 +51,12 @@ kai vault trust                 # тихий доступ CLI к паролям 
 - `kai discover` сам находит postgres-контейнер на хосте (`docker ps` → env
   контейнера → published-порт или bridge-IP) и сохраняет профиль; пароль уходит
   в vault. Профиль сразу виден в GUI.
+- **Переиспользование ssh:** для профилей с туннелем CLI держит персистентный
+  ssh-мастер (`ControlMaster` + `ControlPersist`) — первый запрос платит за
+  аутентификацию, последующие цепляются к готовому мастеру без повторной
+  авторизации (запросы за туннелем заметно быстрее). Включено по умолчанию;
+  `--no-mux` отключает, `KAI_SSH_MUX_TTL` задаёт TTL, `kai tunnel list|close`
+  управляет мастерами. GUI не затронут.
 - Vault в CLI разлочивается по цепочке: keychain-trust (`kai vault trust` —
   копия DEK в login keychain, чтение без промптов) → `KAI_VAULT_PASSWORD` →
   запрос в TTY; полный обход — `--password-env VAR`.
@@ -90,5 +97,5 @@ cd src-tauri && cargo test --test db_integration -- --ignored
 ## Roadmap / идеи
 
 - TLS для прямых подключений (`rustls`), сейчас прямые коннекты — без TLS (через туннель это не критично).
-- Туннель-брокер с TTL/lease (unix socket), чтобы GUI и CLI делили один ssh-туннель вместо параллельных.
+- Общий ssh-туннель между GUI и CLI: сейчас CLI переиспользует свои коннекты через `ControlMaster`, но GUI держит отдельный туннель — их можно свести на один мастер.
 - EXPLAIN-визуализация, экспорт CSV/JSON из грида.
