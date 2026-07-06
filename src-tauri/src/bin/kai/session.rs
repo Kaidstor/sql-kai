@@ -208,17 +208,43 @@ pub async fn open(
     Ok(connected)
 }
 
-/// Полный путь для команд: резолв алиаса, vault, соединение.
+/// Источник пароля БД помимо vault: env-переменная или ключ sec.
+#[derive(Default)]
+pub struct PwSource<'a> {
+    pub env: Option<&'a str>,
+    pub from_sec: bool,
+    pub sec_key: Option<&'a str>,
+}
+
+/// Разрешает пароль-override по приоритету: env → sec → (None = из vault).
+fn resolve_override(profile: &Profile, src: &PwSource) -> Result<Option<String>, AppError> {
+    if let Some(v) = src.env {
+        return password_override(Some(v));
+    }
+    if src.from_sec || src.sec_key.is_some() {
+        crate::sec::available()?;
+        let key = src
+            .sec_key
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::sec::default_key(profile));
+        return crate::sec::get(&key)?
+            .map(Some)
+            .ok_or_else(|| AppError::Msg(format!("в sec нет ключа {key}")));
+    }
+    Ok(None)
+}
+
+/// Полный путь для команд: резолв алиаса, пароль (env/sec/vault), соединение.
 pub async fn open_for(
     alias: &str,
-    password_env: Option<&str>,
+    pw: PwSource<'_>,
     write: bool,
     verbose: bool,
     mux: bool,
 ) -> Result<(Profile, db::Connected), AppError> {
     let profile = resolve_profile(alias)?;
-    let pw = password_override(password_env)?;
-    ensure_vault(&profile, pw.is_some())?;
-    let connected = open(&profile, pw, write, verbose, mux).await?;
+    let over = resolve_override(&profile, &pw)?;
+    ensure_vault(&profile, over.is_some())?;
+    let connected = open(&profile, over, write, verbose, mux).await?;
     Ok((profile, connected))
 }

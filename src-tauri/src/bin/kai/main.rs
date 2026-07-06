@@ -6,9 +6,12 @@
 //! запись — только с явным `--write`.
 
 mod discover;
+mod doctor;
 mod execmode;
 mod output;
 mod remote;
+mod rotate;
+mod sec;
 mod session;
 
 use std::ffi::OsString;
@@ -72,6 +75,10 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SavedCmd,
     },
+    /// Ротация пароля роли Postgres (sec + ALTER ROLE, старое в истории sec)
+    Rotate(RotateArgs),
+    /// Здоровье соединений: сохранённые пароли ещё аутентифицируются?
+    Doctor(DoctorArgs),
     /// Персистентные ssh-туннели (ControlMaster), переиспользуемые между вызовами
     Tunnel {
         #[command(subcommand)]
@@ -132,6 +139,12 @@ struct QueryArgs {
     /// Env-переменная с паролем БД (обход vault)
     #[arg(long, value_name = "VAR")]
     password_env: Option<String>,
+    /// Взять пароль БД из sec (ключ <имя>/DB_PASSWORD)
+    #[arg(long)]
+    from_sec: bool,
+    /// Ключ sec для пароля (proj/KEY); включает --from-sec
+    #[arg(long, value_name = "PROJ/KEY")]
+    sec_key: Option<String>,
     /// Не записывать запрос в историю
     #[arg(long)]
     no_history: bool,
@@ -150,6 +163,15 @@ struct DiscoverArgs {
     /// Имя профиля (по умолчанию = alias)
     #[arg(long)]
     name: Option<String>,
+    /// Положить найденный пароль в sec (по умолч. ключ <имя>/DB_PASSWORD)
+    #[arg(long)]
+    to_sec: bool,
+    /// Ключ sec для пароля (proj/KEY); включает --to-sec
+    #[arg(long, value_name = "PROJ/KEY")]
+    sec_key: Option<String>,
+    /// Не хранить пароль в vault (прод-политика: только sec / --password-env)
+    #[arg(long)]
+    no_store: bool,
     /// Только показать найденное, не сохранять профиль
     #[arg(long)]
     dry_run: bool,
@@ -208,6 +230,9 @@ struct HistoryArgs {
     limit: usize,
     #[arg(long)]
     json: bool,
+    /// Прогнать history.json через `sec scan` — не утёк ли секрет в открытом виде
+    #[arg(long)]
+    scan: bool,
 }
 
 #[derive(Subcommand)]
@@ -233,12 +258,55 @@ enum SavedCmd {
         write: bool,
         #[arg(long, value_name = "VAR")]
         password_env: Option<String>,
+        /// Взять пароль БД из sec (ключ <имя>/DB_PASSWORD)
+        #[arg(long)]
+        from_sec: bool,
+        /// Ключ sec для пароля (proj/KEY); включает --from-sec
+        #[arg(long, value_name = "PROJ/KEY")]
+        sec_key: Option<String>,
         /// Не переиспользовать ssh-туннель (без ControlMaster)
         #[arg(long)]
         no_mux: bool,
         #[arg(short, long)]
         verbose: bool,
     },
+}
+
+#[derive(Args)]
+struct RotateArgs {
+    /// Профиль: имя, id или группа
+    alias: String,
+    /// Роль Postgres (по умолчанию — пользователь профиля)
+    #[arg(long)]
+    role: Option<String>,
+    /// Ключ sec для пароля (proj/KEY); по умолчанию <имя>/DB_PASSWORD
+    #[arg(long, value_name = "PROJ/KEY")]
+    sec_key: Option<String>,
+    /// Длина нового пароля
+    #[arg(long, default_value_t = 32)]
+    length: usize,
+    /// Интервал ротации для sec meta (напр. 90d)
+    #[arg(long, value_name = "DUR")]
+    rotate_every: Option<String>,
+    /// Текущий пароль из env-переменной (если не в vault/sec)
+    #[arg(long, value_name = "VAR")]
+    password_env: Option<String>,
+    /// Текущий пароль взять из sec
+    #[arg(long)]
+    from_sec: bool,
+    /// Не спрашивать подтверждение
+    #[arg(long)]
+    yes: bool,
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Args)]
+struct DoctorArgs {
+    /// Проверить один профиль (имя или id); без него — все
+    alias: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -272,7 +340,7 @@ enum VaultCmd {
 fn preprocess_args() -> Vec<OsString> {
     const KNOWN: &[&str] = &[
         "q", "query", "exec", "discover", "profiles", "tables", "columns", "ddl", "indexes",
-        "history", "saved", "tunnel", "vault", "help",
+        "history", "saved", "rotate", "doctor", "tunnel", "vault", "help",
     ];
     let mut args: Vec<OsString> = std::env::args_os().collect();
     if let Some(first) = args.get(1) {
@@ -311,6 +379,8 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Indexes(a) => cmd_table_info(a, TableInfoKind::Indexes).await,
         Cmd::History(a) => cmd_history(a),
         Cmd::Saved { cmd } => cmd_saved(cmd).await,
+        Cmd::Rotate(a) => rotate::run(a).await,
+        Cmd::Doctor(a) => doctor::run(a).await,
         Cmd::Tunnel { cmd } => cmd_tunnel(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd_vault(cmd),
     }
@@ -322,7 +392,11 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
     let sql = session::collect_sql(&a.commands, &a.files)?;
     let (profile, connected) = session::open_for(
         &a.alias,
-        a.password_env.as_deref(),
+        session::PwSource {
+            env: a.password_env.as_deref(),
+            from_sec: a.from_sec,
+            sec_key: a.sec_key.as_deref(),
+        },
         a.write,
         a.verbose,
         !a.no_mux,
@@ -361,8 +435,17 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
 // --- introspection --------------------------------------------------------------
 
 async fn cmd_tables(a: TablesArgs) -> Result<ExitCode, AppError> {
-    let (_, connected) =
-        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose, true).await?;
+    let (_, connected) = session::open_for(
+        &a.alias,
+        session::PwSource {
+            env: a.password_env.as_deref(),
+            ..Default::default()
+        },
+        false,
+        a.verbose,
+        true,
+    )
+    .await?;
     let rows = db::query_rows(&connected.session.client, db::TABLES_SQL).await?;
     let mapped: Vec<Vec<Option<String>>> = rows
         .into_iter()
@@ -396,8 +479,17 @@ fn split_table(spec: &str) -> (String, String) {
 
 async fn cmd_table_info(a: TableArgs, kind: TableInfoKind) -> Result<ExitCode, AppError> {
     let (schema, table) = split_table(&a.table);
-    let (_, connected) =
-        session::open_for(&a.alias, a.password_env.as_deref(), false, a.verbose, true).await?;
+    let (_, connected) = session::open_for(
+        &a.alias,
+        session::PwSource {
+            env: a.password_env.as_deref(),
+            ..Default::default()
+        },
+        false,
+        a.verbose,
+        true,
+    )
+    .await?;
     let client = &connected.session.client;
     match kind {
         TableInfoKind::Ddl => {
@@ -485,6 +577,9 @@ fn cmd_profiles(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
 // --- history ----------------------------------------------------------------------
 
 fn cmd_history(a: HistoryArgs) -> Result<ExitCode, AppError> {
+    if a.scan {
+        return history_scan();
+    }
     let mut entries = store::load_history()?;
     if let Some(alias) = &a.alias {
         let al = alias.to_lowercase();
@@ -509,6 +604,27 @@ fn cmd_history(a: HistoryArgs) -> Result<ExitCode, AppError> {
         .collect();
     output::print_rows(&["when", "profile", "st", "sql"], &rows, false);
     Ok(ExitCode::SUCCESS)
+}
+
+/// Прогоняет history.json через `sec scan` — не осел ли где секрет в открытом
+/// виде (kai редактирует пароли при записи, но старые записи или неожиданные
+/// литералы мог поймать sec).
+fn history_scan() -> Result<ExitCode, AppError> {
+    sec::available()?;
+    let path = sql_tauri_lib::fsio::config_path("history.json")?;
+    if !path.exists() {
+        println!("history.json пуст — сканировать нечего");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let (found, report) = sec::scan(&path.to_string_lossy())?;
+    if found {
+        println!("{report}");
+        println!("⚠ в истории найдены значения секретов из sec — почисти: kai history clear-соответствующие или sec forget");
+        Ok(ExitCode::FAILURE)
+    } else {
+        println!("чисто: секретов sec в history.json не найдено");
+        Ok(ExitCode::SUCCESS)
+    }
 }
 
 fn age(ms: i64) -> String {
@@ -569,6 +685,8 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
             max_rows,
             write,
             password_env,
+            from_sec,
+            sec_key,
             no_mux,
             verbose,
         } => {
@@ -592,6 +710,8 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 max_rows,
                 write,
                 password_env,
+                from_sec,
+                sec_key,
                 no_history: false,
                 no_mux,
                 verbose,

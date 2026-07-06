@@ -12,7 +12,7 @@ use sql_tauri_lib::error::AppError;
 use sql_tauri_lib::store::{self, Profile, SshConfig};
 
 use crate::remote::{remote_command, ssh_base};
-use crate::{session, DiscoverArgs};
+use crate::{sec, session, DiscoverArgs};
 
 /// Ищет db-контейнер, тянет POSTGRES_USER/DB/PASSWORD и решает, куда
 /// туннелировать: опубликованный порт (docker port) или IP контейнера в
@@ -157,25 +157,52 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
             .unwrap_or(false),
     };
 
+    let to_sec = a.to_sec || a.sec_key.is_some();
+
     if a.dry_run {
         println!("dry-run: профиль не сохранён");
     } else {
-        // None = не трогать существующий секрет (пароль в env не нашли).
-        let password_arg = match &d.password {
-            Some(pw) => match session::unlock_vault() {
+        // 1) пароль в sec (если попросили и он найден)
+        if to_sec {
+            match &d.password {
+                Some(pw) => {
+                    sec::available()?;
+                    let key = a
+                        .sec_key
+                        .clone()
+                        .unwrap_or_else(|| sec::default_key(&profile));
+                    sec::set(&key, pw)?;
+                    sec::meta(&key, Some("90d"), Some(&format!("DB пароль {}", profile.name)));
+                    println!("пароль сохранён в sec: {key}");
+                }
+                None => eprintln!("kai: --to-sec задан, но пароль в env контейнера не найден"),
+            }
+        }
+        // 2) пароль в vault (если не --no-store)
+        // None = не трогать существующий секрет (пароль не нашли/не кладём).
+        let password_arg = match (&d.password, a.no_store) {
+            (Some(pw), false) => match session::unlock_vault() {
                 Ok(()) => Some(pw.clone()),
                 Err(e) => {
                     eprintln!(
                         "kai: пароль найден, но в vault не сохранён ({e}); \
-                         подключение потребует --password-env"
+                         подключение потребует --password-env{}",
+                        if to_sec { " или --from-sec" } else { "" }
                     );
                     None
                 }
             },
-            None => None,
+            _ => None,
         };
         profile = store::upsert_profile(profile, password_arg, None)?;
         println!("профиль '{}' сохранён (id {})", profile.name, profile.id);
+        if a.no_store && to_sec {
+            println!(
+                "прод-режим: пароль только в sec — запускай `kai {} -c \"…\" --from-sec` \
+                 или `sec run {} -- …`",
+                profile.name, profile.name
+            );
+        }
     }
 
     eprintln!("проверка подключения…");
