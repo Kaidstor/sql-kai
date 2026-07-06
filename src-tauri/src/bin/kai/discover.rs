@@ -28,7 +28,10 @@ U=$($D exec "$C" printenv POSTGRES_USER 2>/dev/null)
 DB=$($D exec "$C" printenv POSTGRES_DB 2>/dev/null)
 [ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') ORDER BY datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 [ -n "$DB" ] || { echo 'kai: не удалось определить имя базы' >&2; exit 5; }
-PW=$($D exec "$C" printenv POSTGRES_PASSWORD 2>/dev/null | base64 | tr -d '\n')
+# $(...) strips printenv's trailing newline before base64 — иначе пароль
+# приедет с лишним \n и TCP-аутентификация не пройдёт.
+PWV=$($D exec "$C" printenv POSTGRES_PASSWORD 2>/dev/null)
+PW=$(printf '%s' "$PWV" | base64 | tr -d '\n')
 PORT=$($D port "$C" 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')
 IP=$($D inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$C" 2>/dev/null | awk '{print $1}')
 printf '__KAI__ container=%s user=%s db=%s port=%s ip=%s pw=%s\n' "$C" "$U" "$DB" "$PORT" "$IP" "$PW"
