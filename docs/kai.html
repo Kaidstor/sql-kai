@@ -101,6 +101,9 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><td><code>kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
 <tr><td><code>kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
 <tr><td><code>kai saved list [&lt;alias&gt;]</code> / <code>kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
+<tr><td><code>kai rotate &lt;alias&gt;</code></td><td>Ротация пароля роли Postgres через sec (см. «Интеграция с sec»)</td></tr>
+<tr><td><code>kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются</td></tr>
+<tr><td><code>kai history --scan</code></td><td>Прогнать history.json через <code>sec scan</code></td></tr>
 <tr><td><code>kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
 <tr><td><code>kai profiles list|show|rm</code></td><td>Профили</td></tr>
 <tr><td><code>kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
@@ -157,6 +160,53 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 <p>Когда нужен: до базы не достучаться туннелем (порт не публикуется и IP контейнера
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
+
+<h2 id="sec">Интеграция с sec</h2>
+<p><a href="https://go.dev">sec</a> — отдельный агент-безопасный менеджер секретов
+(значения не попадают в argv/историю/чат). kai и sec <strong>не сливают хранилища</strong>:
+vault остаётся для GUI, sec — канал для CLI/агента и источник, где у пароля БД
+появляются аудит, версии и трекинг ротации. kai зовёт <code>sec</code> из PATH
+(или <code>KAI_SEC_BIN</code>); ключ пароля по конвенции — <code>&lt;имя-профиля&gt;/DB_PASSWORD</code>.</p>
+<div class="warn">Нужен <strong>свежий</strong> sec (с командами <code>scan</code>/<code>meta</code>).
+Если <code>kai</code> ругается «sec в PATH устарел» — пересобери его
+(<code>just install</code> в каталоге sec, или <code>go build -o ~/go/bin/sec .</code>).</div>
+
+<h3>Пароль БД в sec вместо vault (прод-политика)</h3>
+<p>Для прод-баз пароль можно вообще не хранить в kai, а держать только в sec —
+аудируемо и ротируемо:</p>
+<pre><code>kai discover gidcaf --to-sec --no-store    # пароль → sec (gidcaf/DB_PASSWORD), не в vault
+kai gidcaf -c "SELECT …" --from-sec        # берём пароль из sec на лету
+# эквивалент без флага: sec run gidcaf -- kai gidcaf -c "…" --password-env DB_PASSWORD</code></pre>
+<p><code>--to-sec</code> кладёт найденный пароль в sec и проставляет
+<code>meta --rotate-every 90d</code>; <code>--sec-key proj/KEY</code> задаёт ключ явно.
+<code>--from-sec</code> (и <code>--sec-key</code>) на <code>kai &lt;alias&gt;</code> / <code>saved run</code>
+берёт пароль из sec.</p>
+
+<h3>Ротация пароля роли</h3>
+<p><code>kai rotate</code> — то, чего не делает ни один инструмент в одиночку: sec
+генерирует/хранит/версионирует, kai применяет в БД. sec здесь ещё и страховка от
+локаута — прежнее значение уходит в историю sec.</p>
+<pre><code>kai rotate gidcaf --from-sec --yes    # роль по умолчанию = пользователь профиля</code></pre>
+<p>Порядок безопасный: <em>сохранить новый пароль в sec</em> (старое → история sec)
+→ <code>ALTER ROLE … PASSWORD</code> → <em>проверить свежим коннектом</em> → только
+потом обновить vault. Если <code>ALTER</code> не прошёл — новый пароль ещё не в БД,
+откат: <code>sec undo &lt;key&gt;</code>. Флаги: <code>--role</code>,
+<code>--sec-key</code>, <code>--length</code>, <code>--rotate-every</code>, <code>--yes</code>.</p>
+<div class="warn">Если ролью ходит сам сервис — после ротации он сломается, пока не
+обновишь его секрет (<code>sec push</code> → передеплой). kai предупреждает и требует
+подтверждение (<code>--yes</code> в неинтерактиве).</div>
+
+<h3>Гигиена и проверка</h3>
+<ul>
+  <li><strong>История:</strong> kai сам маскирует литералы после <code>PASSWORD</code>/<code>IDENTIFIED BY</code>
+      при записи (<code>… PASSWORD '***'</code>), поэтому пароль не оседает в history.json.
+      <code>kai history --scan</code> дополнительно проверяет файл через <code>sec scan</code>
+      (не осел ли где известный секрет).</li>
+  <li><strong>Дрейф:</strong> <code>kai doctor</code> по каждому профилю проверяет, что
+      сохранённый пароль ещё аутентифицируется, и ловит расхождение
+      «в vault одно, в sec другое, в БД работает третье». <code>fail</code> = хранимый
+      пароль не подходит (ненулевой exit); <code>sec stale</code> подскажет, что пора крутить по срокам.</li>
+</ul>
 
 <h2 id="mux">Переиспользование ssh (быстрее запросы)</h2>
 <p>Медленная часть подключения через ssh — не форвард, а рукопожатие и
@@ -237,6 +287,7 @@ env-переменной, vault не трогается вовсе.</p>
 <tr><th>Переменная</th><th>Назначение</th></tr>
 <tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>)</td></tr>
 <tr><td><code>KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
+<tr><td><code>KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-tauri</code>) — изолированные окружения и тесты</td></tr>
 </table>
 

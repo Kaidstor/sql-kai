@@ -39,6 +39,8 @@ kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/--js
 kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
 kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
 kai tables|columns|ddl|indexes <alias> [schema.]table
+kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
+kai doctor                      # сохранённые пароли ещё аутентифицируются?
 kai tunnel list|close [--all]   # персистентные ssh-туннели (ControlMaster)
 kai vault trust                 # тихий доступ CLI к паролям vault (keychain)
 ```
@@ -57,6 +59,16 @@ kai vault trust                 # тихий доступ CLI к паролям 
   авторизации (запросы за туннелем заметно быстрее). Включено по умолчанию;
   `--no-mux` отключает, `KAI_SSH_MUX_TTL` задаёт TTL, `kai tunnel list|close`
   управляет мастерами. GUI не затронут.
+- **Интеграция с [sec](https://go.dev)** (агент-безопасный менеджер секретов; хранилища не сливаются —
+  vault для GUI, sec для CLI). kai зовёт `sec` из PATH (или `KAI_SEC_BIN`), ключ
+  по конвенции `<имя>/DB_PASSWORD`:
+  - `kai discover --to-sec [--no-store]` — пароль БД в sec (прод-политика: не в vault),
+    `kai <alias> --from-sec` — брать пароль из sec на лету;
+  - `kai rotate <alias>` — ротация пароля роли: sec генерирует/версионирует (старое
+    в историю sec = страховка от локаута), kai применяет `ALTER ROLE` и проверяет;
+  - `kai doctor` — сохранённые пароли ещё аутентифицируются? (детект дрейфа vault↔sec↔БД);
+  - история запросов маскирует литералы паролей при записи, `kai history --scan` проверяет
+    её через `sec scan`.
 - Vault в CLI разлочивается по цепочке: keychain-trust (`kai vault trust` —
   копия DEK в login keychain, чтение без промптов) → `KAI_VAULT_PASSWORD` →
   запрос в TTY; полный обход — `--password-env VAR`.
