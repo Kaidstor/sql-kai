@@ -5,7 +5,7 @@ use serde::Serialize;
 use tauri::State;
 use tokio_postgres::{Client, NoTls};
 
-use crate::db::{self, ExecResult, Session, StatementResult};
+use crate::db::{self, cell, cell_bool, ExecResult, Session, StatementResult};
 use crate::error::AppError;
 use crate::store::{self, HistoryEntry, Profile, SavedQuery};
 use crate::vault;
@@ -39,16 +39,6 @@ fn with_session<T>(
 
 fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
     with_session(state, session_id, |s| s.client.clone())
-}
-
-/// Cell text at `i`; "" for NULL or a missing column.
-fn cell(row: &[Option<String>], i: usize) -> String {
-    row.get(i).cloned().flatten().unwrap_or_default()
-}
-
-/// Boolean cell rendered by Postgres as "true"/"false".
-fn cell_bool(row: &[Option<String>], i: usize) -> bool {
-    row.get(i).and_then(|v| v.as_deref()) == Some("true")
 }
 
 #[tauri::command]
@@ -282,23 +272,13 @@ pub struct TableInfo {
     pub kind: String,
 }
 
-const TABLES_SQL: &str = "\
-SELECT n.nspname, c.relname, c.relkind::text
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind IN ('r','p','v','m','f')
-  AND n.nspname NOT IN ('pg_catalog','information_schema')
-  AND n.nspname NOT LIKE 'pg_toast%'
-  AND n.nspname NOT LIKE 'pg_temp%'
-ORDER BY n.nspname, c.relname";
-
 #[tauri::command]
 pub async fn get_tables(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<TableInfo>, AppError> {
     let client = client_of(&state, &session_id)?;
-    let exec = db::execute(&client, TABLES_SQL, 100_000).await?;
+    let exec = db::execute(&client, db::TABLES_SQL, 100_000).await?;
     let mut out = Vec::new();
     for row in exec.results.iter().flat_map(|r| r.rows.iter()) {
         let kind = match row.get(2).and_then(|v| v.as_deref()) {
@@ -376,34 +356,13 @@ pub struct ColumnInfo {
     pub comment: Option<String>,
 }
 
-fn regclass_literal(schema: &str, table: &str) -> String {
-    db::quote_literal(&format!(
-        "{}.{}",
-        db::quote_ident(schema),
-        db::quote_ident(table)
-    ))
-}
-
 async fn introspect_rows(
     state: &State<'_, AppState>,
     session_id: &str,
     sql: &str,
 ) -> Result<Vec<Vec<Option<String>>>, AppError> {
     let client = client_of(state, session_id)?;
-    let exec = db::execute(&client, sql, 10_000).await?;
-    Ok(exec.results.into_iter().flat_map(|r| r.rows).collect())
-}
-
-/// First column of the first row — for single-value catalog lookups.
-async fn introspect_scalar(
-    state: &State<'_, AppState>,
-    session_id: &str,
-    sql: &str,
-) -> Result<Option<String>, AppError> {
-    Ok(introspect_rows(state, session_id, sql)
-        .await?
-        .first()
-        .and_then(|r| r[0].clone()))
+    db::query_rows(&client, sql).await
 }
 
 #[tauri::command]
@@ -413,7 +372,7 @@ pub async fn get_columns(
     schema: String,
     table: String,
 ) -> Result<Vec<ColumnInfo>, AppError> {
-    let sql = db::columns_sql(&regclass_literal(&schema, &table));
+    let sql = db::columns_sql(&db::regclass_literal(&schema, &table));
     let rows = introspect_rows(&state, &session_id, &sql).await?;
     Ok(rows
         .into_iter()
@@ -428,9 +387,7 @@ pub async fn get_columns(
         .collect())
 }
 
-/** Postgres has no SHOW CREATE TABLE — assemble the DDL from the catalogs:
- *  columns (types/defaults/identity), constraints, secondary indexes,
- *  partition key and comments. Views return their stored definition. */
+/// See db::table_ddl — assembled from the catalogs (no SHOW CREATE TABLE in PG).
 #[tauri::command]
 pub async fn get_table_ddl(
     state: State<'_, AppState>,
@@ -438,154 +395,8 @@ pub async fn get_table_ddl(
     schema: String,
     table: String,
 ) -> Result<String, AppError> {
-    let rel = format!("{}::regclass", regclass_literal(&schema, &table));
-    let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
-
-    let kind = introspect_scalar(
-        &state,
-        &session_id,
-        &format!("SELECT relkind::text FROM pg_class WHERE oid = {rel}"),
-    )
-    .await?
-    .unwrap_or_default();
-
-    if kind == "v" || kind == "m" {
-        let body = introspect_scalar(
-            &state,
-            &session_id,
-            &format!("SELECT pg_get_viewdef({rel}, true)"),
-        )
-        .await?
-        .unwrap_or_default();
-        let head = if kind == "m" {
-            "CREATE MATERIALIZED VIEW"
-        } else {
-            "CREATE OR REPLACE VIEW"
-        };
-        return Ok(format!("{head} {qualified} AS\n{body}"));
-    }
-
-    let cols = introspect_rows(
-        &state,
-        &session_id,
-        &format!(
-            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull::text, \
-             pg_get_expr(d.adbin, d.adrelid), a.attidentity::text, a.attgenerated::text \
-             FROM pg_attribute a \
-             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum"
-        ),
-    )
-    .await?;
-    let mut lines: Vec<String> = Vec::new();
-    for row in &cols {
-        let mut line = format!("  {} {}", db::quote_ident(&cell(row, 0)), cell(row, 1));
-        let default = row[3].as_deref();
-        match (row[5].as_deref(), row[4].as_deref()) {
-            (Some("s"), _) => line.push_str(&format!(
-                " GENERATED ALWAYS AS ({}) STORED",
-                default.unwrap_or_default()
-            )),
-            (_, Some("a")) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
-            (_, Some("d")) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
-            _ => {
-                if let Some(d) = default {
-                    line.push_str(&format!(" DEFAULT {d}"));
-                }
-            }
-        }
-        if cell_bool(row, 2) {
-            line.push_str(" NOT NULL");
-        }
-        lines.push(line);
-    }
-
-    // NOT NULL lives inline above — 'n' rows (PG18+) would duplicate it.
-    let cons = introspect_rows(
-        &state,
-        &session_id,
-        &format!(
-            "SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint \
-             WHERE conrelid = {rel} AND contype IN ('p','u','f','c','x') \
-             ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname"
-        ),
-    )
-    .await?;
-    for row in &cons {
-        lines.push(format!(
-            "  CONSTRAINT {} {}",
-            db::quote_ident(&cell(row, 0)),
-            cell(row, 1)
-        ));
-    }
-
-    let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n)", lines.join(",\n"));
-    if kind == "p" {
-        if let Some(part) = introspect_scalar(
-            &state,
-            &session_id,
-            &format!("SELECT pg_get_partkeydef({rel})"),
-        )
-        .await?
-        {
-            ddl.push_str(&format!(" PARTITION BY {part}"));
-        }
-    }
-    ddl.push(';');
-
-    let idx = introspect_rows(
-        &state,
-        &session_id,
-        &format!(
-            "SELECT pg_get_indexdef(i.indexrelid, 0, true) FROM pg_index i \
-             WHERE i.indrelid = {rel} \
-             AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid) \
-             ORDER BY 1"
-        ),
-    )
-    .await?;
-    for row in &idx {
-        if let Some(def) = row[0].as_deref() {
-            ddl.push_str(&format!("\n{def};"));
-        }
-    }
-
-    if let Some(c) = introspect_scalar(
-        &state,
-        &session_id,
-        &format!("SELECT obj_description({rel}, 'pg_class')"),
-    )
-    .await?
-    {
-        ddl.push_str(&format!(
-            "\nCOMMENT ON TABLE {qualified} IS {};",
-            db::quote_literal(&c)
-        ));
-    }
-    let comments = introspect_rows(
-        &state,
-        &session_id,
-        &format!(
-            "SELECT a.attname, col_description(a.attrelid, a.attnum) \
-             FROM pg_attribute a \
-             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
-               AND col_description(a.attrelid, a.attnum) IS NOT NULL \
-             ORDER BY a.attnum"
-        ),
-    )
-    .await?;
-    for row in &comments {
-        if let Some(c) = row[1].as_deref() {
-            ddl.push_str(&format!(
-                "\nCOMMENT ON COLUMN {qualified}.{} IS {};",
-                db::quote_ident(&cell(row, 0)),
-                db::quote_literal(c)
-            ));
-        }
-    }
-
-    Ok(ddl)
+    let client = client_of(&state, &session_id)?;
+    db::table_ddl(&client, &schema, &table).await
 }
 
 #[derive(Serialize)]
@@ -605,7 +416,7 @@ pub async fn get_indexes(
     schema: String,
     table: String,
 ) -> Result<Vec<IndexInfo>, AppError> {
-    let sql = db::indexes_sql(&regclass_literal(&schema, &table));
+    let sql = db::indexes_sql(&db::regclass_literal(&schema, &table));
     let rows = introspect_rows(&state, &session_id, &sql).await?;
     Ok(rows
         .into_iter()
@@ -637,7 +448,7 @@ pub async fn get_relations(
     schema: String,
     table: String,
 ) -> Result<Vec<RelationInfo>, AppError> {
-    let sql = db::relations_sql(&regclass_literal(&schema, &table));
+    let sql = db::relations_sql(&db::regclass_literal(&schema, &table));
     let rows = introspect_rows(&state, &session_id, &sql).await?;
     Ok(rows
         .into_iter()
@@ -668,7 +479,7 @@ pub async fn get_triggers(
     schema: String,
     table: String,
 ) -> Result<Vec<TriggerInfo>, AppError> {
-    let sql = db::triggers_sql(&regclass_literal(&schema, &table));
+    let sql = db::triggers_sql(&db::regclass_literal(&schema, &table));
     let rows = introspect_rows(&state, &session_id, &sql).await?;
     Ok(rows
         .into_iter()
