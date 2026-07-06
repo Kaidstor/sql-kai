@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kai — CLI к sql-kai</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d23; --muted: #6b7280; --accent: #0d7490;
+    --code-bg: #f4f5f7; --border: #e5e7eb; --card: #fafbfc; --warn: #92400e; --warn-bg: #fef3c7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101216; --fg: #e6e8eb; --muted: #9aa2ad; --accent: #4dd0e1;
+      --code-bg: #1a1e25; --border: #2a2f38; --card: #161a20; --warn: #fcd34d; --warn-bg: #3a2e10;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 2.5rem 1.25rem 5rem; max-width: 880px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; }
+  h1 code { font-size: inherit; }
+  h2 { font-size: 1.35rem; margin: 2.5rem 0 .75rem; padding-top: .75rem; border-top: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 .5rem; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  a { color: var(--accent); }
+  code, pre {
+    font: 13.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg); border-radius: 6px;
+  }
+  code { padding: .1em .35em; }
+  pre { padding: .9rem 1.1rem; overflow-x: auto; border: 1px solid var(--border); }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; font-size: .95rem; }
+  th, td { text-align: left; padding: .45rem .7rem; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--card); font-weight: 600; }
+  td code { white-space: nowrap; }
+  .note {
+    background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: .7rem 1rem; margin: 1rem 0;
+  }
+  .warn {
+    background: var(--warn-bg); color: var(--warn); border-radius: 6px;
+    padding: .7rem 1rem; margin: 1rem 0; border: 1px solid transparent;
+  }
+  .warn code { background: rgba(0,0,0,.12); color: inherit; }
+  .scheme {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.25rem; margin: 1rem 0; overflow-x: auto;
+  }
+  .scheme pre { border: none; background: none; padding: 0; margin: 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1><code>kai</code> — CLI к sql-kai</h1>
+<p class="lead">Консольный клиент поверх того же Rust-ядра, что и приложение sql-kai:
+общие профили подключений, ssh-туннели, vault с паролями и история запросов.
+Собирается из этого же репозитория (<code>src-tauri</code>, cargo-фича <code>cli</code>).</p>
+
+<h2 id="quickstart">Быстрый старт</h2>
+<pre><code>kai profiles list                       # какие профили уже есть (общие с GUI)
+kai domainator -c "SELECT count(*) FROM domains"
+echo "SELECT now()" | kai orchestrator  # SQL со stdin; или -f query.sql
+kai coordinator -c "..." --json         # структурный вывод для скриптов/агентов</code></pre>
+<p><code>kai &lt;alias&gt; …</code> — сокращение для <code>kai q &lt;alias&gt; …</code>.
+<em>alias</em> — имя, id или группа профиля.</p>
+
+<h2 id="install">Установка</h2>
+<h3>С этой машины (из репозитория)</h3>
+<pre><code>cd ~/Projects/own/sql-tauri
+pnpm install &amp;&amp; pnpm build     # dist нужен для сборки (generate_context!)
+cargo install --path src-tauri --features cli --bin kai   # → ~/.cargo/bin/kai
+# переподписать стабильным сертификатом, чтобы vault trust не переспрашивал keychain:
+codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/kai</code></pre>
+
+<h3>Другим пользователям (готовый бинарь из релиза)</h3>
+<p>Начиная с первого релиза после добавления CLI, <code>release.sh</code> кладёт
+<code>kai-darwin-aarch64.tar.gz</code> в assets GitLab-релиза:</p>
+<pre><code>curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/kai-darwin-aarch64.tar.gz \
+  | tar xz -C /usr/local/bin        # или ~/.local/bin, если он в PATH
+kai --version</code></pre>
+<div class="note">Бинарь только для macOS arm64 (собирается локально на машине мейнтейнера).
+Intel-мак или Linux — собирать из исходников (раздел выше; понадобятся Rust, pnpm и системные
+зависимости Tauri). Скачивание через <code>curl</code> не ставит quarantine-атрибут; если файл
+скачан браузером — <code>xattr -d com.apple.quarantine kai</code>.</div>
+<p>У нового пользователя свой vault и пустой список профилей: <code>kai vault setup</code>,
+затем <code>kai discover &lt;ssh-alias&gt;</code> для каждого сервиса.</p>
+
+<h2 id="commands">Команды</h2>
+<table>
+<tr><th>Команда</th><th>Что делает</th></tr>
+<tr><td><code>kai &lt;alias&gt; -c "SQL"</code></td><td>Выполнить SQL в базе профиля (= <code>kai q</code>). SQL: <code>-c</code> (повторяемо), <code>-f file.sql</code>, stdin</td></tr>
+<tr><td><code>kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
+<tr><td><code>kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
+<tr><td><code>kai tables &lt;alias&gt;</code></td><td>Список таблиц/вьюх</td></tr>
+<tr><td><code>kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
+<tr><td><code>kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
+<tr><td><code>kai saved list [&lt;alias&gt;]</code> / <code>kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
+<tr><td><code>kai profiles list|show|rm</code></td><td>Профили</td></tr>
+<tr><td><code>kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
+</table>
+<p><code>kai &lt;команда&gt; --help</code> — все флаги.</p>
+
+<h2 id="query">Запросы</h2>
+<h3>Read-only по умолчанию</h3>
+<p>Каждая сессия сразу выполняет <code>SET default_transaction_read_only = on</code>.
+<code>INSERT/UPDATE/DELETE/DDL</code> упадут с ошибкой сервера — это защита от случайной записи
+в прод. Запись — явным флагом:</p>
+<pre><code>kai domainator -c "UPDATE domains SET status='ok' WHERE id=42" --write</code></pre>
+
+<h3>Транзакции</h3>
+<p>Несколько стейтментов (повторные <code>-c</code>, файл, stdin) уходят одним батчем —
+это <strong>одна неявная транзакция</strong>: ошибка в середине откатывает всё,
+сессия не остаётся в aborted-состоянии.</p>
+
+<h3>Форматы вывода</h3>
+<table>
+<tr><th>Флаг</th><th>Формат</th></tr>
+<tr><td><span class="muted">(без флага)</span></td><td>pretty-таблица + <code>(N rows)</code>; не-SELECT — <code>-- N row(s) affected</code></td></tr>
+<tr><td><code>--json</code></td><td><code>{results:[{columns, rows, rowsAffected, truncated}], durationMs}</code>; NULL = <code>null</code> — единственный формат, где NULL отличим от пустой строки</td></tr>
+<tr><td><code>--csv</code></td><td>CSV с заголовком (RFC 4180)</td></tr>
+<tr><td><code>-t</code> / <code>--tuples</code></td><td>Только значения через <code>|</code>, без заголовков — для <code>grep/awk</code></td></tr>
+</table>
+<p>Результат капится <code>--max-rows N</code> (по умолчанию 1000) — в выводе будет пометка
+truncated. <code>-v</code> печатает в stderr, куда именно подключились
+(<code>[имя → user@host:port/db via ssh:… PostgreSQL 16.13 ro]</code>).</p>
+
+<h2 id="discover">Профили и discover</h2>
+<p>Профиль — это host/port/база/юзер + опциональный ssh-туннель; хранится в
+<code>profiles.json</code> (общий с GUI: заведённое в CLI сразу видно в приложении и наоборот).</p>
+<p><code>kai discover &lt;ssh-alias&gt;</code> автоматизирует заведение профиля для типового
+rebrandy-сервиса (postgres в docker-compose на хосте):</p>
+<ol>
+  <li>Идёт по ssh на хост (алиас из <code>~/.ssh/config.d/*</code>, аутентификация ключами/agent).</li>
+  <li>Находит postgres-контейнер в <code>docker ps</code> (имя с <code>db</code>/<code>postgres</code>; при необходимости <code>sudo docker</code>).</li>
+  <li>Достаёт из env контейнера <code>POSTGRES_USER / POSTGRES_DB / POSTGRES_PASSWORD</code>.</li>
+  <li>Выбирает точку подключения: опубликованный порт (<code>docker port … 5432</code>) → <code>127.0.0.1:порт</code>,
+      иначе IP контейнера в bridge-сети (с хоста маршрутизируется) → <code>ip:5432</code>.</li>
+  <li>Сохраняет профиль (имя = алиас, ssh-туннель на алиас), пароль — в vault, и проверяет подключение.</li>
+</ol>
+<p>Подключение потом идёт как в GUI: <code>ssh -N -L</code> локальный порт → точка из шага 4.
+Если контейнер пересоздали и IP «уехал» — просто повтори <code>kai discover</code>.
+<code>--dry-run</code> покажет найденное без сохранения, <code>--name</code> задаст имя профиля.</p>
+
+<h2 id="exec">Exec-режим (fallback)</h2>
+<p><code>kai exec &lt;ssh-alias&gt;</code> — прямой режим без профиля и vault, как у старого
+prod-db: ssh на хост → найти контейнер → <code>docker exec psql</code>. Пароль не нужен
+(psql внутри контейнера ходит по trust/peer). Вывод — сырой текст psql
+(<code>-t</code>, <code>--csv</code> прокидываются в psql). Тот же read-only guard: без
+<code>--write</code> в начало SQL добавляется <code>SET default_transaction_read_only = on</code>.</p>
+<p>Когда нужен: до базы не достучаться туннелем (порт не публикуется и IP контейнера
+недоступен), пароля нет в env контейнера, или профиль заводить незачем.
+<code>--dry-run</code> печатает команду, не заходя на хост.</p>
+
+<h2 id="vault">Vault: как CLI читает пароли</h2>
+<p>Пароли БД и ssh-пассфразы лежат в <code>vault.json</code>, зашифрованные одним случайным
+ключом — <strong>DEK</strong> (AES-256-GCM). Сам DEK в открытом виде нигде не хранится:
+он «завёрнут» ключом, выведенным из мастер-пароля (Argon2id).</p>
+<div class="scheme"><pre>
+мастер-пароль ──Argon2id──► KEK ──расшифровывает──► DEK ──расшифровывает──► пароли (vault.json)
+
+DEK можно получить тремя путями:
+  1. мастер-пароль          — всегда работает (GUI и CLI)
+  2. Touch ID (GUI)         — копия DEK в keychain, чтение гейтится биометрией
+  3. cli trust (kai)        — копия DEK в login keychain, чтение БЕЗ промпта
+</pre></div>
+<p>GUI спрашивает мастер-пароль один раз и держит DEK в памяти процесса до выхода.
+CLI-процесс живёт доли секунды — «держать в памяти» негде, и без trust каждый запуск
+требовал бы мастер-пароль. <code>kai vault trust</code> решает это так:</p>
+<ol>
+  <li>Разлочивает vault (спросит мастер-пароль — единственный интерактивный шаг).</li>
+  <li>Кладёт <em>копию DEK</em> в login keychain macOS обычной записью
+      (service <code>com.kaidstor.sql-tauri.vault</code>, account <code>dek-cli</code>).</li>
+  <li>Дальше каждый запуск <code>kai</code> молча читает эту запись: macOS разрешает читать
+      keychain-запись без подтверждения тому бинарю, который её создал (ACL по подписи кода).
+      Любому другому приложению система покажет диалог.</li>
+</ol>
+<p>Что это значит с точки зрения безопасности:</p>
+<ul>
+  <li>На диске копия DEK защищена шифрованием login keychain — он расшифровывается паролем
+      пользователя при входе в macOS.</li>
+  <li>Пока сессия пользователя разблокирована, <code>kai</code> читает пароли без вопросов —
+      тот же trade-off, что у <code>ssh-agent</code> с добавленным ключом.</li>
+  <li>Touch ID-копия GUI — отдельная запись: её чтение приложение дополнительно гейтит
+      биометрией. Для CLI биометрию не ставим сознательно: агент, шлющий десяток запросов,
+      дёргал бы палец на каждый.</li>
+  <li><code>kai vault revoke</code> удаляет запись — остаётся путь через мастер-пароль.</li>
+  <li>Если vault пересоздали, старая копия DEK перестаёт подходить (GCM-аутентификация
+      падает) — kai сам удалит протухшую запись и попросит сделать trust заново.</li>
+</ul>
+
+<h3>Разлок без trust (скрипты, CI)</h3>
+<p>Полная цепочка, которую kai пробует по порядку, когда профилю нужен секрет из vault:</p>
+<ol>
+  <li>keychain-trust (тихо);</li>
+  <li>env <code>KAI_VAULT_PASSWORD</code> — мастер-пароль из окружения;</li>
+  <li>интерактивный запрос в терминале (если есть TTY).</li>
+</ol>
+<p>Полный обход vault — <code>--password-env VAR</code>: пароль БД берётся из указанной
+env-переменной, vault не трогается вовсе.</p>
+
+<h2 id="env">Переменные окружения</h2>
+<table>
+<tr><th>Переменная</th><th>Назначение</th></tr>
+<tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>)</td></tr>
+<tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-tauri</code>) — изолированные окружения и тесты</td></tr>
+</table>
+
+<h2 id="exit">Коды выхода</h2>
+<table>
+<tr><th>Код</th><th>Значение</th></tr>
+<tr><td>0</td><td>Успех</td></tr>
+<tr><td>1</td><td>Ошибка SQL / подключения / kai (текст в stderr)</td></tr>
+<tr><td>2</td><td>Ошибка аргументов (clap)</td></tr>
+<tr><td>прочие</td><td><code>kai exec</code> пробрасывает код psql/ssh с хоста</td></tr>
+</table>
+
+<h2 id="trouble">Troubleshooting</h2>
+<table>
+<tr><th>Симптом</th><th>Что делать</th></tr>
+<tr><td>Системный диалог «kai wants to access …» после обновления бинаря</td>
+    <td>Подпись бинаря сменилась, keychain перепроверяет ACL — «Always Allow» один раз,
+        либо заново <code>kai vault trust</code>. Релизный бинарь подписывается стабильным
+        сертификатом, у него таких промптов нет.</td></tr>
+<tr><td><code>the CLI trust key was stale and has been reset</code></td>
+    <td>Vault был пересоздан — <code>kai vault trust</code> заново.</td></tr>
+<tr><td><code>vault заблокирован…</code> в скрипте без TTY</td>
+    <td><code>kai vault trust</code> (один раз интерактивно), либо <code>KAI_VAULT_PASSWORD</code>, либо <code>--password-env</code>.</td></tr>
+<tr><td>discover: «нет ни опубликованного порта, ни IP» / подключение по туннелю не проходит</td>
+    <td>Использовать <code>kai exec &lt;alias&gt;</code> — работает через docker exec без открытых портов.</td></tr>
+<tr><td><code>cannot execute … in a read-only transaction</code></td>
+    <td>Так и задумано: добавь <code>--write</code>, если запись действительно согласована.</td></tr>
+<tr><td>Внешний managed-Postgres (не в docker на хосте)</td>
+    <td>discover его не найдёт — завести профиль руками в GUI (или найти DSN в .env/Infisical).</td></tr>
+</table>
+
+<p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/kai/</code> ·
+пересборка: <code>cargo install --path src-tauri --features cli --bin kai</code></p>
+
+</body>
+</html>
