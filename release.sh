@@ -75,6 +75,14 @@ if [[ -z "${SKIP_BUILD:-}" ]]; then
   echo "> Устанавливаем deps и собираем…"
   pnpm install
   pnpm tauri build --ci --bundles app  # --ci отключает интерактивность, --bundles app пропускает DMG
+  echo "> Собираем CLI kai…"
+  (cd src-tauri && cargo build --release --features cli --bin kai)
+  # cargo даёт ad-hoc подпись (меняется при каждой сборке → keychain-промпты
+  # у vault trust); переподписываем тем же сертификатом, что и приложение
+  SIGN_ID=$(jq -r '.bundle.macOS.signingIdentity // empty' src-tauri/tauri.conf.json)
+  if [[ -n "$SIGN_ID" ]]; then
+    codesign --force --sign "$SIGN_ID" src-tauri/target/release/kai
+  fi
   echo "✔️  Сборка готова"
 else
   echo "> SKIP_BUILD задан — пропускаем стадию сборки."
@@ -107,6 +115,10 @@ cat > "$BUNDLE_DIR/latest.json" <<EOF
 }
 EOF
 
+echo "> Пакуем CLI kai…"
+# имя без версии — стабильная ссылка через permalink/latest/downloads/
+tar -czf "$BUNDLE_DIR/kai-darwin-aarch64.tar.gz" -C src-tauri/target/release kai
+
 echo "> Собираем список артефактов текущей версии…"
 
 BUNDLE_FILES=()
@@ -114,7 +126,7 @@ BUNDLE_FILES=()
 # что содержат номер текущей версии $NEW_VER или latest.json
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
-  if [[ "$name" == *"$NEW_VER"* ]] || [[ "$name" == "latest.json" ]] || [[ "$name" == *.app.tar.gz ]] || [[ "$name" == *.app.tar.gz.sig ]]; then
+  if [[ "$name" == *"$NEW_VER"* ]] || [[ "$name" == "latest.json" ]] || [[ "$name" == *.app.tar.gz ]] || [[ "$name" == *.app.tar.gz.sig ]] || [[ "$name" == kai-*.tar.gz ]]; then
     BUNDLE_FILES+=("$file")
   fi
 done < <(find "$BUNDLE_DIR" -type f \( \
