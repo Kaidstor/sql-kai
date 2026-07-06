@@ -295,6 +295,58 @@ fn bio_err(e: BioError) -> AppError {
     })
 }
 
+// --- CLI trust (keychain, no biometry gate) -----------------------------------
+
+/// Puts a DEK copy in the login keychain readable by the CLI without a prompt
+/// (the keychain per-app ACL still applies). Vault must be unlocked.
+pub fn enable_cli_trust() -> Result<(), AppError> {
+    let guard = VAULT.lock().unwrap();
+    let v = guard
+        .as_ref()
+        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+    biometric::store_dek_cli(&v.dek).map_err(bio_err)
+}
+
+pub fn disable_cli_trust() {
+    biometric::delete_dek_cli();
+}
+
+/// Whether a CLI-trust DEK copy is present (probes the keychain).
+pub fn cli_trust_enrolled() -> bool {
+    biometric::read_dek_cli().is_ok()
+}
+
+/// Unlocks with the CLI-trust keychain copy of the DEK. A stale key (vault
+/// recreated since enrollment) removes itself with a recovery hint.
+pub fn unlock_cli_trust() -> Result<(), AppError> {
+    let file = read_file()?;
+    let mut dek_vec = match biometric::read_dek_cli() {
+        Ok(v) => v,
+        Err(BioError::Stale) => {
+            return Err(AppError::Msg(
+                "CLI trust is not set up — run `kai vault trust` first".into(),
+            ))
+        }
+        Err(e) => return Err(bio_err(e)),
+    };
+    let dek: [u8; 32] = match dek_vec.clone().try_into() {
+        Ok(d) => d,
+        Err(_) => {
+            dek_vec.zeroize();
+            return Err(stale_cli_trust());
+        }
+    };
+    dek_vec.zeroize();
+    install_unlocked(dek, file).map_err(|_| stale_cli_trust())
+}
+
+fn stale_cli_trust() -> AppError {
+    disable_cli_trust();
+    AppError::Msg(
+        "the CLI trust key was stale and has been reset — run `kai vault trust` again".into(),
+    )
+}
+
 pub fn lock() {
     *VAULT.lock().unwrap() = None;
 }

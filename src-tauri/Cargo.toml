@@ -9,6 +9,18 @@ edition = "2021"
 name = "sql_tauri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# CLI поверх того же ядра (db/store/vault/tunnel). Собирается только с
+# фичей cli, чтобы GUI-сборка не тянула clap:
+#   cargo build --release --features cli --bin kai
+[[bin]]
+name = "kai"
+path = "src/bin/kai/main.rs"
+required-features = ["cli"]
+
+[features]
+default = []
+cli = ["dep:clap", "dep:rpassword"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -31,6 +43,8 @@ argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
 zeroize = "1"
+clap = { version = "4", features = ["derive", "wrap_help"], optional = true }
+rpassword = { version = "7", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

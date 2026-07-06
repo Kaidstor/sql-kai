@@ -6,10 +6,14 @@ use std::path::{Path, PathBuf};
 use crate::error::AppError;
 
 /// Path of `file` inside the app's config dir (created on demand).
+/// `SQL_KAI_CONFIG_DIR` overrides the location (isolated runs, tests).
 pub fn config_path(file: &str) -> Result<PathBuf, AppError> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| AppError::Msg("cannot resolve user config dir".into()))?
-        .join("sql-tauri");
+    let dir = match std::env::var_os("SQL_KAI_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(custom) => PathBuf::from(custom),
+        None => dirs::config_dir()
+            .ok_or_else(|| AppError::Msg("cannot resolve user config dir".into()))?
+            .join("sql-tauri"),
+    };
     fs::create_dir_all(&dir)?;
     Ok(dir.join(file))
 }

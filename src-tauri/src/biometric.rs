@@ -35,6 +35,10 @@ mod imp {
 
     const SERVICE: &str = "com.kaidstor.sql-tauri.vault";
     const ACCOUNT: &str = "dek";
+    /// DEK copy for the `kai` CLI: same login keychain, but read without a
+    /// biometry gate — the keychain's per-app ACL is the only guard, so short
+    /// CLI invocations stay prompt-free after a one-time "Always Allow".
+    const ACCOUNT_CLI: &str = "dek-cli";
 
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
     /// LAError codes meaning "the user chose not to proceed":
@@ -102,6 +106,26 @@ mod imp {
     pub fn delete_dek() {
         let _ = passwords::delete_generic_password(SERVICE, ACCOUNT);
     }
+
+    pub fn store_dek_cli(dek: &[u8]) -> Result<(), BioError> {
+        passwords::set_generic_password(SERVICE, ACCOUNT_CLI, dek)
+            .map_err(|e| BioError::Other(format!("keychain error: {e}")))
+    }
+
+    /// Keychain read without an app-level auth gate (see ACCOUNT_CLI).
+    pub fn read_dek_cli() -> Result<Vec<u8>, BioError> {
+        passwords::get_generic_password(SERVICE, ACCOUNT_CLI).map_err(|e| {
+            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                BioError::Stale
+            } else {
+                BioError::Other(format!("keychain error: {e}"))
+            }
+        })
+    }
+
+    pub fn delete_dek_cli() {
+        let _ = passwords::delete_generic_password(SERVICE, ACCOUNT_CLI);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -125,6 +149,22 @@ mod imp {
     }
 
     pub fn delete_dek() {}
+
+    pub fn store_dek_cli(_dek: &[u8]) -> Result<(), BioError> {
+        Err(BioError::Other(
+            "keychain trust is not supported on this OS".into(),
+        ))
+    }
+
+    pub fn read_dek_cli() -> Result<Vec<u8>, BioError> {
+        Err(BioError::Other(
+            "keychain trust is not supported on this OS".into(),
+        ))
+    }
+
+    pub fn delete_dek_cli() {}
 }
 
-pub use imp::{delete_dek, read_dek, store_dek, supported};
+pub use imp::{
+    delete_dek, delete_dek_cli, read_dek, read_dek_cli, store_dek, store_dek_cli, supported,
+};
