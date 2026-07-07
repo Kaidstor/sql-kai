@@ -91,6 +91,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -138,6 +139,7 @@ pub fn run() {
             commands::get_relations,
             commands::get_triggers,
             commands::get_table_page,
+            commands::save_text_file,
             commands::copy_text_concealed,
         ])
         .build(tauri::generate_context!())

@@ -15,6 +15,7 @@ import {
   Database,
   Eraser,
   EyeOff,
+  FileDown,
   MoveHorizontal,
   Pencil,
   RotateCcw,
@@ -35,7 +36,10 @@ import {
   type ClipboardEvent,
   type MouseEvent,
 } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api, errText } from "../lib/api";
 import { copyText, readClipboardText } from "../lib/clipboard";
+import { toCsv, toJson, toMarkdown } from "../lib/export";
 import { quoteIdent, quoteLit } from "../lib/sql";
 import { useApp, type InsertRow } from "../lib/store";
 import type { SortSpec, StatementResult } from "../lib/types";
@@ -656,6 +660,54 @@ export function ResultsGrid({
       ...result.rows.map((r) => r.map((v) => v ?? "").join("\t")),
     ].join("\n");
     copyAndToast(text, `Copied ${result.rows.length} row(s) with header`);
+  };
+
+  // --- Export (CSV / JSON / Markdown) ---------------------------------------
+  // Selected rows when a selection exists, the whole result otherwise;
+  // hidden columns are left out, mirroring what's on screen.
+  const exportable = () => {
+    const rowIdxs = n > 0 ? selRows : result.rows.map((_, i) => i);
+    const visCols = result.columns
+      .map((_, i) => i)
+      .filter((i) => !hiddenCols.has(i));
+    return {
+      columns: visCols.map((i) => result.columns[i]),
+      rows: rowIdxs.map((ri) => visCols.map((ci) => result.rows[ri][ci])),
+    };
+  };
+
+  const exportLabel = n > 0 ? `${n} row(s)` : "all";
+
+  const exportRows = async (kind: "csv" | "json" | "md") => {
+    const { columns, rows } = exportable();
+    const content =
+      kind === "csv"
+        ? toCsv(columns, rows)
+        : kind === "json"
+          ? toJson(columns, rows)
+          : toMarkdown(columns, rows);
+    try {
+      const path = await save({
+        defaultPath: `${insertTarget?.table ?? "result"}.${kind}`,
+        filters: [
+          { name: kind.toUpperCase(), extensions: [kind] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (!path) return;
+      await api.saveTextFile(path, content);
+      copied(`Exported ${rows.length} row(s) → ${path.split("/").pop()}`);
+    } catch (e) {
+      showToast(errText(e));
+    }
+  };
+
+  const copyMarkdown = () => {
+    const { columns, rows } = exportable();
+    copyAndToast(
+      toMarkdown(columns, rows),
+      `Copied ${rows.length} row(s) as Markdown`,
+    );
   };
 
   const dirty = Boolean(
@@ -1412,6 +1464,35 @@ export function ResultsGrid({
             <ContextMenuSeparator />
             <ContextMenuItem icon={Sheet} disabled={!result.rows.length} onClick={copyAll}>
               Copy all with header (TSV)
+            </ContextMenuItem>
+            <ContextMenuItem
+              icon={Braces}
+              disabled={!result.rows.length}
+              onClick={copyMarkdown}
+            >
+              Copy {exportLabel} as Markdown
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              icon={FileDown}
+              disabled={!result.rows.length}
+              onClick={() => void exportRows("csv")}
+            >
+              Export {exportLabel} as CSV…
+            </ContextMenuItem>
+            <ContextMenuItem
+              icon={FileDown}
+              disabled={!result.rows.length}
+              onClick={() => void exportRows("json")}
+            >
+              Export {exportLabel} as JSON…
+            </ContextMenuItem>
+            <ContextMenuItem
+              icon={FileDown}
+              disabled={!result.rows.length}
+              onClick={() => void exportRows("md")}
+            >
+              Export {exportLabel} as Markdown…
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem

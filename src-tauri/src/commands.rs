@@ -645,6 +645,13 @@ pub async fn get_table_page(
     })
 }
 
+/// Writes an exported result set to the path picked in the save dialog.
+#[tauri::command]
+pub fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
+    std::fs::write(&path, contents)?;
+    Ok(())
+}
+
 /// Copies text marked as concealed (`org.nspasteboard.ConcealedType` on macOS)
 /// so clipboard-history managers skip it.
 #[tauri::command]

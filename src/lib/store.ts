@@ -282,7 +282,10 @@ interface AppStore {
   setTabSql: (tabId: string, sql: string) => void;
   setTabMaxRows: (tabId: string, maxRows: number) => void;
   setTabEditorPct: (tabId: string, editorPct: number) => void;
-  runQuery: (tabId: string) => Promise<void>;
+  /** Runs the tab's SQL, or `sqlOverride` (an editor selection) when given.
+   *  The override is executed and recorded to history, but not persisted as
+   *  the tab's SQL. */
+  runQuery: (tabId: string, sqlOverride?: string) => Promise<void>;
   cancelQuery: (tabId: string) => Promise<void>;
   loadTablePage: (
     tabId: string,
@@ -1296,12 +1299,12 @@ export const useApp = create<AppStore>((set, get) => {
   setTabEditorPct: (tabId, editorPct) =>
     patchTab<QueryTabState>(tabId, { editorPct }),
 
-  runQuery: async (tabId) => {
+  runQuery: async (tabId, sqlOverride) => {
     const tab = tabOf(tabId, "query");
     if (!tab || tab.state.running) return;
     const session = sessionFor(tab.profileId);
     if (!session) return;
-    const sql = tab.state.sql.trim();
+    const sql = (sqlOverride ?? tab.state.sql).trim();
     if (!sql) return;
     if (!confirmProdRun(tab.profileId, sql)) return;
     const pushHistory = (ok: boolean) => {

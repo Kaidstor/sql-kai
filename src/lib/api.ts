@@ -105,6 +105,9 @@ export const api = {
   getAllColumns: (sessionId: string) =>
     invoke<TableColumns[]>("get_all_columns", { sessionId }),
 
+  saveTextFile: (path: string, contents: string) =>
+    invoke<void>("save_text_file", { path, contents }),
+
   getTableDdl: (sessionId: string, schema: string, table: string) =>
     invoke<string>("get_table_ddl", { sessionId, schema, table }),
 

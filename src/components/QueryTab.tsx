@@ -1,6 +1,6 @@
 import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { CircleStop, Play } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -85,6 +85,16 @@ function ResultBlock({ result }: { result: StatementResult }) {
   );
 }
 
+/** Non-empty text of the editor's primary selection, trimmed — undefined when
+ *  nothing is selected (or only whitespace), so Run falls back to the whole
+ *  editor. A selection may span several statements; that runs fine. */
+function selectionText(view: EditorView): string | undefined {
+  const { from, to } = view.state.selection.main;
+  if (from === to) return undefined;
+  const text = view.state.sliceDoc(from, to).trim();
+  return text || undefined;
+}
+
 /** Keep in sync with the connections list height in Sidebar.tsx (max-h-[40%]). */
 const DEFAULT_EDITOR_PCT = 40;
 /** Minimum pane height while dragging; below half of it the editor snaps shut. */
@@ -104,7 +114,17 @@ export function QueryTab({ tab }: { tab: Tab }) {
   const schemaColumns = useApp((s) => s.schemaColumns[tab.profileId]);
   const lightTheme = useApp((s) => Boolean(themeById(s.settings.theme).light));
   const splitRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  // Drives the "Run selection" label — mirrors whether the editor selection
+  // holds runnable (non-whitespace) text.
+  const [hasSelection, setHasSelection] = useState(false);
   const editorPct = state.editorPct ?? DEFAULT_EDITOR_PCT;
+
+  /** Run the selection if there is one, otherwise the whole editor. */
+  const run = () => {
+    const view = viewRef.current;
+    void runQuery(tab.id, view ? selectionText(view) : undefined);
+  };
 
   const resizeTo = (clientY: number) => {
     const split = splitRef.current;
@@ -131,12 +151,17 @@ export function QueryTab({ tab }: { tab: Tab }) {
         schema: namespace as SQLNamespace,
         defaultSchema: "public",
       }),
+      EditorView.updateListener.of((u) => {
+        if (u.selectionSet || u.docChanged) {
+          setHasSelection(selectionText(u.view) !== undefined);
+        }
+      }),
       Prec.highest(
         keymap.of([
           {
             key: "Mod-Enter",
-            run: () => {
-              void useApp.getState().runQuery(tab.id);
+            run: (view) => {
+              void useApp.getState().runQuery(tab.id, selectionText(view));
               return true;
             },
           },
@@ -156,10 +181,10 @@ export function QueryTab({ tab }: { tab: Tab }) {
           <Button
             variant="primary"
             disabled={!connected || !state.sql.trim()}
-            onClick={() => void runQuery(tab.id)}
-            title="⌘⏎"
+            onClick={run}
+            title={hasSelection ? "Run selected SQL · ⌘⏎" : "⌘⏎"}
           >
-            <Play size={13} /> Run
+            <Play size={13} /> {hasSelection ? "Run selection" : "Run"}
           </Button>
         )}
         <Select
@@ -179,11 +204,13 @@ export function QueryTab({ tab }: { tab: Tab }) {
         <div className="ml-auto text-[11px] text-zinc-500">
           {state.running
             ? "running…"
-            : state.result
-              ? `${state.result.durationMs} ms`
-              : connected
-                ? "⌘⏎ to run"
-                : "not connected"}
+            : hasSelection
+              ? "⌘⏎ runs selection"
+              : state.result
+                ? `${state.result.durationMs} ms`
+                : connected
+                  ? "⌘⏎ to run"
+                  : "not connected"}
         </div>
       </div>
 
@@ -199,6 +226,9 @@ export function QueryTab({ tab }: { tab: Tab }) {
           <CodeMirror
             value={state.sql}
             onChange={(value) => setTabSql(tab.id, value)}
+            onCreateEditor={(view) => {
+              viewRef.current = view;
+            }}
             extensions={extensions}
             theme={lightTheme ? editorThemes.light : editorThemes.dark}
             height="100%"
