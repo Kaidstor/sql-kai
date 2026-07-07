@@ -10,6 +10,7 @@ import { StatusBar } from "./components/StatusBar";
 import { StructureTab } from "./components/StructureTab";
 import { TableTab } from "./components/TableTab";
 import { TabsBar } from "./components/TabsBar";
+import { UpdateToast } from "./components/UpdateToast";
 import { VaultGate } from "./components/VaultGate";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
@@ -176,6 +177,7 @@ function App() {
         </main>
       </div>
       <StatusBar />
+      <UpdateToast />
       <ConnectionDialog />
       <SettingsDialog />
       <AppPalette />

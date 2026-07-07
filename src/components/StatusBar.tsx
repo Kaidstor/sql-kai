@@ -1,10 +1,9 @@
-import { Cable, ChevronUp, Download, Lock, Plug, ShieldCheck } from "lucide-react";
+import { Cable, ChevronUp, Lock, Plug, Settings, ShieldCheck } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
 import { accentColor } from "../lib/colors";
 import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
-import { useUpdater } from "../lib/updater";
 import { ColorDot, Popover, cn } from "./ui";
 
 /** Beekeeper-style bottom-left switcher between active connections. */
@@ -99,36 +98,9 @@ function ConnectionSwitcher() {
   );
 }
 
-/** Appears next to the lock once a new version is available; click = install + relaunch. */
-function UpdateButton({ className }: { className?: string }) {
-  const { update, downloading, progress, error, install } = useUpdater();
-  if (!update) return null;
-
-  return (
-    <button
-      onClick={() => void install()}
-      disabled={downloading}
-      title={
-        error
-          ? `Update failed: ${error}`
-          : `Update to v${update.version} and restart`
-      }
-      className={cn(
-        "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
-        "hover:bg-zinc-800/80",
-        error ? "text-red-400" : "text-emerald-400",
-        className,
-      )}
-    >
-      <Download size={11} className={downloading ? "animate-pulse" : undefined} />
-      {downloading ? `${progress ?? 0}%` : `v${update.version}`}
-    </button>
-  );
-}
-
 export function StatusBar() {
-  const { activeProfileId, profiles, sessions, toast, lockVault } = useApp();
-  const update = useUpdater((s) => s.update);
+  const { activeProfileId, profiles, sessions, toast, lockVault, setSettingsOpen } =
+    useApp();
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
   const profile = profiles.find((p) => p.id === activeProfileId);
@@ -200,16 +172,24 @@ export function StatusBar() {
           copied
         </span>
       )}
-      {update && (
-        <UpdateButton className={toast || copied ? "ml-1" : "ml-auto"} />
-      )}
+      <button
+        data-nocopy
+        onClick={() => setSettingsOpen(true)}
+        title="Settings (⌘,)"
+        className={cn(
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+          "hover:bg-zinc-800/80 hover:text-zinc-300",
+          toast || copied ? "ml-1" : "ml-auto",
+        )}
+      >
+        <Settings size={11} />
+      </button>
       <button
         onClick={() => void lockVault()}
         title="Lock vault — clears saved secrets and closes all connections"
         className={cn(
           "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
           "hover:bg-zinc-800/80 hover:text-zinc-300",
-          toast || copied || update ? "ml-1" : "ml-auto",
         )}
       >
         <Lock size={11} />

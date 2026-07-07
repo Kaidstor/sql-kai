@@ -9,10 +9,14 @@ type UpdaterStore = {
   downloading: boolean;
   /** Download progress 0–100, null while total size is unknown. */
   progress: number | null;
+  /** Update downloaded & installed, waiting for a relaunch to apply. */
+  ready: boolean;
   error: string | null;
   checkForUpdates: () => Promise<void>;
-  /** Download the pending update, install it and relaunch the app. */
+  /** Download & install the pending update (does not relaunch — sets `ready`). */
   install: () => Promise<void>;
+  /** Relaunch to apply a downloaded update. */
+  restart: () => Promise<void>;
 };
 
 let lastCheckTime = 0;
@@ -23,6 +27,7 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
   update: null,
   downloading: false,
   progress: null,
+  ready: false,
   error: null,
 
   checkForUpdates: async () => {
@@ -39,8 +44,8 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
   },
 
   install: async () => {
-    const { update, downloading } = get();
-    if (!update || downloading) return;
+    const { update, downloading, ready } = get();
+    if (!update || downloading || ready) return;
     set({ downloading: true, progress: null, error: null });
     try {
       let total: number | undefined;
@@ -61,9 +66,18 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
             break;
         }
       });
-      await relaunch();
+      // Installed — hold for an explicit relaunch ("Restart to Update").
+      set({ downloading: false, ready: true, progress: 100 });
     } catch (e) {
       set({ downloading: false, progress: null, error: String(e) });
+    }
+  },
+
+  restart: async () => {
+    try {
+      await relaunch();
+    } catch (e) {
+      set({ error: String(e) });
     }
   },
 }));
