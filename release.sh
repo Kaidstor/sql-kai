@@ -45,7 +45,12 @@ tmp=$(mktemp)
 jq --arg v "$NEW_VER" '.version = $v' src-tauri/tauri.conf.json > "$tmp" \
   && mv "$tmp" src-tauri/tauri.conf.json
 
-git add package.json src-tauri/tauri.conf.json
+# CLI kai показывает версию из Cargo.toml (clap `version`) — бампаем и его
+# (+ Cargo.lock, чтобы дерево осталось чистым после сборки)
+perl -0pi -e "s/(\[package\][^\[]*?version = \")[^\"]+/\${1}$NEW_VER/s" src-tauri/Cargo.toml
+perl -0pi -e "s/(name = \"sql-tauri\"\nversion = \")[^\"]+/\${1}$NEW_VER/" src-tauri/Cargo.lock
+
+git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
 git commit -m "release: ${TAG}"
 
 echo "> Создаём Git-тег $TAG"
@@ -74,7 +79,6 @@ echo "  ✓ Релиз создан"
 if [[ -z "${SKIP_BUILD:-}" ]]; then
   echo "> Устанавливаем deps и собираем…"
   pnpm install
-  pnpm tauri build --ci --bundles app  # --ci отключает интерактивность, --bundles app пропускает DMG
   echo "> Собираем CLI kai…"
   (cd src-tauri && cargo build --release --features cli --bin kai)
   # cargo даёт ad-hoc подпись (меняется при каждой сборке → keychain-промпты
@@ -83,6 +87,16 @@ if [[ -z "${SKIP_BUILD:-}" ]]; then
   if [[ -n "$SIGN_ID" ]]; then
     codesign --force --sign "$SIGN_ID" src-tauri/target/release/kai
   fi
+  # kai едет внутрь .app как sidecar (externalBin) → обновляется вместе с
+  # приложением через updater; ~/.cargo/bin/kai — симлинк в бандл
+  # (scripts/install-cli.sh). externalBin добавляем только здесь через
+  # --config-override, чтобы tauri dev / cargo check не требовали binaries/.
+  TRIPLE=$(rustc -Vv | awk '/^host:/{print $2}')
+  mkdir -p src-tauri/binaries
+  cp src-tauri/target/release/kai "src-tauri/binaries/kai-$TRIPLE"
+  # app — для updater-архива, dmg — для ручной установки со страницы релиза
+  pnpm tauri build --ci --bundles app,dmg \
+    --config '{"bundle":{"externalBin":["binaries/kai"]}}'
   echo "✔️  Сборка готова"
 else
   echo "> SKIP_BUILD задан — пропускаем стадию сборки."

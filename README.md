@@ -3,6 +3,23 @@
 Десктопный Postgres-клиент (Tauri 2 + React 19) с нативной поддержкой SSH-туннелей
 и CLI `kai` поверх того же ядра. Историческое имя папки/крейта — `sql-tauri`.
 
+## Установка (macOS, Apple Silicon)
+
+1. Скачайте `.dmg` из [последнего релиза](https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest) и перетащите sql-kai в Applications.
+2. Приложение подписано dev-сертификатом без нотаризации, поэтому первый запуск macOS заблокирует («приложение повреждено» / «не удаётся проверить разработчика»). Обход: System Settings → Privacy & Security → **Open Anyway**, либо снять карантин командой:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/sql-kai.app
+   ```
+
+3. Дальше приложение обновляется само — кнопка в статус-баре (updater качает обновления без карантина, обход больше не понадобится).
+
+CLI `kai` лежит внутри бандла — чтобы он был в PATH и обновлялся вместе с приложением:
+
+```bash
+ln -sf /Applications/sql-kai.app/Contents/MacOS/kai ~/.local/bin/kai   # любая папка из PATH
+```
+
 ## Стек
 
 - **Backend**: Rust, `tokio-postgres` (simple-query протокол — сервер сам форматирует значения в текст, любые типы отображаются без маппинга), собственный vault (`aes-gcm` + `argon2` — секреты шифруются мастер-паролем), SSH-туннели через супервизию системного `ssh -N -L`.
