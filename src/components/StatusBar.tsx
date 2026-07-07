@@ -12,7 +12,7 @@ import { copyTextConcealed } from "../lib/clipboard";
 import { accentColor } from "../lib/colors";
 import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
-import { ColorDot, Popover, cn } from "./ui";
+import { ColorDot, Popover, ProdBadge, cn } from "./ui";
 
 /** Beekeeper-style bottom-left switcher between active connections. */
 function ConnectionSwitcher() {
@@ -52,6 +52,7 @@ function ConnectionSwitcher() {
             className={activeColor ? undefined : "text-emerald-500"}
           />
           {active && sessions[active.id] ? active.name : "not connected"}
+          {active?.production && sessions[active.id] && <ProdBadge />}
           {connected.length > 1 && (
             <span className="text-zinc-600">+{connected.length - 1}</span>
           )}
@@ -77,6 +78,7 @@ function ConnectionSwitcher() {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 text-[12px] text-zinc-200">
                 <span className="truncate">{p.name}</span>
+                {p.production && <ProdBadge />}
                 {p.group?.trim() && (
                   <span className="shrink-0 rounded border border-zinc-700 bg-zinc-800 px-1 py-px text-[9px] text-zinc-400">
                     {p.group.trim()}
@@ -129,7 +131,11 @@ export function StatusBar() {
   const copiedTimer = useRef<number | undefined>(undefined);
   const profile = profiles.find((p) => p.id === activeProfileId);
   const session = activeProfileId ? sessions[activeProfileId] : undefined;
-  const color = accentColor(profile && session ? profile.color : null);
+  // production wins over the accent color — the red footer is the signal
+  const color =
+    profile && session && profile.production
+      ? "#ef4444"
+      : accentColor(profile && session ? profile.color : null);
 
   const statusText = [
     profile && session && profile.name,

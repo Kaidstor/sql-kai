@@ -25,7 +25,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./context-menu";
-import { cn, IconBtn, Input } from "./ui";
+import { cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function shortType(t: string): string {
   return t
@@ -277,6 +277,7 @@ export function Sidebar() {
           <span className="truncate text-[12px] text-zinc-200">
             {profile?.name ?? "?"}
           </span>
+          {profile?.production && <ProdBadge />}
         </div>
         <IconBtn
           title="All connections"

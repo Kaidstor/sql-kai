@@ -131,6 +131,21 @@ export function MenuBtn({
   );
 }
 
+/** Red PROD chip shown wherever a production profile appears. */
+export function ProdBadge({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded border border-red-500/40 bg-red-500/15 px-1 py-px",
+        "text-[9px] font-semibold tracking-wide text-red-400",
+        className,
+      )}
+    >
+      PROD
+    </span>
+  );
+}
+
 /** Connection accent dot; hollow when the profile has no color. */
 export function ColorDot({ color }: { color: string | null }) {
   return (

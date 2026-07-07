@@ -20,6 +20,8 @@ export interface Profile {
   group?: string | null;
   /** Accent color name for telling connections apart (see lib/colors.ts). */
   color?: string | null;
+  /** Production database: the UI asks before running data-modifying SQL. */
+  production?: boolean;
   hasPassword?: boolean;
   hasSshPassphrase?: boolean;
 }

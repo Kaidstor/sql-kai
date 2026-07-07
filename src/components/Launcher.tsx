@@ -23,7 +23,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./context-menu";
-import { cn, IconBtn, Input } from "./ui";
+import { cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function ProfileCard({ profile }: { profile: Profile }) {
   const {
@@ -94,6 +94,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
         <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">
           {profile.name}
         </span>
+        {profile.production && <ProdBadge />}
         {profile.group?.trim() && (
           <span className="flex shrink-0 items-center gap-1 rounded border border-zinc-700/80 bg-zinc-800/80 px-1.5 py-px text-[10px] text-zinc-400">
             <GitFork size={9} className="text-amber-500/80" />

@@ -4,12 +4,13 @@ import { api, errText } from "../lib/api";
 import { ACCENTS, accentColor } from "../lib/colors";
 import { useApp } from "../lib/store";
 import type { Profile } from "../lib/types";
-import { Button, Field, IconBtn, Input, Overlay, cn } from "./ui";
+import { Button, Field, IconBtn, Input, Overlay, ProdBadge, cn } from "./ui";
 
 interface FormState {
   name: string;
   group: string;
   color: string;
+  production: boolean;
   host: string;
   port: string;
   database: string;
@@ -31,6 +32,7 @@ const emptyForm: FormState = {
   name: "",
   group: "",
   color: "",
+  production: false,
   host: "localhost",
   port: "5432",
   database: "",
@@ -52,6 +54,7 @@ function fromProfile(p: Profile): FormState {
     name: p.name,
     group: p.group ?? "",
     color: p.color ?? "",
+    production: Boolean(p.production),
     host: p.host,
     port: String(p.port),
     database: p.database,
@@ -129,6 +132,7 @@ function toProfile(form: FormState, existing?: Profile): Profile {
     name: form.name.trim() || `${form.user}@${form.host}/${form.database}`,
     group: form.group.trim() || null,
     color: form.color || null,
+    production: form.production,
     host: form.host.trim(),
     port: Number(form.port) || 5432,
     database: form.database.trim(),
@@ -311,6 +315,20 @@ export function ConnectionDialog() {
               ))}
             </div>
           </Field>
+
+          <label
+            className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer"
+            title="INSERT/UPDATE/DELETE/DDL ask for confirmation; the UI is marked with a PROD badge"
+          >
+            <input
+              type="checkbox"
+              checked={form.production}
+              onChange={(e) => set({ production: e.target.checked })}
+              className="accent-red-600"
+            />
+            Production — confirm data-modifying queries
+            {form.production && <ProdBadge />}
+          </label>
 
           <label className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer">
             <input

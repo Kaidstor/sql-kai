@@ -41,6 +41,9 @@ pub struct Profile {
     /// Accent color name for telling connections apart (e.g. "rose").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Production database: the UI asks before running data-modifying SQL.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub production: bool,
     /// Whether a DB password is stored in the vault for this profile. Cached
     /// here for offline display; the vault is the source of truth.
     #[serde(default)]

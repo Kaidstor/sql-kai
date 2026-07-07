@@ -23,11 +23,15 @@ export function TabsBar() {
     closeTabs,
     moveTab,
     activeProfileId,
+    profiles,
     sessions,
     openQueryTab,
     queries,
     sidebarHidden,
   } = useApp();
+  const production = Boolean(
+    profiles.find((p) => p.id === activeProfileId)?.production,
+  );
   // Only the active connection's tabs are shown; other connections keep
   // theirs in the background until selected again.
   const visible = tabs.filter((t) => t.profileId === activeProfileId);
@@ -114,6 +118,17 @@ export function TabsBar() {
           navigator.userAgent.includes("Mac") &&
           "pl-20",
       )}
+      // production connection — the whole bar shifts to red
+      style={
+        production
+          ? {
+              background:
+                "color-mix(in srgb, #ef4444 7%, var(--color-zinc-925))",
+              borderBottomColor:
+                "color-mix(in srgb, #ef4444 35%, var(--color-zinc-800))",
+            }
+          : undefined
+      }
     >
       {visible.map((tab) => (
         <div

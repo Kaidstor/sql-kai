@@ -151,6 +151,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         }),
         group: existing.as_ref().and_then(|e| e.group.clone()),
         color: existing.as_ref().and_then(|e| e.color.clone()),
+        production: existing.as_ref().map(|e| e.production).unwrap_or(false),
         has_password: existing.as_ref().map(|e| e.has_password).unwrap_or(false),
         has_ssh_passphrase: existing
             .as_ref()

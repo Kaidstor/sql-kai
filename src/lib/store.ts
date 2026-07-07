@@ -11,6 +11,7 @@ import {
   restoreWorkspace,
   type ClosedTab,
 } from "./persist";
+import { dangerousStatements } from "./sql";
 import { structureDdl, tableDml } from "./sqlgen";
 import { applyTheme } from "./themes";
 import type {
@@ -417,6 +418,19 @@ export const useApp = create<AppStore>((set, get) => {
       delete sessions[profileId];
       return { sessions, lost: { ...s.lost, [profileId]: true } };
     });
+  };
+
+  /** Production write-guard: true = go ahead (not production, nothing
+   *  data-modifying in the SQL, or the user confirmed). */
+  const confirmProdRun = (profileId: string, sql: string): boolean => {
+    const profile = get().profiles.find((p) => p.id === profileId);
+    if (!profile?.production) return true;
+    const dangers = dangerousStatements(sql);
+    if (dangers.length === 0) return true;
+    const list = dangers.map((d) => `• ${d.label}:  ${d.preview}`).join("\n");
+    return confirm(
+      `"${profile.name}" is PRODUCTION. About to run:\n\n${list}\n\nContinue?`,
+    );
   };
 
   /** Tab by id, narrowed to the given kind; null when missing or another kind. */
@@ -993,6 +1007,7 @@ export const useApp = create<AppStore>((set, get) => {
     if (!tab) return false;
     const session = sessionFor(tab.profileId);
     if (!session) return false;
+    if (!confirmProdRun(tab.profileId, sql)) return false;
     const { schema, table } = tab.state;
     try {
       await api.executeSql(session.sessionId, sql, 10);
@@ -1072,6 +1087,7 @@ export const useApp = create<AppStore>((set, get) => {
     if (stmts.length === 0) return;
     const session = sessionFor(tab.profileId);
     if (!session) return;
+    if (!confirmProdRun(tab.profileId, stmts.join(";\n"))) return;
     patchTab<StructureTabState>(tabId, { loading: true });
     // One simple-query message = one implicit transaction: atomic, and an
     // error auto-rolls-back without leaving the session in an aborted tx.
@@ -1236,6 +1252,7 @@ export const useApp = create<AppStore>((set, get) => {
     if (!session) return;
     const sql = tab.state.sql.trim();
     if (!sql) return;
+    if (!confirmProdRun(tab.profileId, sql)) return;
     const pushHistory = (ok: boolean) => {
       const profile = get().profiles.find((p) => p.id === tab.profileId);
       const entry: HistoryEntry = {
@@ -1437,6 +1454,17 @@ export const useApp = create<AppStore>((set, get) => {
     }
     const { stmts, updates, deletes } = dml;
     if (stmts.length === 0) return;
+    const profile = get().profiles.find((p) => p.id === tab.profileId);
+    if (profile?.production) {
+      const parts = [
+        updates > 0 && `${updates} UPDATE`,
+        deletes > 0 && `${deletes} DELETE`,
+        st.inserts.length > 0 && `${st.inserts.length} INSERT`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      if (!confirm(`"${profile.name}" is PRODUCTION — apply ${parts}?`)) return;
+    }
     patchTab<TableTabState>(tabId, {
       loading: true,
       applyFailed: false,
