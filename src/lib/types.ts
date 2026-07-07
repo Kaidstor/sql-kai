@@ -137,3 +137,40 @@ export interface TablePage {
   durationMs: number;
   approxRows: number;
 }
+
+/** One node of EXPLAIN (FORMAT JSON) output — keys exactly as Postgres emits
+ *  them. Times are per-loop averages; multiply by "Actual Loops" for totals. */
+export interface PlanNode {
+  "Node Type": string;
+  "Subplan Name"?: string;
+  "Relation Name"?: string;
+  Schema?: string;
+  Alias?: string;
+  "Index Name"?: string;
+  "Join Type"?: string;
+  "Startup Cost"?: number;
+  "Total Cost"?: number;
+  "Plan Rows"?: number;
+  "Actual Startup Time"?: number;
+  "Actual Total Time"?: number;
+  "Actual Rows"?: number;
+  "Actual Loops"?: number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Join Filter"?: number;
+  Filter?: string;
+  "Index Cond"?: string;
+  "Hash Cond"?: string;
+  "Merge Cond"?: string;
+  "Recheck Cond"?: string;
+  "Sort Key"?: string[];
+  "Sort Method"?: string;
+  Plans?: PlanNode[];
+}
+
+export interface ExplainResult {
+  Plan: PlanNode;
+  "Planning Time"?: number;
+  "Execution Time"?: number;
+  /** true when produced by EXPLAIN ANALYZE (actual timings present). */
+  analyzed: boolean;
+}

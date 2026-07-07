@@ -11,13 +11,14 @@ import {
   restoreWorkspace,
   type ClosedTab,
 } from "./persist";
-import { dangerousStatements } from "./sql";
+import { countStatements, dangerousStatements } from "./sql";
 import { structureDdl, tableDml } from "./sqlgen";
 import { applyTheme } from "./themes";
 import type {
   AppSettings,
   ColumnInfo,
   ExecResult,
+  ExplainResult,
   HistoryEntry,
   IndexInfo,
   Profile,
@@ -36,6 +37,8 @@ export interface QueryTabState {
   kind: "query";
   sql: string;
   result?: ExecResult;
+  /** Parsed EXPLAIN output; shown instead of results until dismissed. */
+  explain?: ExplainResult;
   error?: string;
   running: boolean;
   maxRows: number;
@@ -286,6 +289,15 @@ interface AppStore {
    *  The override is executed and recorded to history, but not persisted as
    *  the tab's SQL. */
   runQuery: (tabId: string, sqlOverride?: string) => Promise<void>;
+  /** EXPLAIN (FORMAT JSON) the tab's statement (or the editor selection);
+   *  analyze also executes it. */
+  runExplain: (
+    tabId: string,
+    analyze: boolean,
+    sqlOverride?: string,
+  ) => Promise<void>;
+  /** Back from the plan view to the last results. */
+  clearExplain: (tabId: string) => void;
   cancelQuery: (tabId: string) => Promise<void>;
   loadTablePage: (
     tabId: string,
@@ -1334,7 +1346,11 @@ export const useApp = create<AppStore>((set, get) => {
         tab.state.maxRows,
       );
       pushHistory(true);
-      patchTab<QueryTabState>(tabId, { result, running: false });
+      patchTab<QueryTabState>(tabId, {
+        result,
+        explain: undefined,
+        running: false,
+      });
     } catch (e) {
       pushHistory(false);
       const message = errText(e);
@@ -1346,6 +1362,47 @@ export const useApp = create<AppStore>((set, get) => {
       noteSessionLost(tab.profileId, message);
     }
   },
+
+  runExplain: async (tabId, analyze, sqlOverride) => {
+    const tab = tabOf(tabId, "query");
+    if (!tab || tab.state.running) return;
+    const session = sessionFor(tab.profileId);
+    if (!session) return;
+    const sql = (sqlOverride ?? tab.state.sql).trim().replace(/;\s*$/, "");
+    if (!sql) return;
+    if (countStatements(sql) > 1) {
+      get().showToast("Explain needs a single statement", "info");
+      return;
+    }
+    // ANALYZE really executes the statement — the prod guard applies
+    if (analyze && !confirmProdRun(tab.profileId, sql)) return;
+    const explainSql = `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${sql}`;
+    patchTab<QueryTabState>(tabId, { running: true, error: undefined });
+    try {
+      const exec = await api.executeSql(session.sessionId, explainSql, 10);
+      const raw = exec.results[0]?.rows[0]?.[0];
+      const parsed: unknown = raw ? JSON.parse(raw) : null;
+      const root = Array.isArray(parsed)
+        ? (parsed[0] as ExplainResult | undefined)
+        : undefined;
+      if (!root?.Plan) throw new Error("Unexpected EXPLAIN output");
+      patchTab<QueryTabState>(tabId, {
+        explain: { ...root, analyzed: analyze },
+        running: false,
+      });
+    } catch (e) {
+      const message = errText(e);
+      patchTab<QueryTabState>(tabId, {
+        error: message,
+        explain: undefined,
+        running: false,
+      });
+      noteSessionLost(tab.profileId, message);
+    }
+  },
+
+  clearExplain: (tabId) =>
+    patchTab<QueryTabState>(tabId, { explain: undefined }),
 
   cancelQuery: async (tabId) => {
     const tab = get().tabs.find((t) => t.id === tabId);

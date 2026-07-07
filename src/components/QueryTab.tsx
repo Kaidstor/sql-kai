@@ -2,16 +2,17 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { CircleStop, Play } from "lucide-react";
+import { CircleStop, Play, Route } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes, themeById } from "../lib/themes";
 import type { SortSpec, StatementResult } from "../lib/types";
+import { ExplainView } from "./ExplainView";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
 import { TabError } from "./TabError";
-import { Button, Select } from "./ui";
+import { Button, MenuBtn, Popover, Select } from "./ui";
 
 /** Sorts fetched rows locally — the query is NOT re-run, so only what was
  *  fetched is ordered. Columns where every non-null value parses as a number
@@ -104,12 +105,15 @@ export function QueryTab({ tab }: { tab: Tab }) {
   const state = tab.state as QueryTabState;
   const {
     runQuery,
+    runExplain,
+    clearExplain,
     cancelQuery,
     setTabSql,
     setTabMaxRows,
     setTabEditorPct,
     sessions,
   } = useApp();
+  const [explainOpen, setExplainOpen] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
   const schemaColumns = useApp((s) => s.schemaColumns[tab.profileId]);
   const lightTheme = useApp((s) => Boolean(themeById(s.settings.theme).light));
@@ -197,6 +201,54 @@ export function QueryTab({ tab }: { tab: Tab }) {
           <option value={5000}>5 000 rows</option>
           <option value={50000}>50 000 rows</option>
         </Select>
+        <Popover
+          open={explainOpen}
+          onClose={() => setExplainOpen(false)}
+          panelClassName="w-64 p-1"
+          trigger={
+            <MenuBtn
+              disabled={!connected || !state.sql.trim() || state.running}
+              className="disabled:opacity-40 disabled:pointer-events-none"
+              title="Query plan (EXPLAIN)"
+              onClick={() => setExplainOpen((v) => !v)}
+            >
+              <Route size={12} className="text-violet-400/80" />
+              Explain
+            </MenuBtn>
+          }
+        >
+          {(
+            [
+              {
+                label: "Explain — planner estimate",
+                hint: "does not run the query",
+                analyze: false,
+              },
+              {
+                label: "Explain Analyze",
+                hint: "executes the query, real timings",
+                analyze: true,
+              },
+            ] as const
+          ).map((item) => (
+            <div
+              key={item.label}
+              onClick={() => {
+                setExplainOpen(false);
+                const view = viewRef.current;
+                void runExplain(
+                  tab.id,
+                  item.analyze,
+                  view ? selectionText(view) : undefined,
+                );
+              }}
+              className="cursor-pointer rounded px-2 py-1.5 hover:bg-zinc-800/60"
+            >
+              <div className="text-[12px] text-zinc-200">{item.label}</div>
+              <div className="text-[10px] text-zinc-500">{item.hint}</div>
+            </div>
+          ))}
+        </Popover>
         <div className="mx-1 h-4 border-l border-zinc-800" />
         <SavedQueriesMenu tab={tab} />
         <SaveQueryButton tab={tab} />
@@ -262,11 +314,18 @@ export function QueryTab({ tab }: { tab: Tab }) {
           {state.error && (
             <TabError profileId={tab.profileId} error={state.error} />
           )}
+          {!state.error && state.explain && (
+            <ExplainView
+              explain={state.explain}
+              onClose={() => clearExplain(tab.id)}
+            />
+          )}
           {!state.error &&
+            !state.explain &&
             state.result?.results.map((result, i) => (
               <ResultBlock key={i} result={result} />
             ))}
-          {!state.error && !state.result && !state.running && (
+          {!state.error && !state.explain && !state.result && !state.running && (
             <div className="flex-1 flex items-center justify-center text-zinc-600 text-[12px]">
               Run a query to see results
             </div>

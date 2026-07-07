@@ -39,6 +39,13 @@ const stripSqlNoise = (sql: string) =>
     .replace(/--[^\n]*/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, "");
 
+/** Number of non-empty statements, counted on noise-stripped SQL (so `;`
+ *  inside literals/comments doesn't split). */
+export const countStatements = (sql: string) =>
+  stripSqlNoise(sql)
+    .split(";")
+    .filter((s) => s.trim()).length;
+
 const WRITE_KEYWORDS = /^(INSERT|UPDATE|DELETE|MERGE)\b/;
 const DDL_KEYWORDS = /^(DROP|TRUNCATE|ALTER|GRANT|REVOKE)\b/;
 
