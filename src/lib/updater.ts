@@ -2,6 +2,12 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 
+/** Outcome of an explicit "Check for Updates…" (menu) — drives toast feedback. */
+export type ManualCheckResult =
+  | { status: "found" }
+  | { status: "upToDate" }
+  | { status: "error"; message: string };
+
 type UpdaterStore = {
   checking: boolean;
   /** Available update, null when up to date (or not checked yet). */
@@ -12,7 +18,8 @@ type UpdaterStore = {
   /** Update downloaded & installed, waiting for a relaunch to apply. */
   ready: boolean;
   error: string | null;
-  checkForUpdates: () => Promise<void>;
+  manualCheck: ManualCheckResult | null;
+  checkForUpdates: (manual?: boolean) => Promise<void>;
   /** Download & install the pending update (does not relaunch — sets `ready`). */
   install: () => Promise<void>;
   /** Relaunch to apply a downloaded update. */
@@ -29,17 +36,28 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
   progress: null,
   ready: false,
   error: null,
+  manualCheck: null,
 
-  checkForUpdates: async () => {
+  checkForUpdates: async (manual = false) => {
     if (get().checking || get().downloading) return;
     lastCheckTime = Date.now();
-    set({ checking: true, error: null });
+    set({ checking: true, error: null, manualCheck: null });
     try {
       const update = await check();
-      set({ checking: false, update });
+      set({
+        checking: false,
+        update,
+        manualCheck: manual ? { status: update ? "found" : "upToDate" } : null,
+      });
     } catch (e) {
-      // Expected in dev / before the first release is published — keep quiet.
-      set({ checking: false, update: null, error: String(e) });
+      // Expected in dev / before the first release is published — keep quiet
+      // unless the user asked for the check explicitly.
+      set({
+        checking: false,
+        update: null,
+        error: String(e),
+        manualCheck: manual ? { status: "error", message: String(e) } : null,
+      });
     }
   },
 

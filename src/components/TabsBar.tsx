@@ -26,6 +26,7 @@ export function TabsBar() {
     sessions,
     openQueryTab,
     queries,
+    sidebarHidden,
   } = useApp();
   // Only the active connection's tabs are shown; other connections keep
   // theirs in the background until selected again.
@@ -106,7 +107,13 @@ export function TabsBar() {
       onContextMenu={(e) => {
         if (!(e.target as Element).closest?.("[data-tab-id]")) setMenuTabId(null);
       }}
-      className="flex h-10 items-stretch border-b border-zinc-800 bg-zinc-925 overflow-x-auto shrink-0"
+      className={cn(
+        "flex h-10 items-stretch border-b border-zinc-800 bg-zinc-925 overflow-x-auto shrink-0",
+        // sidebar hidden (⌘B) — clear the mac traffic lights (overlay titlebar)
+        sidebarHidden &&
+          navigator.userAgent.includes("Mac") &&
+          "pl-20",
+      )}
     >
       {visible.map((tab) => (
         <div

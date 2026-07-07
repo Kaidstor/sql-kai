@@ -3,6 +3,9 @@ export interface SshConfig {
   user?: string | null;
   port?: number | null;
   keyPath?: string | null;
+  /** Seconds between keepalive pings when idle (ssh ServerAliveInterval).
+   *  null = app default (15), 0 = off. */
+  keepaliveInterval?: number | null;
 }
 
 export interface Profile {
@@ -68,6 +71,12 @@ export interface StatementResult {
   rows: (string | null)[][];
   rowsAffected?: number | null;
   truncated: boolean;
+}
+
+/** One ORDER BY entry of a table grid (multi-sort is a list of these). */
+export interface SortSpec {
+  column: string;
+  dir: "asc" | "desc";
 }
 
 export interface ExecResult {

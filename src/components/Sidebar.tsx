@@ -75,6 +75,10 @@ function ProfileRow({ profile }: { profile: Profile }) {
   const lostConn = !connected && !busy && Boolean(lost[profile.id]);
   const active = activeProfileId === profile.id;
   const color = accentColor(profile.color);
+  // Once something is connected, idle profiles fade back (lost ones stay
+  // loud — they need attention); hover brings a row back to full opacity.
+  const anyConnected = Object.keys(sessions).length > 0;
+  const dimmed = anyConnected && !connected && !busy && !lostConn;
 
   return (
     <ContextMenu>
@@ -83,6 +87,7 @@ function ProfileRow({ profile }: { profile: Profile }) {
       className={cn(
         "group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer",
         active ? "bg-zinc-800" : "hover:bg-zinc-800/50",
+        dimmed && "opacity-50 transition-opacity hover:opacity-100",
       )}
       style={color ? { boxShadow: `inset 2px 0 0 ${color}` } : undefined}
       onClick={() => selectProfile(profile.id)}
@@ -414,14 +419,53 @@ export function Sidebar() {
     profiles,
     sessions,
     tables,
+    lost,
+    connecting,
+    reconnect,
     activeProfileId,
     openDialog,
     openQueryTab,
     refreshTables,
   } = useApp();
   const activeSession = activeProfileId ? sessions[activeProfileId] : undefined;
+  // A lost session keeps its cached schema on screen (with a Reconnect
+  // banner) — the tree only disappears on an explicit disconnect.
+  const activeLost = Boolean(
+    activeProfileId && !activeSession && lost[activeProfileId],
+  );
+  const reconnecting = Boolean(
+    activeProfileId && connecting[activeProfileId],
+  );
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const items = useMemo(() => groupProfiles(profiles), [profiles]);
+  const [filter, setFilter] = useState("");
+  const needle = filter.trim().toLowerCase();
+  // Connected profiles (and groups containing one) float above idle ones;
+  // the sort is stable, so the saved order is kept within each half.
+  const items = useMemo(() => {
+    const isOn = (p: Profile) => Boolean(sessions[p.id]);
+    const isItemOn = (it: ProfileItem) =>
+      it.kind === "solo" ? isOn(it.profile) : it.profiles.some(isOn);
+    // Group-name matches keep the whole fork family visible.
+    const visible = needle
+      ? profiles.filter(
+          (p) =>
+            p.name.toLowerCase().includes(needle) ||
+            p.group?.trim().toLowerCase().includes(needle),
+        )
+      : profiles;
+    return groupProfiles(visible)
+      .map((it) =>
+        it.kind === "group"
+          ? {
+              ...it,
+              profiles: [...it.profiles].sort(
+                (a, b) => Number(isOn(b)) - Number(isOn(a)),
+              ),
+            }
+          : it,
+      )
+      .sort((a, b) => Number(isItemOn(b)) - Number(isItemOn(a)));
+  }, [profiles, sessions, needle]);
 
   return (
     <aside className="w-64 shrink-0 border-r border-zinc-800 flex flex-col min-h-0 bg-zinc-925">
@@ -440,7 +484,21 @@ export function Sidebar() {
           <Plus size={14} />
         </IconBtn>
       </div>
-      <div className="px-2 pt-2 space-y-0.5 max-h-[40%] overflow-y-auto">
+      {profiles.length > 0 && (
+        <div className="px-2 pt-2">
+          <Input
+            placeholder="Filter connections…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setFilter("");
+            }}
+            className="py-0.5 text-[12px]"
+          />
+        </div>
+      )}
+      {/* max-h in sync with DEFAULT_EDITOR_PCT in QueryTab.tsx */}
+      <div className="px-2 pt-1.5 space-y-0.5 max-h-[40%] overflow-y-auto">
         {items.map((item) =>
           item.kind === "solo" ? (
             <ProfileRow key={item.profile.id} profile={item.profile} />
@@ -455,7 +513,7 @@ export function Sidebar() {
                   }))
                 }
               >
-                {collapsedGroups[item.name] ? (
+                {!needle && collapsedGroups[item.name] ? (
                   <ChevronRight size={12} />
                 ) : (
                   <ChevronDown size={12} />
@@ -464,7 +522,7 @@ export function Sidebar() {
                 <span className="truncate font-medium">{item.name}</span>
                 <span className="text-zinc-600">({item.profiles.length})</span>
               </button>
-              {!collapsedGroups[item.name] && (
+              {(Boolean(needle) || !collapsedGroups[item.name]) && (
                 <div className="ml-2.5 space-y-0.5 border-l border-zinc-800 pl-1.5">
                   {item.profiles.map((p) => (
                     <ProfileRow key={p.id} profile={p} />
@@ -473,6 +531,9 @@ export function Sidebar() {
               )}
             </div>
           ),
+        )}
+        {profiles.length > 0 && items.length === 0 && (
+          <div className="px-2 py-2 text-[11px] text-zinc-600">no matches</div>
         )}
         {profiles.length === 0 && (
           <button
@@ -484,7 +545,7 @@ export function Sidebar() {
         )}
       </div>
 
-      {activeProfileId && activeSession && (
+      {activeProfileId && (activeSession || activeLost) && (
         <>
           <div className="flex items-center justify-between pl-3 pr-4 pt-3 pb-1.5 border-t border-zinc-800 mt-2">
             <div className="text-[11px] font-semibold tracking-wider text-zinc-500">
@@ -505,6 +566,20 @@ export function Sidebar() {
               </IconBtn>
             </div>
           </div>
+          {activeLost && (
+            <button
+              className="mx-2 mb-1.5 flex shrink-0 items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/40 px-2 py-1.5 text-[11px] text-red-300 hover:bg-red-950/70 disabled:opacity-60"
+              disabled={reconnecting}
+              onClick={() => void reconnect(activeProfileId)}
+            >
+              {reconnecting ? (
+                <Loader2 size={11} className="shrink-0 animate-spin" />
+              ) : (
+                <RefreshCw size={11} className="shrink-0" />
+              )}
+              Connection lost — reconnect
+            </button>
+          )}
           <SchemaTree
             profileId={activeProfileId}
             tables={tables[activeProfileId] ?? []}

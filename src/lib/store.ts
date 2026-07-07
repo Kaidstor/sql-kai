@@ -23,6 +23,7 @@ import type {
   RelationInfo,
   SavedQuery,
   SessionInfo,
+  SortSpec,
   TableColumns,
   TableInfo,
   TablePage,
@@ -58,8 +59,8 @@ export interface TableTabState {
   table: string;
   page: number;
   pageSize: number;
-  orderBy?: string;
-  orderDir: "asc" | "desc";
+  /** ORDER BY entries in priority order (empty = server default order). */
+  sorts: SortSpec[];
   data?: TablePage;
   error?: string;
   loading: boolean;
@@ -162,6 +163,8 @@ interface AppStore {
   settings: AppSettings;
   /** Settings dialog (⌘,). */
   settingsOpen: boolean;
+  /** Sidebar visibility (⌘B). */
+  sidebarHidden: boolean;
   /** Vault gate: null until checked, then whether it exists / is unlocked. */
   vault: VaultStatus | null;
   /** init() failed before the vault state was known — show a retry screen. */
@@ -178,6 +181,7 @@ interface AppStore {
   lockVault: () => Promise<void>;
   setPalette: (palette: PaletteKind | null) => void;
   setSettingsOpen: (open: boolean) => void;
+  toggleSidebar: () => void;
   /** Applies the theme immediately and persists it to settings.json. */
   setTheme: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
@@ -261,9 +265,7 @@ interface AppStore {
   cancelQuery: (tabId: string) => Promise<void>;
   loadTablePage: (
     tabId: string,
-    patch?: Partial<
-      Pick<TableTabState, "page" | "pageSize" | "orderBy" | "orderDir">
-    >,
+    patch?: Partial<Pick<TableTabState, "page" | "pageSize" | "sorts">>,
   ) => Promise<void>;
   /** Stage a cell value; staging the original value reverts the cell. */
   stageCellEdit: (
@@ -400,6 +402,10 @@ export const useApp = create<AppStore>((set, get) => {
     if (!isConnectionLost(message)) return;
     const session = get().sessions[profileId];
     if (!session) return; // already marked (or explicitly disconnected)
+    const profile = get().profiles.find((p) => p.id === profileId);
+    api
+      .logEvent(`"${profile?.name ?? profileId}": session lost — ${message}`)
+      .catch(() => {});
     // free the backend half (tunnel included); it may already be gone
     api.disconnect(session.sessionId).catch(() => {});
     set((s) => {
@@ -490,7 +496,7 @@ export const useApp = create<AppStore>((set, get) => {
               table,
               page: 0,
               pageSize: 100,
-              orderDir: "asc",
+              sorts: [],
               loading: false,
               ...noTableEdits(),
             }
@@ -530,6 +536,7 @@ export const useApp = create<AppStore>((set, get) => {
   saveDialogFor: null,
   settings: {},
   settingsOpen: false,
+  sidebarHidden: false,
   vault: null,
   vaultError: null,
   tableColumns: {},
@@ -537,6 +544,8 @@ export const useApp = create<AppStore>((set, get) => {
   setPalette: (palette) => set({ palette }),
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+
+  toggleSidebar: () => set((s) => ({ sidebarHidden: !s.sidebarHidden })),
 
   setTheme: async (id) => {
     applyTheme(id);
@@ -1293,8 +1302,7 @@ export const useApp = create<AppStore>((set, get) => {
         next.table,
         next.pageSize,
         next.page * next.pageSize,
-        next.orderBy,
-        next.orderDir,
+        next.sorts,
       );
       // Pending inserts survive a reload (not tied to row indices).
       patchTab<TableTabState>(tabId, {

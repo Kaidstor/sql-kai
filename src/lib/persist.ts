@@ -50,10 +50,14 @@ const wsKey = (profileId: string) => `sqlt.workspace.${profileId}`;
 
 type PersistedTabState =
   | Pick<QueryTabState, "kind" | "sql" | "maxRows" | "savedQueryId">
-  | Pick<
+  | (Pick<
       TableTabState,
-      "kind" | "schema" | "table" | "page" | "pageSize" | "orderBy" | "orderDir"
-    >
+      "kind" | "schema" | "table" | "page" | "pageSize" | "sorts"
+    > & {
+      /** Pre-multi-sort snapshots; migrated into `sorts` on revive. */
+      orderBy?: string;
+      orderDir?: "asc" | "desc";
+    })
   | Pick<StructureTabState, "kind" | "schema" | "table" | "section">;
 
 interface PersistedTab {
@@ -83,8 +87,7 @@ function snapshotTab(tab: Tab): PersistedTab {
             table: st.table,
             page: st.page,
             pageSize: st.pageSize,
-            orderBy: st.orderBy,
-            orderDir: st.orderDir,
+            sorts: st.sorts,
           }
         : {
             kind: "structure",
@@ -132,6 +135,17 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
     };
   }
   if (st.kind === "table" && st.schema && st.table) {
+    // pre-multi-sort snapshots carry orderBy/orderDir instead of sorts
+    const sorts = Array.isArray(st.sorts)
+      ? st.sorts.filter((s) => s && typeof s.column === "string")
+      : st.orderBy
+        ? [
+            {
+              column: st.orderBy,
+              dir: st.orderDir === "desc" ? ("desc" as const) : ("asc" as const),
+            },
+          ]
+        : [];
     return {
       title: p.title,
       state: {
@@ -140,8 +154,7 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
         table: st.table,
         page: st.page ?? 0,
         pageSize: st.pageSize || 100,
-        orderBy: st.orderBy,
-        orderDir: st.orderDir === "desc" ? "desc" : "asc",
+        sorts,
         loading: false,
         edits: {},
         deletes: [],

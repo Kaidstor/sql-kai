@@ -22,6 +22,7 @@ interface FormState {
   sshUser: string;
   sshPort: string;
   sshKeyPath: string;
+  sshKeepalive: string;
   sshPassphrase: string;
   clearSshPassphrase: boolean;
 }
@@ -41,6 +42,7 @@ const emptyForm: FormState = {
   sshUser: "",
   sshPort: "",
   sshKeyPath: "",
+  sshKeepalive: "",
   sshPassphrase: "",
   clearSshPassphrase: false,
 };
@@ -61,6 +63,7 @@ function fromProfile(p: Profile): FormState {
     sshUser: p.ssh?.user ?? "",
     sshPort: p.ssh?.port ? String(p.ssh.port) : "",
     sshKeyPath: p.ssh?.keyPath ?? "",
+    sshKeepalive: p.ssh?.keepaliveInterval != null ? String(p.ssh.keepaliveInterval) : "",
     sshPassphrase: "",
     clearSshPassphrase: false,
   };
@@ -136,6 +139,9 @@ function toProfile(form: FormState, existing?: Profile): Profile {
           user: form.sshUser.trim() || null,
           port: form.sshPort ? Number(form.sshPort) : null,
           keyPath: form.sshKeyPath.trim() || null,
+          keepaliveInterval: form.sshKeepalive.trim()
+            ? Math.max(0, Math.trunc(Number(form.sshKeepalive)) || 0)
+            : null,
         }
       : null,
   };
@@ -354,13 +360,25 @@ export function ConnectionDialog() {
                   />
                 </Field>
               </div>
-              <Field label="Identity file (optional)">
-                <Input
-                  value={form.sshKeyPath}
-                  onChange={(e) => set({ sshKeyPath: e.target.value })}
-                  placeholder="~/.ssh/id_ed25519"
-                />
-              </Field>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Identity file (optional)" className="col-span-2">
+                  <Input
+                    value={form.sshKeyPath}
+                    onChange={(e) => set({ sshKeyPath: e.target.value })}
+                    placeholder="~/.ssh/id_ed25519"
+                  />
+                </Field>
+                <Field label="Keepalive, sec">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={form.sshKeepalive}
+                    onChange={(e) => set({ sshKeepalive: e.target.value })}
+                    placeholder="15"
+                    title="Ping the server after this many seconds when idle to prevent getting disconnected due to inactivity (ServerAliveInterval). Empty = 15, 0 = off."
+                  />
+                </Field>
+              </div>
               <p className="text-[11px] leading-relaxed text-zinc-500">
                 Auth uses your keys / ssh-agent / ~/.ssh/config (incl.
                 ProxyJump); the passphrase is stored in the keychain. DB host

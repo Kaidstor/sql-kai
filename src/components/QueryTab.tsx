@@ -3,17 +3,56 @@ import { Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { CircleStop, Play } from "lucide-react";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes, themeById } from "../lib/themes";
-import type { StatementResult } from "../lib/types";
+import type { SortSpec, StatementResult } from "../lib/types";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
 import { TabError } from "./TabError";
 import { Button, Select } from "./ui";
 
+/** Sorts fetched rows locally — the query is NOT re-run, so only what was
+ *  fetched is ordered. Columns where every non-null value parses as a number
+ *  compare numerically; NULLs go last on asc, first on desc (Postgres
+ *  default). Sort entries for columns missing from the result are dropped. */
+function applyClientSort(
+  result: StatementResult,
+  sorts: SortSpec[],
+): { result: StatementResult; sorts: SortSpec[] } {
+  const specs = sorts
+    .map((s) => ({ ...s, col: result.columns.indexOf(s.column) }))
+    .filter((s) => s.col >= 0);
+  if (specs.length === 0) return { result, sorts: [] };
+  const numeric = specs.map(({ col }) =>
+    result.rows.every(
+      (r) => r[col] === null || (r[col] !== "" && !Number.isNaN(Number(r[col]))),
+    ),
+  );
+  const rows = [...result.rows].sort((a, b) => {
+    for (let i = 0; i < specs.length; i++) {
+      const { col, dir } = specs[i];
+      const va = a[col];
+      const vb = b[col];
+      if (va === vb) continue;
+      const sign = dir === "desc" ? -1 : 1;
+      if (va === null) return sign;
+      if (vb === null) return -sign;
+      const cmp = numeric[i] ? Number(va) - Number(vb) : va.localeCompare(vb);
+      if (cmp !== 0) return sign * cmp;
+    }
+    return 0;
+  });
+  return {
+    result: { ...result, rows },
+    sorts: specs.map(({ column, dir }) => ({ column, dir })),
+  };
+}
+
 function ResultBlock({ result }: { result: StatementResult }) {
+  const [sorts, setSorts] = useState<SortSpec[]>([]);
+  const sorted = useMemo(() => applyClientSort(result, sorts), [result, sorts]);
   if (result.columns.length === 0) {
     return (
       <div className="px-3 py-1.5 text-[12px] text-emerald-400/90 border-b border-zinc-800">
@@ -28,15 +67,26 @@ function ResultBlock({ result }: { result: StatementResult }) {
         {result.truncated && (
           <span className="text-amber-400"> · truncated to limit</span>
         )}
+        {sorted.sorts.length > 0 && (
+          <span title="Rows are reordered in the view; the query was not re-run">
+            {" "}
+            · sorted locally
+          </span>
+        )}
       </div>
       <div className="flex-1 min-h-0">
-        <ResultsGrid result={result} />
+        <ResultsGrid
+          result={sorted.result}
+          sorts={sorted.sorts}
+          onSortsChange={setSorts}
+        />
       </div>
     </div>
   );
 }
 
-const DEFAULT_EDITOR_PCT = 38;
+/** Keep in sync with the connections list height in Sidebar.tsx (max-h-[40%]). */
+const DEFAULT_EDITOR_PCT = 40;
 /** Minimum pane height while dragging; below half of it the editor snaps shut. */
 const MIN_PANE_PX = 100;
 

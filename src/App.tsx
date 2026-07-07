@@ -14,13 +14,14 @@ import { UpdateToast } from "./components/UpdateToast";
 import { VaultGate } from "./components/VaultGate";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
-import { initUpdater } from "./lib/updater";
+import { initUpdater, useUpdater } from "./lib/updater";
 
 // ⌘K chord window: a ⌘W within this many ms closes ALL tabs.
 const CHORD_MS = 5000;
 
 function App() {
-  const { init, tabs, activeTabId, activeProfileId, sessions } = useApp();
+  const { init, tabs, activeTabId, activeProfileId, sessions, sidebarHidden } =
+    useApp();
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.
@@ -76,6 +77,10 @@ function App() {
       ) {
         e.preventDefault();
         setShowShortcuts((v) => !v);
+      } else if (mod && !e.altKey && !e.shiftKey && key === "b") {
+        // ⌘B — toggle the sidebar
+        e.preventDefault();
+        s.toggleSidebar();
       } else if (mod && !e.altKey && !e.shiftKey && key === "k") {
         // chord leader: ⌘K then ⌘W closes all tabs
         e.preventDefault();
@@ -151,6 +156,9 @@ function App() {
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
       listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
+      listen("menu://check-updates", () =>
+        void useUpdater.getState().checkForUpdates(true),
+      ),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());
@@ -164,7 +172,7 @@ function App() {
     <VaultGate>
     <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200 text-[13px] antialiased">
       <div className="flex flex-1 min-h-0">
-        <Sidebar />
+        {!sidebarHidden && <Sidebar />}
         <main className="flex-1 flex flex-col min-w-0 min-h-0">
           <TabsBar />
           <div className="flex-1 min-h-0">

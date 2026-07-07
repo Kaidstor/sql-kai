@@ -9,6 +9,7 @@ import type {
   RelationInfo,
   SavedQuery,
   SessionInfo,
+  SortSpec,
   TableColumns,
   TableInfo,
   TablePage,
@@ -56,6 +57,11 @@ export const api = {
     invoke<void>("save_settings", { settings }),
 
   settingsPath: () => invoke<string>("settings_path"),
+
+  logPath: () => invoke<string>("log_path"),
+
+  /** Appends a UI-observed event to the backend diagnostics log. */
+  logEvent: (message: string) => invoke<void>("log_event", { message }),
 
   listHistory: () => invoke<HistoryEntry[]>("list_history"),
 
@@ -117,8 +123,7 @@ export const api = {
     table: string,
     limit: number,
     offset: number,
-    orderBy?: string,
-    orderDir?: "asc" | "desc",
+    sorts?: readonly SortSpec[],
   ) =>
     invoke<TablePage>("get_table_page", {
       sessionId,
@@ -126,8 +131,7 @@ export const api = {
       table,
       limit,
       offset,
-      orderBy: orderBy ?? null,
-      orderDir: orderDir ?? null,
+      sorts: sorts && sorts.length > 0 ? sorts : null,
     }),
 };
 

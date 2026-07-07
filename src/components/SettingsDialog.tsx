@@ -52,6 +52,7 @@ function ThemeCard({
 export function SettingsDialog() {
   const { settingsOpen, setSettingsOpen, settings, setTheme } = useApp();
   const [path, setPath] = useState<string | null>(null);
+  const [logPath, setLogPath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -59,6 +60,10 @@ export function SettingsDialog() {
       .settingsPath()
       .then(setPath)
       .catch(() => setPath(null));
+    api
+      .logPath()
+      .then(setLogPath)
+      .catch(() => setLogPath(null));
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setSettingsOpen(false);
     };
@@ -99,6 +104,12 @@ export function SettingsDialog() {
             {path ?? "settings.json"}
           </span>
           {" "}— copy the file to another machine to carry them over.
+          <br />
+          Connection diagnostics (why a session dropped) are logged to{" "}
+          <span className="selectable font-mono text-zinc-400">
+            {logPath ?? "sql-kai.log"}
+          </span>
+          .
         </div>
       </div>
     </Overlay>

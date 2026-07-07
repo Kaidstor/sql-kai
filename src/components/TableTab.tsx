@@ -3,9 +3,12 @@ import {
   ChevronRight,
   CircleAlert,
   FileCode2,
+  Loader2,
+  RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { isConnectionLost } from "../lib/api";
 import { quoteIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
 import { ResultsGrid } from "./ResultsGrid";
@@ -19,13 +22,17 @@ function formatApprox(n: number): string {
   return `~${(n / 1_000_000).toFixed(1)}M`;
 }
 
-/** The exact SELECT the backend runs for this grid (see get_table_page). */
-function currentViewSql(state: TableTabState): string {
+/** The SELECT behind this grid (see get_table_page). Columns hidden in the
+ *  grid are dropped from the list; with none hidden it stays SELECT *. */
+function currentViewSql(state: TableTabState, visible: string[] | null): string {
   const rel = `${quoteIdent(state.schema)}.${quoteIdent(state.table)}`;
-  const order = state.orderBy
-    ? `\nORDER BY ${quoteIdent(state.orderBy)} ${state.orderDir === "desc" ? "DESC" : "ASC"}`
+  const select = visible?.length ? visible.map(quoteIdent).join(", ") : "*";
+  const order = state.sorts.length
+    ? `\nORDER BY ${state.sorts
+        .map((s) => `${quoteIdent(s.column)} ${s.dir === "desc" ? "DESC" : "ASC"}`)
+        .join(", ")}`
     : "";
-  return `SELECT *\nFROM ${rel}${order}\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`;
+  return `SELECT ${select}\nFROM ${rel}${order}\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`;
 }
 
 export function TableTab({ tab }: { tab: Tab }) {
@@ -45,8 +52,20 @@ export function TableTab({ tab }: { tab: Tab }) {
     discardEdits,
     applyEdits,
     dismissApplyError,
+    reconnect,
+    connecting,
   } = useApp();
   const connected = Boolean(sessions[tab.profileId]);
+  const reconnecting = Boolean(connecting[tab.profileId]);
+  // A drop mid-session must not blank rows the user was looking at: keep
+  // the cached page under a Reconnect banner. Errors without cached data
+  // (or unrelated to the connection) still take over the tab body.
+  const staleData = Boolean(
+    state.error && state.data && isConnectionLost(state.error),
+  );
+  // Hidden grid columns, mirrored from ResultsGrid — the "current view as
+  // query" SQL leaves them out. Indices refer to state.data.result.columns.
+  const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
 
   // Lazy load: restored/reopened tabs fetch when first shown, not in bulk
   // at boot (dozens of parallel page queries froze the app).
@@ -85,11 +104,6 @@ export function TableTab({ tab }: { tab: Tab }) {
   );
   const dirty = editCount + state.deletes.length + state.inserts.length;
 
-  const onSort = (column: string) => {
-    const dir =
-      state.orderBy === column && state.orderDir === "asc" ? "desc" : "asc";
-    void loadTablePage(tab.id, { orderBy: column, orderDir: dir, page: 0 });
-  };
 
   const rows = state.data?.result.rows.length ?? 0;
   const lastPage = rows < state.pageSize;
@@ -114,9 +128,17 @@ export function TableTab({ tab }: { tab: Tab }) {
         />
         <IconBtn
           title="Current view as query — open this grid's SQL in a new tab"
-          onClick={() =>
-            openQueryTab(tab.profileId, currentViewSql(state), state.table)
-          }
+          onClick={() => {
+            const all = state.data?.result.columns ?? [];
+            const visible = hiddenCols.size
+              ? all.filter((_, i) => !hiddenCols.has(i))
+              : null;
+            openQueryTab(
+              tab.profileId,
+              currentViewSql(state, visible),
+              state.table,
+            );
+          }}
         >
           <FileCode2 size={13} />
         </IconBtn>
@@ -204,15 +226,38 @@ export function TableTab({ tab }: { tab: Tab }) {
         </div>
       )}
 
+      {staleData && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-red-900/60 bg-red-950/40 px-3 py-1.5 text-[12px] text-red-300">
+          <CircleAlert size={13} className="shrink-0" />
+          <span className="truncate" title={state.error}>
+            Connection lost — showing cached data
+          </span>
+          <button
+            className="ml-auto flex shrink-0 items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
+            disabled={reconnecting}
+            onClick={() => void reconnect(tab.profileId)}
+          >
+            {reconnecting ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <RefreshCw size={11} />
+            )}
+            Reconnect
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 min-h-0">
-        {state.error ? (
+        {state.error && !staleData ? (
           <TabError profileId={tab.profileId} error={state.error} />
         ) : state.data ? (
           <ResultsGrid
             result={state.data.result}
-            sortCol={state.orderBy}
-            sortDir={state.orderDir}
-            onSort={onSort}
+            sorts={state.sorts}
+            onSortsChange={(sorts) =>
+              void loadTablePage(tab.id, { sorts, page: 0 })
+            }
+            onHiddenColsChange={setHiddenCols}
             columnTypes={columnTypes}
             columnNullable={columnNullable}
             insertTarget={{ schema: state.schema, table: state.table }}
