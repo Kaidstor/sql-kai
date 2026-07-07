@@ -46,9 +46,7 @@ function HistoryRow({
             <div className="truncate font-mono text-[11px] text-zinc-300">
               {sqlPreview(entry.sql)}
             </div>
-            <div className="text-[10px] text-zinc-600">
-              {entry.profileName} · {fmtTime(entry.at)}
-            </div>
+            <div className="text-[10px] text-zinc-600">{fmtTime(entry.at)}</div>
           </div>
         </div>
       </ContextMenuTrigger>
@@ -71,11 +69,13 @@ function HistoryRow({
   );
 }
 
-/** App-wide query history; click re-opens the query, right-click cleans up. */
+/** Query history of the tab's connection; click re-opens the query,
+ *  right-click cleans up. */
 export function HistoryMenu({ tab }: { tab: Tab }) {
   const { history, setTabSql, openQueryTab } = useApp();
   const state = tab.state as QueryTabState;
   const [open, setOpen] = useState(false);
+  const entries = history.filter((h) => h.profileId === tab.profileId);
 
   const openEntry = (entry: HistoryEntry) => {
     setOpen(false);
@@ -101,12 +101,12 @@ export function HistoryMenu({ tab }: { tab: Tab }) {
         </MenuBtn>
       }
     >
-      {history.length === 0 ? (
+      {entries.length === 0 ? (
         <div className="px-2 py-3 text-center text-[11px] italic text-zinc-600">
-          no queries yet
+          no queries on this connection yet
         </div>
       ) : (
-        history
+        entries
           .slice(0, 100)
           .map((entry) => (
             <HistoryRow

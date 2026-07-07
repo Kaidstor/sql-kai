@@ -27,6 +27,9 @@ export function TabsBar() {
     openQueryTab,
     queries,
   } = useApp();
+  // Only the active connection's tabs are shown; other connections keep
+  // theirs in the background until selected again.
+  const visible = tabs.filter((t) => t.profileId === activeProfileId);
   /** Tab under the last right-click (null = empty bar area). */
   const [menuTabId, setMenuTabId] = useState<string | null>(null);
 
@@ -93,7 +96,7 @@ export function TabsBar() {
     lastMove.current = "";
   };
 
-  const menuIdx = menuTabId ? tabs.findIndex((t) => t.id === menuTabId) : -1;
+  const menuIdx = menuTabId ? visible.findIndex((t) => t.id === menuTabId) : -1;
 
   return (
     <ContextMenu>
@@ -105,7 +108,7 @@ export function TabsBar() {
       }}
       className="flex h-10 items-stretch border-b border-zinc-800 bg-zinc-925 overflow-x-auto shrink-0"
     >
-      {tabs.map((tab) => (
+      {visible.map((tab) => (
         <div
           key={tab.id}
           data-tab-id={tab.id}
@@ -185,17 +188,17 @@ export function TabsBar() {
       </ContextMenuItem>
       <ContextMenuItem
         icon={X}
-        disabled={menuIdx < 0 || tabs.length <= 1}
+        disabled={menuIdx < 0 || visible.length <= 1}
         onClick={() =>
-          closeTabs(tabs.filter((t) => t.id !== menuTabId).map((t) => t.id))
+          closeTabs(visible.filter((t) => t.id !== menuTabId).map((t) => t.id))
         }
       >
         Close Others
       </ContextMenuItem>
       <ContextMenuItem
         icon={X}
-        disabled={menuIdx < 0 || menuIdx >= tabs.length - 1}
-        onClick={() => closeTabs(tabs.slice(menuIdx + 1).map((t) => t.id))}
+        disabled={menuIdx < 0 || menuIdx >= visible.length - 1}
+        onClick={() => closeTabs(visible.slice(menuIdx + 1).map((t) => t.id))}
       >
         Close Tabs to the Right
       </ContextMenuItem>
@@ -203,8 +206,8 @@ export function TabsBar() {
       <ContextMenuItem
         icon={X}
         iconClassName="text-red-400/80"
-        disabled={tabs.length === 0}
-        onClick={() => closeTabs(tabs.map((t) => t.id))}
+        disabled={visible.length === 0}
+        onClick={() => closeTabs(visible.map((t) => t.id))}
       >
         Close All Tabs
         <ContextMenuShortcut>⌘K ⌘W</ContextMenuShortcut>

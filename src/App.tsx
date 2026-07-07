@@ -20,7 +20,7 @@ import { initUpdater } from "./lib/updater";
 const CHORD_MS = 5000;
 
 function App() {
-  const { init, tabs, activeTabId } = useApp();
+  const { init, tabs, activeTabId, activeProfileId, sessions } = useApp();
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.
@@ -112,8 +112,14 @@ function App() {
         // JS fallback for the shortcuts the mac menu owns
         if (key === "w") {
           e.preventDefault();
-          if (chordFired()) s.closeTabs(s.tabs.map((t) => t.id));
-          else s.closeActiveTab();
+          if (chordFired()) {
+            // "all tabs" = the visible ones, i.e. the active connection's
+            s.closeTabs(
+              s.tabs
+                .filter((t) => t.profileId === s.activeProfileId)
+                .map((t) => t.id),
+            );
+          } else s.closeActiveTab();
         } else if (key === "t" && e.shiftKey) {
           e.preventDefault();
           s.reopenClosedTab();
@@ -133,9 +139,15 @@ function App() {
       listen("menu://new-query-tab", () => useApp.getState().newQueryTab()),
       listen("menu://close-tab", () => {
         const s = useApp.getState();
-        // the ⌘K chord's second key arrives as this menu event on mac
-        if (chordFired()) s.closeTabs(s.tabs.map((t) => t.id));
-        else s.closeActiveTab();
+        // the ⌘K chord's second key arrives as this menu event on mac;
+        // "all tabs" = the visible ones, i.e. the active connection's
+        if (chordFired()) {
+          s.closeTabs(
+            s.tabs
+              .filter((t) => t.profileId === s.activeProfileId)
+              .map((t) => t.id),
+          );
+        } else s.closeActiveTab();
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
       listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
@@ -168,7 +180,9 @@ function App() {
               <div className="h-full flex flex-col items-center justify-center gap-2 overflow-y-auto text-zinc-600">
                 <div className="text-[15px]">sql-tauri</div>
                 <div className="text-[12px]">
-                  Connect to a database to get started
+                  {activeProfileId && sessions[activeProfileId]
+                    ? "No open tabs — ⌘N starts a new query"
+                    : "Connect to a database to get started"}
                 </div>
                 <ShortcutSections className="mt-8 px-6" />
               </div>
