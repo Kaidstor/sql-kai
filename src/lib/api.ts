@@ -124,6 +124,7 @@ export const api = {
     limit: number,
     offset: number,
     sorts?: readonly SortSpec[],
+    filter?: string,
   ) =>
     invoke<TablePage>("get_table_page", {
       sessionId,
@@ -132,6 +133,7 @@ export const api = {
       limit,
       offset,
       sorts: sorts && sorts.length > 0 ? sorts : null,
+      filter: filter?.trim() || null,
     }),
 };
 

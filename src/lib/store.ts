@@ -62,6 +62,8 @@ export interface TableTabState {
   pageSize: number;
   /** ORDER BY entries in priority order (empty = server default order). */
   sorts: SortSpec[];
+  /** Raw WHERE expression ("" = no filter) — filter bar / FK navigation. */
+  filter: string;
   data?: TablePage;
   error?: string;
   loading: boolean;
@@ -238,7 +240,14 @@ interface AppStore {
     title?: string,
     savedQueryId?: string,
   ) => void;
-  openTableTab: (profileId: string, schema: string, table: string) => void;
+  /** filter (raw WHERE) applies to a fresh tab and refocuses+refilters an
+   *  existing one — FK navigation lands on the referenced row(s). */
+  openTableTab: (
+    profileId: string,
+    schema: string,
+    table: string,
+    filter?: string,
+  ) => void;
   openStructureTab: (profileId: string, schema: string, table: string) => void;
   setStructureSection: (tabId: string, section: StructureSection) => void;
   loadStructure: (tabId: string) => Promise<void>;
@@ -259,6 +268,13 @@ interface AppStore {
     schema: string,
     table: string,
   ) => Promise<void>;
+  /** Lazy-loaded foreign keys per relation (FK navigation), same keying. */
+  tableRelations: Record<string, RelationInfo[]>;
+  loadTableRelations: (
+    profileId: string,
+    schema: string,
+    table: string,
+  ) => Promise<void>;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   /** Drag reorder: puts dragId before targetId (or after it when `after`). */
@@ -270,7 +286,9 @@ interface AppStore {
   cancelQuery: (tabId: string) => Promise<void>;
   loadTablePage: (
     tabId: string,
-    patch?: Partial<Pick<TableTabState, "page" | "pageSize" | "sorts">>,
+    patch?: Partial<
+      Pick<TableTabState, "page" | "pageSize" | "sorts" | "filter">
+    >,
   ) => Promise<void>;
   /** Stage a cell value; staging the original value reverts the cell. */
   stageCellEdit: (
@@ -475,12 +493,15 @@ export const useApp = create<AppStore>((set, get) => {
     }
   };
 
-  /** Drops cached column info after DDL changed the table. */
+  /** Drops cached column/FK info after DDL changed the table. */
   const invalidateColumns = (profileId: string, schema: string, table: string) =>
     set((s) => {
+      const key = columnsKey(profileId, schema, table);
       const tableColumns = { ...s.tableColumns };
-      delete tableColumns[columnsKey(profileId, schema, table)];
-      return { tableColumns };
+      delete tableColumns[key];
+      const tableRelations = { ...s.tableRelations };
+      delete tableRelations[key];
+      return { tableColumns, tableRelations };
     });
 
   /** Data/structure tabs are per-relation singletons: focus if open, else create. */
@@ -489,6 +510,7 @@ export const useApp = create<AppStore>((set, get) => {
     profileId: string,
     schema: string,
     table: string,
+    filter?: string,
   ) => {
     const existing = get().tabs.find(
       (t) =>
@@ -499,6 +521,14 @@ export const useApp = create<AppStore>((set, get) => {
     );
     if (existing) {
       set({ activeTabId: existing.id, activeProfileId: profileId });
+      // FK navigation onto an already-open tab retargets its filter
+      if (
+        filter !== undefined &&
+        existing.state.kind === "table" &&
+        existing.state.filter !== filter
+      ) {
+        void get().loadTablePage(existing.id, { filter, page: 0 });
+      }
       return;
     }
     const name = schema === "public" ? table : `${schema}.${table}`;
@@ -515,6 +545,7 @@ export const useApp = create<AppStore>((set, get) => {
               page: 0,
               pageSize: 100,
               sorts: [],
+              filter: filter ?? "",
               loading: false,
               ...noTableEdits(),
             }
@@ -559,6 +590,7 @@ export const useApp = create<AppStore>((set, get) => {
   vault: null,
   vaultError: null,
   tableColumns: {},
+  tableRelations: {},
 
   setPalette: (palette) => set({ palette }),
 
@@ -869,6 +901,11 @@ export const useApp = create<AppStore>((set, get) => {
           ([key]) => !key.startsWith(`${profileId}|`),
         ),
       );
+      const tableRelations = Object.fromEntries(
+        Object.entries(s.tableRelations).filter(
+          ([key]) => !key.startsWith(`${profileId}|`),
+        ),
+      );
       const tabs = s.tabs.filter((t) => t.profileId !== profileId);
       return {
         sessions,
@@ -876,6 +913,7 @@ export const useApp = create<AppStore>((set, get) => {
         tables,
         schemaColumns,
         tableColumns,
+        tableRelations,
         tabs,
         // never jump to another connection's tab — the bar only shows the
         // active connection, which just lost all of its tabs
@@ -955,8 +993,8 @@ export const useApp = create<AppStore>((set, get) => {
     }));
   },
 
-  openTableTab: (profileId, schema, table) =>
-    openRelationTab("table", profileId, schema, table),
+  openTableTab: (profileId, schema, table, filter) =>
+    openRelationTab("table", profileId, schema, table, filter),
 
   openStructureTab: (profileId, schema, table) =>
     openRelationTab("structure", profileId, schema, table),
@@ -1119,6 +1157,19 @@ export const useApp = create<AppStore>((set, get) => {
       const message = errText(e);
       get().showToast(message);
       noteSessionLost(profileId, message);
+    }
+  },
+
+  loadTableRelations: async (profileId, schema, table) => {
+    const key = columnsKey(profileId, schema, table);
+    if (get().tableRelations[key]) return;
+    const session = get().sessions[profileId];
+    if (!session) return;
+    try {
+      const rels = await api.getRelations(session.sessionId, schema, table);
+      set((s) => ({ tableRelations: { ...s.tableRelations, [key]: rels } }));
+    } catch {
+      // non-fatal: FK navigation just stays off for this table
     }
   },
 
@@ -1328,6 +1379,7 @@ export const useApp = create<AppStore>((set, get) => {
         next.pageSize,
         next.page * next.pageSize,
         next.sorts,
+        next.filter,
       );
       // Pending inserts survive a reload (not tied to row indices).
       patchTab<TableTabState>(tabId, {

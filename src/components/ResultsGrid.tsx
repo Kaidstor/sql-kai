@@ -7,6 +7,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ArrowUpRight,
   Braces,
   Brackets,
   Copy,
@@ -158,6 +159,9 @@ interface Props {
   columnNullable?: (boolean | undefined)[];
   /** Source relation of the rows; enables "Copy as INSERT" in the menu. */
   insertTarget?: { schema: string; table: string };
+  /** Column indices that are foreign keys — ⌘-click follows the reference. */
+  fkColumns?: ReadonlySet<number>;
+  onFollowFk?: (row: number, col: number) => void;
 }
 
 export function ResultsGrid({
@@ -169,6 +173,8 @@ export function ResultsGrid({
   columnTypes,
   columnNullable,
   insertTarget,
+  fkColumns,
+  onFollowFk,
 }: Props) {
   const showToast = useApp((s) => s.showToast);
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
@@ -1086,11 +1092,23 @@ export function ResultsGrid({
                     // blue selection ring.
                     const errored =
                       staged.has && !isDeleted && Boolean(editing?.applyFailed);
+                    const isFk = Boolean(
+                      onFollowFk && fkColumns?.has(ci) && shown !== null,
+                    );
                     return (
                       <td
                         key={cell.id}
-                        title={shown ?? undefined}
+                        title={
+                          isFk
+                            ? `${shown}\n⌘-click — open referenced row`
+                            : (shown ?? undefined)
+                        }
                         onClick={(e) => {
+                          if (isFk && (e.metaKey || e.ctrlKey)) {
+                            e.preventDefault();
+                            onFollowFk?.(ri, ci);
+                            return;
+                          }
                           // shift+click grows a cell range from the anchor
                           // (cell selection replaces row selection either way)
                           const anchorCell = cellSel?.a ?? focused;
@@ -1199,6 +1217,10 @@ export function ResultsGrid({
                             )}
                           >
                             NULL
+                          </span>
+                        ) : isFk ? (
+                          <span className="underline decoration-dotted decoration-zinc-500 underline-offset-2">
+                            {shown}
                           </span>
                         ) : (
                           shown
@@ -1400,6 +1422,16 @@ export function ResultsGrid({
               Open cell in editor
               <ContextMenuShortcut>⌘⏎</ContextMenuShortcut>
             </ContextMenuItem>
+            {onFollowFk && menuCell && fkColumns?.has(menuCell.col) && (
+              <ContextMenuItem
+                icon={ArrowUpRight}
+                disabled={result.rows[menuCell.row]?.[menuCell.col] == null}
+                onClick={() => onFollowFk(menuCell.row, menuCell.col)}
+              >
+                Open referenced row
+                <ContextMenuShortcut>⌘click</ContextMenuShortcut>
+              </ContextMenuItem>
+            )}
             {editing && (
               <>
                 <ContextMenuSeparator />

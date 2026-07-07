@@ -569,12 +569,24 @@ pub async fn get_table_page(
     limit: u32,
     offset: u64,
     sorts: Option<Vec<SortSpec>>,
+    filter: Option<String>,
 ) -> Result<TablePage, AppError> {
     let client = client_of(&state, &session_id)?;
     let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
     let limit = limit.clamp(1, 1000);
 
+    // User-editable WHERE expression (FK navigation, filter bar) — raw SQL by
+    // design, like the query editor itself.
+    let where_clause = filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(|f| format!(" WHERE {f}"));
+
     let mut sql = format!("SELECT * FROM {qualified}");
+    if let Some(w) = &where_clause {
+        sql.push_str(w);
+    }
     let order: Vec<String> = sorts
         .unwrap_or_default()
         .iter()
@@ -595,19 +607,35 @@ pub async fn get_table_page(
     let exec = db::execute(&client, &sql, limit as usize).await?;
     let result = exec.results.into_iter().next().unwrap_or_default();
 
-    let approx_sql = format!(
-        "SELECT reltuples::bigint FROM pg_class WHERE oid = {}::regclass",
-        db::quote_literal(&qualified)
-    );
-    let approx_rows = match db::execute(&client, &approx_sql, 1).await {
-        Ok(r) => r
-            .results
-            .first()
-            .and_then(|res| res.rows.first())
-            .and_then(|row| row[0].as_deref())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(-1),
-        Err(_) => -1,
+    let approx_rows = if let Some(w) = &where_clause {
+        // Planner row estimate for the filtered set — cheap, unlike count(*).
+        let explain = format!("EXPLAIN (FORMAT JSON) SELECT * FROM {qualified}{w}");
+        match db::execute(&client, &explain, 10).await {
+            Ok(r) => r
+                .results
+                .first()
+                .and_then(|res| res.rows.first())
+                .and_then(|row| row[0].as_deref())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| v.get(0)?.get("Plan")?.get("Plan Rows")?.as_i64())
+                .unwrap_or(-1),
+            Err(_) => -1,
+        }
+    } else {
+        let approx_sql = format!(
+            "SELECT reltuples::bigint FROM pg_class WHERE oid = {}::regclass",
+            db::quote_literal(&qualified)
+        );
+        match db::execute(&client, &approx_sql, 1).await {
+            Ok(r) => r
+                .results
+                .first()
+                .and_then(|res| res.rows.first())
+                .and_then(|row| row[0].as_deref())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(-1),
+            Err(_) => -1,
+        }
     };
 
     Ok(TablePage {

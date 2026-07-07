@@ -53,7 +53,8 @@ type PersistedTabState =
   | (Pick<
       TableTabState,
       "kind" | "schema" | "table" | "page" | "pageSize" | "sorts"
-    > & {
+    > &
+      Partial<Pick<TableTabState, "filter">> & {
       /** Pre-multi-sort snapshots; migrated into `sorts` on revive. */
       orderBy?: string;
       orderDir?: "asc" | "desc";
@@ -88,6 +89,7 @@ function snapshotTab(tab: Tab): PersistedTab {
             page: st.page,
             pageSize: st.pageSize,
             sorts: st.sorts,
+            filter: st.filter,
           }
         : {
             kind: "structure",
@@ -155,6 +157,7 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
         page: st.page ?? 0,
         pageSize: st.pageSize || 100,
         sorts,
+        filter: typeof st.filter === "string" ? st.filter : "",
         loading: false,
         edits: {},
         deletes: [],

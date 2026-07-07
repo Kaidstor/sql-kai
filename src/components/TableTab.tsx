@@ -3,17 +3,19 @@ import {
   ChevronRight,
   CircleAlert,
   FileCode2,
+  Funnel,
   Loader2,
   RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { isConnectionLost } from "../lib/api";
-import { quoteIdent } from "../lib/sql";
+import { parseRegclass, quoteIdent, quoteLit } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
+import type { RelationInfo } from "../lib/types";
 import { ResultsGrid } from "./ResultsGrid";
 import { TabError } from "./TabError";
-import { IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
+import { cn, IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
 
 function formatApprox(n: number): string {
   if (n < 0) return "~?";
@@ -27,12 +29,13 @@ function formatApprox(n: number): string {
 function currentViewSql(state: TableTabState, visible: string[] | null): string {
   const rel = `${quoteIdent(state.schema)}.${quoteIdent(state.table)}`;
   const select = visible?.length ? visible.map(quoteIdent).join(", ") : "*";
+  const where = state.filter.trim() ? `\nWHERE ${state.filter.trim()}` : "";
   const order = state.sorts.length
     ? `\nORDER BY ${state.sorts
         .map((s) => `${quoteIdent(s.column)} ${s.dir === "desc" ? "DESC" : "ASC"}`)
         .join(", ")}`
     : "";
-  return `SELECT ${select}\nFROM ${rel}${order}\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`;
+  return `SELECT ${select}\nFROM ${rel}${where}${order}\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`;
 }
 
 export function TableTab({ tab }: { tab: Tab }) {
@@ -43,7 +46,10 @@ export function TableTab({ tab }: { tab: Tab }) {
     loadTablePage,
     loadTableColumns,
     tableColumns,
+    loadTableRelations,
+    tableRelations,
     openQueryTab,
+    openTableTab,
     stageCellEdit,
     toggleRowDeletes,
     duplicateRows,
@@ -66,6 +72,15 @@ export function TableTab({ tab }: { tab: Tab }) {
   // Hidden grid columns, mirrored from ResultsGrid — the "current view as
   // query" SQL leaves them out. Indices refer to state.data.result.columns.
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
+  // WHERE bar: draft until Enter applies it; auto-shown while a filter is on.
+  const [showFilter, setShowFilter] = useState(Boolean(state.filter));
+  const [filterDraft, setFilterDraft] = useState(state.filter);
+
+  // External filter changes (FK navigation onto this tab) resync the bar.
+  useEffect(() => {
+    setFilterDraft(state.filter);
+    if (state.filter) setShowFilter(true);
+  }, [state.filter]);
 
   // Lazy load: restored/reopened tabs fetch when first shown, not in bulk
   // at boot (dozens of parallel page queries froze the app).
@@ -84,6 +99,54 @@ export function TableTab({ tab }: { tab: Tab }) {
     if (!cols) void loadTableColumns(tab.profileId, state.schema, state.table);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cols, tab.profileId, state.schema, state.table]);
+
+  // Foreign keys enable ⌘-click navigation to the referenced row.
+  const rels =
+    tableRelations[columnsKey(tab.profileId, state.schema, state.table)];
+  useEffect(() => {
+    if (connected && !rels) {
+      void loadTableRelations(tab.profileId, state.schema, state.table);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, rels, tab.profileId, state.schema, state.table]);
+
+  /** First FK covering each column name (string_agg output is ", "-joined). */
+  const fkByCol = useMemo(() => {
+    const map = new Map<string, RelationInfo>();
+    for (const r of rels ?? []) {
+      for (const c of r.columns?.split(", ") ?? []) {
+        if (!map.has(c)) map.set(c, r);
+      }
+    }
+    return map;
+  }, [rels]);
+
+  const fkColumns = useMemo(() => {
+    const set = new Set<number>();
+    state.data?.result.columns.forEach((name, i) => {
+      if (fkByCol.has(name)) set.add(i);
+    });
+    return set;
+  }, [state.data, fkByCol]);
+
+  /** Opens the referenced table filtered to the row the FK points at. */
+  const followFk = (ri: number, ci: number) => {
+    const res = state.data?.result;
+    if (!res) return;
+    const rel = fkByCol.get(res.columns[ci]);
+    if (!rel) return;
+    const from = rel.columns?.split(", ") ?? [];
+    const to = (rel.refColumns ?? rel.columns)?.split(", ") ?? [];
+    const target = parseRegclass(rel.refTable);
+    const parts = to.map((refCol, i) => {
+      const idx = res.columns.indexOf(from[i]);
+      const v = idx >= 0 ? (res.rows[ri]?.[idx] ?? null) : null;
+      return v === null
+        ? `${quoteIdent(refCol)} IS NULL`
+        : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
+    });
+    openTableTab(tab.profileId, target.schema, target.table, parts.join(" AND "));
+  };
   const hasPk = (cols ?? []).some((c) => c.isPk);
   // Views (and matviews) are read-only: no INSERT/UPDATE/DELETE through the grid.
   const relKind = (tables[tab.profileId] ?? []).find(
@@ -141,6 +204,13 @@ export function TableTab({ tab }: { tab: Tab }) {
           }}
         >
           <FileCode2 size={13} />
+        </IconBtn>
+        <IconBtn
+          title="Filter (WHERE …)"
+          className={state.filter ? "text-amber-400" : undefined}
+          onClick={() => setShowFilter((v) => !v || Boolean(state.filter))}
+        >
+          <Funnel size={13} />
         </IconBtn>
 
         {dirty > 0 && (
@@ -204,6 +274,54 @@ export function TableTab({ tab }: { tab: Tab }) {
         </div>
       </div>
 
+      {showFilter && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-3 py-1">
+          <span className="shrink-0 font-mono text-[11px] font-semibold text-zinc-500">
+            WHERE
+          </span>
+          <input
+            autoFocus={!state.filter}
+            value={filterDraft}
+            onChange={(e) => setFilterDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                void loadTablePage(tab.id, {
+                  filter: filterDraft.trim(),
+                  page: 0,
+                });
+              } else if (e.key === "Escape") {
+                setFilterDraft(state.filter);
+                if (!state.filter) setShowFilter(false);
+              }
+            }}
+            placeholder="status = 'active' AND created_at > now() - interval '1 day'"
+            spellCheck={false}
+            className={cn(
+              "min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-zinc-700",
+              filterDraft !== state.filter ? "text-amber-200" : "text-zinc-100",
+            )}
+          />
+          {filterDraft !== state.filter && (
+            <span className="shrink-0 text-[10px] text-amber-400/80">
+              ⏎ apply
+            </span>
+          )}
+          {(state.filter || filterDraft) && (
+            <IconBtn
+              title="Clear filter"
+              onClick={() => {
+                setFilterDraft("");
+                if (state.filter) {
+                  void loadTablePage(tab.id, { filter: "", page: 0 });
+                }
+              }}
+            >
+              <X size={12} />
+            </IconBtn>
+          )}
+        </div>
+      )}
+
       {state.applyError && (
         <div className="flex shrink-0 items-start gap-2 border-b border-red-900/60 bg-red-950/50 px-3 py-2 text-[12px]">
           <CircleAlert size={14} className="mt-px shrink-0 text-red-400" />
@@ -261,6 +379,8 @@ export function TableTab({ tab }: { tab: Tab }) {
             columnTypes={columnTypes}
             columnNullable={columnNullable}
             insertTarget={{ schema: state.schema, table: state.table }}
+            fkColumns={fkColumns}
+            onFollowFk={followFk}
             editing={{
               edits: state.edits,
               deletes: state.deletes,
