@@ -15,6 +15,8 @@ body,
 body {
   user-select: none;
   cursor: default;
+  /* themed via --color-zinc-* overrides on <html> (see lib/themes.ts) */
+  background: var(--color-zinc-950);
 }
 
 input,
@@ -32,13 +34,13 @@ textarea,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgb(63 63 70 / 0.7);
+  background: color-mix(in srgb, var(--color-zinc-700) 70%, transparent);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgb(82 82 91);
+  background: var(--color-zinc-600);
   border: 2px solid transparent;
   background-clip: content-box;
 }

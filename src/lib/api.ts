@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppSettings,
   ColumnInfo,
   ExecResult,
   HistoryEntry,
@@ -48,6 +49,13 @@ export const api = {
   saveQuery: (query: SavedQuery) => invoke<SavedQuery>("save_query", { query }),
 
   deleteQuery: (id: string) => invoke<void>("delete_query", { id }),
+
+  getSettings: () => invoke<AppSettings>("get_settings"),
+
+  saveSettings: (settings: AppSettings) =>
+    invoke<void>("save_settings", { settings }),
+
+  settingsPath: () => invoke<string>("settings_path"),
 
   listHistory: () => invoke<HistoryEntry[]>("list_history"),
 

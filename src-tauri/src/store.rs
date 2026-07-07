@@ -238,6 +238,38 @@ pub fn delete_query(id: &str) -> Result<(), AppError> {
     save_queries(&all)
 }
 
+// --- App settings -------------------------------------------------------------
+// A single JSON object (settings.json) the frontend owns the schema of — the
+// backend only round-trips it, so adding a setting never needs a Rust change.
+// The file sits next to profiles.json and is meant to be copied between
+// machines as-is.
+
+pub fn settings_path() -> Result<std::path::PathBuf, AppError> {
+    config_path("settings.json")
+}
+
+pub fn load_settings() -> Result<serde_json::Value, AppError> {
+    let path = settings_path()?;
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let raw = fs::read_to_string(&path)?;
+    if raw.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&raw)
+        .map_err(|e| AppError::Msg(format!("settings.json is corrupted: {e}")))
+}
+
+pub fn save_settings(settings: &serde_json::Value) -> Result<(), AppError> {
+    if !settings.is_object() {
+        return Err(AppError::Msg("settings must be a JSON object".into()));
+    }
+    let path = settings_path()?;
+    write_atomic(&path, serde_json::to_string_pretty(settings).unwrap().as_bytes())?;
+    Ok(())
+}
+
 // --- Query history ------------------------------------------------------------
 
 /// Newest-first list of queries the user ran from a query tab.

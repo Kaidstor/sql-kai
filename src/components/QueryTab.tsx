@@ -2,10 +2,10 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 import { CircleStop, Play } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
+import { editorThemes, themeById } from "../lib/themes";
 import type { StatementResult } from "../lib/types";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
@@ -35,12 +35,37 @@ function ResultBlock({ result }: { result: StatementResult }) {
   );
 }
 
+const DEFAULT_EDITOR_PCT = 38;
+/** Minimum pane height while dragging; below half of it the editor snaps shut. */
+const MIN_PANE_PX = 100;
+
 export function QueryTab({ tab }: { tab: Tab }) {
   const state = tab.state as QueryTabState;
-  const { runQuery, cancelQuery, setTabSql, setTabMaxRows, sessions } =
-    useApp();
+  const {
+    runQuery,
+    cancelQuery,
+    setTabSql,
+    setTabMaxRows,
+    setTabEditorPct,
+    sessions,
+  } = useApp();
   const connected = Boolean(sessions[tab.profileId]);
   const schemaColumns = useApp((s) => s.schemaColumns[tab.profileId]);
+  const lightTheme = useApp((s) => Boolean(themeById(s.settings.theme).light));
+  const splitRef = useRef<HTMLDivElement>(null);
+  const editorPct = state.editorPct ?? DEFAULT_EDITOR_PCT;
+
+  const resizeTo = (clientY: number) => {
+    const split = splitRef.current;
+    if (!split) return;
+    const rect = split.getBoundingClientRect();
+    const y = clientY - rect.top;
+    const px =
+      y < MIN_PANE_PX / 2
+        ? 0 // snap shut — results take the whole tab
+        : Math.max(MIN_PANE_PX, Math.min(y, rect.height - MIN_PANE_PX));
+    setTabEditorPct(tab.id, (px / rect.height) * 100);
+  };
 
   const extensions = useMemo(() => {
     // {schema: {table: [columns]}} — tables in `public` complete bare,
@@ -111,34 +136,59 @@ export function QueryTab({ tab }: { tab: Tab }) {
         </div>
       </div>
 
-      <div className="h-[38%] min-h-28 border-b border-zinc-800 shrink-0 overflow-hidden">
-        <CodeMirror
-          value={state.sql}
-          onChange={(value) => setTabSql(tab.id, value)}
-          extensions={extensions}
-          theme={vscodeDark}
-          height="100%"
-          style={{ height: "100%" }}
-          placeholder="SELECT * FROM …"
-          basicSetup={{
-            foldGutter: false,
-            autocompletion: true,
-            highlightActiveLine: true,
-          }}
-        />
-      </div>
+      <div ref={splitRef} className="flex-1 min-h-0 flex flex-col">
+        <div
+          className={
+            editorPct === 0
+              ? "hidden"
+              : "min-h-[100px] shrink-0 overflow-hidden"
+          }
+          style={{ height: `${editorPct}%` }}
+        >
+          <CodeMirror
+            value={state.sql}
+            onChange={(value) => setTabSql(tab.id, value)}
+            extensions={extensions}
+            theme={lightTheme ? editorThemes.light : editorThemes.dark}
+            height="100%"
+            style={{ height: "100%" }}
+            placeholder="SELECT * FROM …"
+            basicSetup={{
+              foldGutter: false,
+              autocompletion: true,
+              highlightActiveLine: true,
+            }}
+          />
+        </div>
 
-      <div className="flex-1 min-h-0 flex flex-col overflow-auto">
-        {state.error && <ErrorPre>{state.error}</ErrorPre>}
-        {!state.error &&
-          state.result?.results.map((result, i) => (
-            <ResultBlock key={i} result={result} />
-          ))}
-        {!state.error && !state.result && !state.running && (
-          <div className="flex-1 flex items-center justify-center text-zinc-600 text-[12px]">
-            Run a query to see results
-          </div>
-        )}
+        <div
+          className="group relative h-1.5 shrink-0 cursor-row-resize touch-none select-none"
+          title="Drag to resize · double-click to reset"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            resizeTo(e.clientY);
+          }}
+          onDoubleClick={() => setTabEditorPct(tab.id, DEFAULT_EDITOR_PCT)}
+        >
+          <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-800 group-hover:h-0.5 group-hover:bg-sky-600 group-active:h-0.5 group-active:bg-sky-500" />
+        </div>
+
+        <div className="flex-1 min-h-0 flex flex-col overflow-auto">
+          {state.error && <ErrorPre>{state.error}</ErrorPre>}
+          {!state.error &&
+            state.result?.results.map((result, i) => (
+              <ResultBlock key={i} result={result} />
+            ))}
+          {!state.error && !state.result && !state.running && (
+            <div className="flex-1 flex items-center justify-center text-zinc-600 text-[12px]">
+              Run a query to see results
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

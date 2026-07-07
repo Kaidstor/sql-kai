@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { AppPalette } from "./components/Palette";
 import { QueryTab } from "./components/QueryTab";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutSections, ShortcutsOverlay } from "./components/ShortcutsHelp";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -61,6 +62,10 @@ function App() {
       } else if (mod && !e.altKey && key === "p") {
         e.preventDefault();
         s.setPalette(s.palette === "queries" ? null : "queries");
+      } else if (mod && !e.altKey && !e.shiftKey && key === ",") {
+        // ⌘, — on mac the menu accelerator normally consumes this first
+        e.preventDefault();
+        s.setSettingsOpen(!s.settingsOpen);
       } else if (
         mod &&
         !e.altKey &&
@@ -132,6 +137,7 @@ function App() {
         else s.closeActiveTab();
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
+      listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());
@@ -171,6 +177,7 @@ function App() {
       </div>
       <StatusBar />
       <ConnectionDialog />
+      <SettingsDialog />
       <AppPalette />
       <ShortcutsOverlay
         open={showShortcuts}

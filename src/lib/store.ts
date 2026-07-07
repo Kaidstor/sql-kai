@@ -12,7 +12,9 @@ import {
   type ClosedTab,
 } from "./persist";
 import { structureDdl, tableDml } from "./sqlgen";
+import { applyTheme } from "./themes";
 import type {
+  AppSettings,
   ColumnInfo,
   ExecResult,
   HistoryEntry,
@@ -35,6 +37,8 @@ export interface QueryTabState {
   error?: string;
   running: boolean;
   maxRows: number;
+  /** Editor pane height, % of the editor+results split; 0 = collapsed (results only). */
+  editorPct?: number;
   /** Saved query this tab was opened from / saved as — ⌘S overwrites it. */
   savedQueryId?: string;
 }
@@ -151,6 +155,10 @@ interface AppStore {
   closedTabs: ClosedTab[];
   /** Query tab whose "save query" dialog is open (⌘S on an unsaved query). */
   saveDialogFor: string | null;
+  /** Contents of settings.json (theme etc.) — loaded before the vault gate. */
+  settings: AppSettings;
+  /** Settings dialog (⌘,). */
+  settingsOpen: boolean;
   /** Vault gate: null until checked, then whether it exists / is unlocked. */
   vault: VaultStatus | null;
   /** init() failed before the vault state was known — show a retry screen. */
@@ -166,6 +174,9 @@ interface AppStore {
   /** Lock the vault: drops in-memory secrets and all live sessions. */
   lockVault: () => Promise<void>;
   setPalette: (palette: PaletteKind | null) => void;
+  setSettingsOpen: (open: boolean) => void;
+  /** Applies the theme immediately and persists it to settings.json. */
+  setTheme: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
   deleteHistoryEntry: (id: string) => void;
   clearHistory: () => void;
@@ -239,6 +250,7 @@ interface AppStore {
   moveTab: (dragId: string, targetId: string, after: boolean) => void;
   setTabSql: (tabId: string, sql: string) => void;
   setTabMaxRows: (tabId: string, maxRows: number) => void;
+  setTabEditorPct: (tabId: string, editorPct: number) => void;
   runQuery: (tabId: string) => Promise<void>;
   cancelQuery: (tabId: string) => Promise<void>;
   loadTablePage: (
@@ -327,7 +339,14 @@ export const useApp = create<AppStore>((set, get) => {
     if (!restored) return false;
     set((s) => ({
       tabs: [...s.tabs, ...restored.tabs],
-      activeTabId: restored.activeId ?? s.activeTabId,
+      // only the visible (active) connection may claim the active tab —
+      // re-adopting several sessions must not focus a background one
+      activeTabId:
+        s.activeProfileId === profileId
+          ? (restored.activeId ??
+            restored.tabs[restored.tabs.length - 1]?.id ??
+            s.activeTabId)
+          : s.activeTabId,
     }));
     return true;
   };
@@ -433,7 +452,7 @@ export const useApp = create<AppStore>((set, get) => {
         t.state.table === table,
     );
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ activeTabId: existing.id, activeProfileId: profileId });
       return;
     }
     const name = schema === "public" ? table : `${schema}.${table}`;
@@ -463,7 +482,11 @@ export const useApp = create<AppStore>((set, get) => {
             },
     };
     // no explicit fetch: the tab becomes active and loads itself on mount
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+    set((s) => ({
+      tabs: [...s.tabs, tab],
+      activeTabId: tab.id,
+      activeProfileId: profileId,
+    }));
   };
 
   return {
@@ -482,11 +505,27 @@ export const useApp = create<AppStore>((set, get) => {
   palette: null,
   closedTabs: loadClosedTabs(),
   saveDialogFor: null,
+  settings: {},
+  settingsOpen: false,
   vault: null,
   vaultError: null,
   tableColumns: {},
 
   setPalette: (palette) => set({ palette }),
+
+  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+
+  setTheme: async (id) => {
+    applyTheme(id);
+    const settings = { ...get().settings, theme: id };
+    set({ settings });
+    try {
+      await api.saveSettings(settings);
+    } catch (e) {
+      // theme is applied for this session; only the persistence failed
+      get().showToast(`Settings not saved: ${errText(e)}`);
+    }
+  },
 
   setSaveDialogFor: (tabId) => set({ saveDialogFor: tabId }),
 
@@ -513,6 +552,18 @@ export const useApp = create<AppStore>((set, get) => {
   },
 
   init: async () => {
+    // Settings are not vault-gated — the theme must apply on the unlock
+    // screen too. main.tsx already applied the localStorage-cached theme;
+    // settings.json is the source of truth and wins once it's read.
+    void api
+      .getSettings()
+      .then((settings) => {
+        set({ settings });
+        applyTheme(settings.theme);
+      })
+      .catch(() => {
+        // cached theme stays; the next setTheme rewrites the file
+      });
     void loadHistoryFromDisk();
     try {
       const vault = await api.vaultStatus();
@@ -663,12 +714,16 @@ export const useApp = create<AppStore>((set, get) => {
     set((s) => {
       const sessions = { ...s.sessions };
       delete sessions[id];
+      const tabs = s.tabs.filter((t) => t.profileId !== id);
       return {
         profiles: s.profiles.filter((p) => p.id !== id),
         sessions,
-        tabs: s.tabs.filter((t) => t.profileId !== id),
+        tabs,
         closedTabs: s.closedTabs.filter((c) => c.tab.profileId !== id),
         activeProfileId: s.activeProfileId === id ? null : s.activeProfileId,
+        activeTabId: tabs.some((t) => t.id === s.activeTabId)
+          ? s.activeTabId
+          : null,
       };
     });
     persistClosedTabs(get().closedTabs);
@@ -725,21 +780,24 @@ export const useApp = create<AppStore>((set, get) => {
         schemaColumns,
         tableColumns,
         tabs,
+        // never jump to another connection's tab — the bar only shows the
+        // active connection, which just lost all of its tabs
         activeTabId: tabs.some((t) => t.id === s.activeTabId)
           ? s.activeTabId
-          : (tabs[tabs.length - 1]?.id ?? null),
+          : null,
       };
     });
   },
 
   selectProfile: (profileId) =>
     set((s) => {
-      // switching connection also brings its most recent tab forward
+      // the tabs bar shows only this connection's tabs — bring its most
+      // recent one forward (none when the connection has no tabs yet)
       const activeTab = s.tabs.find((t) => t.id === s.activeTabId);
       let activeTabId = s.activeTabId;
       if (!activeTab || activeTab.profileId !== profileId) {
         const own = s.tabs.filter((t) => t.profileId === profileId);
-        activeTabId = own[own.length - 1]?.id ?? activeTabId;
+        activeTabId = own[own.length - 1]?.id ?? null;
       }
       return { activeProfileId: profileId, activeTabId };
     }),
@@ -772,7 +830,11 @@ export const useApp = create<AppStore>((set, get) => {
       title: title || nextQueryTitle(get()),
       state: { kind: "query", sql, running: false, maxRows: 1000, savedQueryId },
     };
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+    set((s) => ({
+      tabs: [...s.tabs, tab],
+      activeTabId: tab.id,
+      activeProfileId: profileId,
+    }));
   },
 
   openTableTab: (profileId, schema, table) =>
@@ -955,11 +1017,15 @@ export const useApp = create<AppStore>((set, get) => {
       const tabs = s.tabs.filter((t) => !idSet.has(t.id));
       let activeTabId = s.activeTabId;
       if (activeTabId !== null && idSet.has(activeTabId)) {
-        // nearest surviving neighbour: first to the right, else to the left
+        // nearest surviving neighbour on the SAME connection (only its tabs
+        // are visible): first to the right, else to the left
         const oldIdx = s.tabs.findIndex((t) => t.id === activeTabId);
+        const profileId = s.tabs[oldIdx].profileId;
+        const survives = (t: Tab) =>
+          !idSet.has(t.id) && t.profileId === profileId;
         const next =
-          s.tabs.slice(oldIdx + 1).find((t) => !idSet.has(t.id)) ??
-          s.tabs.slice(0, oldIdx).reverse().find((t) => !idSet.has(t.id));
+          s.tabs.slice(oldIdx + 1).find(survives) ??
+          s.tabs.slice(0, oldIdx).reverse().find(survives);
         activeTabId = next?.id ?? null;
       }
       return {
@@ -975,6 +1041,10 @@ export const useApp = create<AppStore>((set, get) => {
   closeActiveTab: () => {
     const s = get();
     // ⌘W dismisses whatever overlay is on top before touching tabs
+    if (s.settingsOpen) {
+      set({ settingsOpen: false });
+      return;
+    }
     if (s.palette) {
       set({ palette: null });
       return;
@@ -1043,6 +1113,9 @@ export const useApp = create<AppStore>((set, get) => {
   setTabSql: (tabId, sql) => patchTab<QueryTabState>(tabId, { sql }),
 
   setTabMaxRows: (tabId, maxRows) => patchTab<QueryTabState>(tabId, { maxRows }),
+
+  setTabEditorPct: (tabId, editorPct) =>
+    patchTab<QueryTabState>(tabId, { editorPct }),
 
   runQuery: async (tabId) => {
     const tab = tabOf(tabId, "query");

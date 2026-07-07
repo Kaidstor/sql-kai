@@ -24,6 +24,7 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
       { keys: [MOD, SHIFT, "T"], label: "Reopen closed tab" },
       { keys: [`${MOD}K`, `${MOD}W`], label: "Close all tabs" },
       { keys: [MOD, "R"], label: "Refresh table / structure" },
+      { keys: [MOD, ","], label: "Settings" },
       { keys: [MOD, "?"], label: "Keyboard shortcuts" },
     ],
   },

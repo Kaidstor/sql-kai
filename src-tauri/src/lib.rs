@@ -19,8 +19,13 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Emitter;
 
     let handle = app.handle();
+    let settings = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(handle)?;
     let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
+        .separator()
+        .item(&settings)
         .separator()
         .services()
         .separator()
@@ -65,7 +70,7 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         let id = event.id().as_ref();
-        if matches!(id, "new-query-tab" | "close-tab" | "reopen-tab") {
+        if matches!(id, "new-query-tab" | "close-tab" | "reopen-tab" | "settings") {
             let _ = app.emit(&format!("menu://{id}"), ());
         }
     });
@@ -102,6 +107,9 @@ pub fn run() {
             commands::list_queries,
             commands::save_query,
             commands::delete_query,
+            commands::get_settings,
+            commands::save_settings,
+            commands::settings_path,
             commands::list_history,
             commands::record_history,
             commands::delete_history_entry,

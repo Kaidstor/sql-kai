@@ -169,6 +169,23 @@ pub fn delete_query(id: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub fn get_settings() -> Result<serde_json::Value, AppError> {
+    store::load_settings()
+}
+
+#[tauri::command]
+pub fn save_settings(settings: serde_json::Value) -> Result<(), AppError> {
+    store::save_settings(&settings)
+}
+
+/// Where settings.json lives — shown in the UI so the file is easy to find
+/// (it's meant to be copied between machines).
+#[tauri::command]
+pub fn settings_path() -> Result<String, AppError> {
+    Ok(store::settings_path()?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub fn list_history() -> Result<Vec<HistoryEntry>, AppError> {
     store::load_history()
 }

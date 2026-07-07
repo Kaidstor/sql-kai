@@ -21,6 +21,13 @@ export interface Profile {
   hasSshPassphrase?: boolean;
 }
 
+/** Contents of settings.json — portable app preferences. The backend only
+ *  round-trips this object, so unknown keys survive older builds. */
+export interface AppSettings {
+  theme?: string;
+  [key: string]: unknown;
+}
+
 export interface VaultStatus {
   /** A vault file exists (a master password was set up before). */
   exists: boolean;
