@@ -1,4 +1,4 @@
-import { Plus, SquareTerminal, Table2, Wrench, X } from "lucide-react";
+import { Activity, Plus, SquareTerminal, Table2, Wrench, X } from "lucide-react";
 import { useRef, useState, type PointerEvent } from "react";
 import { isQueryTabDirty, useApp } from "../lib/store";
 import {
@@ -160,6 +160,8 @@ export function TabsBar() {
             <SquareTerminal size={12} className="text-emerald-500/80 shrink-0" />
           ) : tab.state.kind === "structure" ? (
             <Wrench size={12} className="text-amber-500/80 shrink-0" />
+          ) : tab.state.kind === "activity" ? (
+            <Activity size={12} className="text-rose-400/80 shrink-0" />
           ) : (
             <Table2 size={12} className="text-sky-500/80 shrink-0" />
           )}

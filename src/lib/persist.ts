@@ -2,6 +2,7 @@
 // and the closed-tabs stack. Everything here is best-effort — storage errors
 // are swallowed, corrupt snapshots are dropped.
 import type {
+  ActivityTabState,
   QueryTabState,
   StructureTabState,
   Tab,
@@ -59,7 +60,8 @@ type PersistedTabState =
       orderBy?: string;
       orderDir?: "asc" | "desc";
     })
-  | Pick<StructureTabState, "kind" | "schema" | "table" | "section">;
+  | Pick<StructureTabState, "kind" | "schema" | "table" | "section">
+  | Pick<ActivityTabState, "kind" | "refreshSec" | "showIdle">;
 
 interface PersistedTab {
   title: string;
@@ -91,12 +93,18 @@ function snapshotTab(tab: Tab): PersistedTab {
             sorts: st.sorts,
             filter: st.filter,
           }
-        : {
-            kind: "structure",
-            schema: st.schema,
-            table: st.table,
-            section: st.section,
-          };
+        : st.kind === "structure"
+          ? {
+              kind: "structure",
+              schema: st.schema,
+              table: st.table,
+              section: st.section,
+            }
+          : {
+              kind: "activity",
+              refreshSec: st.refreshSec,
+              showIdle: st.showIdle,
+            };
   return { title: tab.title, state };
 }
 
@@ -177,6 +185,17 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
         colEdits: {},
         colDrops: [],
         colAdds: [],
+      },
+    };
+  }
+  if (st.kind === "activity") {
+    return {
+      title: p.title,
+      state: {
+        kind: "activity",
+        loading: false,
+        refreshSec: typeof st.refreshSec === "number" ? st.refreshSec : 5,
+        showIdle: Boolean(st.showIdle),
       },
     };
   }

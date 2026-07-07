@@ -82,6 +82,33 @@ export interface TableTabState {
   applyError?: string;
 }
 
+/** One backend from pg_stat_activity (see ACTIVITY_SQL for the columns). */
+export interface ActivityRow {
+  pid: string;
+  db: string;
+  state: string;
+  user: string;
+  app: string;
+  client: string;
+  wait: string;
+  /** PIDs holding locks this backend waits on (pg_blocking_pids). */
+  blockedBy: string;
+  querySec: number | null;
+  xactSec: number | null;
+  query: string;
+}
+
+export interface ActivityTabState {
+  kind: "activity";
+  rows?: ActivityRow[];
+  error?: string;
+  loading: boolean;
+  /** Auto-refresh period, seconds; 0 = manual only. */
+  refreshSec: number;
+  /** Include idle backends in the listing. */
+  showIdle: boolean;
+}
+
 export type StructureSection = "columns" | "indexes" | "relations" | "triggers";
 
 /** Staged field changes for one column; only present keys are applied. */
@@ -123,7 +150,11 @@ export interface Tab {
   id: string;
   profileId: string;
   title: string;
-  state: QueryTabState | TableTabState | StructureTabState;
+  state:
+    | QueryTabState
+    | TableTabState
+    | StructureTabState
+    | ActivityTabState;
 }
 
 /** Query tab has SQL that isn't persisted as a saved query (never saved,
@@ -252,6 +283,13 @@ interface AppStore {
     filter?: string,
   ) => void;
   openStructureTab: (profileId: string, schema: string, table: string) => void;
+  /** Server activity monitor (pg_stat_activity) — one tab per connection. */
+  openActivityTab: (profileId: string) => void;
+  loadActivity: (tabId: string) => Promise<void>;
+  setActivityOptions: (
+    tabId: string,
+    patch: Partial<Pick<ActivityTabState, "refreshSec" | "showIdle">>,
+  ) => void;
   setStructureSection: (tabId: string, section: StructureSection) => void;
   loadStructure: (tabId: string) => Promise<void>;
   /** Runs DDL in the tab's session, refreshes the structure view. Returns success. */
@@ -1014,6 +1052,89 @@ export const useApp = create<AppStore>((set, get) => {
   openStructureTab: (profileId, schema, table) =>
     openRelationTab("structure", profileId, schema, table),
 
+  openActivityTab: (profileId) => {
+    const existing = get().tabs.find(
+      (t) => t.profileId === profileId && t.state.kind === "activity",
+    );
+    if (existing) {
+      set({ activeTabId: existing.id, activeProfileId: profileId });
+      return;
+    }
+    const tab: Tab = {
+      id: crypto.randomUUID(),
+      profileId,
+      title: "Activity",
+      state: {
+        kind: "activity",
+        loading: false,
+        refreshSec: 5,
+        showIdle: false,
+      },
+    };
+    set((s) => ({
+      tabs: [...s.tabs, tab],
+      activeTabId: tab.id,
+      activeProfileId: profileId,
+    }));
+  },
+
+  loadActivity: async (tabId) => {
+    const tab = tabOf(tabId, "activity");
+    if (!tab || tab.state.loading) return;
+    const session = get().sessions[tab.profileId];
+    if (!session) return;
+    const sql = `SELECT a.pid,
+       a.datname,
+       a.state,
+       a.usename,
+       a.application_name,
+       a.client_addr::text,
+       coalesce(a.wait_event_type || ': ' || a.wait_event, ''),
+       array_to_string(pg_blocking_pids(a.pid), ', '),
+       round(extract(epoch FROM (now() - a.query_start)))::bigint,
+       round(extract(epoch FROM (now() - a.xact_start)))::bigint,
+       a.query
+  FROM pg_stat_activity a
+ WHERE a.pid <> pg_backend_pid()
+   AND a.backend_type = 'client backend'
+   ${tab.state.showIdle ? "" : "AND coalesce(a.state, '') <> 'idle'"}
+ ORDER BY (a.state = 'active') DESC, a.query_start ASC NULLS LAST`;
+    patchTab<ActivityTabState>(tabId, { loading: true });
+    try {
+      const exec = await api.executeSql(session.sessionId, sql, 500);
+      const rows: ActivityRow[] = (exec.results[0]?.rows ?? []).map((r) => ({
+        pid: r[0] ?? "",
+        db: r[1] ?? "",
+        state: r[2] ?? "",
+        user: r[3] ?? "",
+        app: r[4] ?? "",
+        client: r[5] ?? "",
+        wait: r[6] ?? "",
+        blockedBy: r[7] ?? "",
+        querySec: r[8] !== null ? Number(r[8]) : null,
+        xactSec: r[9] !== null ? Number(r[9]) : null,
+        query: r[10] ?? "",
+      }));
+      patchTab<ActivityTabState>(tabId, {
+        rows,
+        loading: false,
+        error: undefined,
+      });
+    } catch (e) {
+      const message = errText(e);
+      patchTab<ActivityTabState>(tabId, { loading: false, error: message });
+      noteSessionLost(tab.profileId, message);
+    }
+  },
+
+  setActivityOptions: (tabId, patch) => {
+    const tab = tabOf(tabId, "activity");
+    if (!tab) return;
+    patchTab<ActivityTabState>(tabId, patch);
+    // toggling idle changes the SQL — refetch right away
+    if (patch.showIdle !== undefined) void get().loadActivity(tabId);
+  },
+
   setStructureSection: (tabId, section) => {
     patchTab<StructureTabState>(tabId, { section });
     void get().loadStructure(tabId);
@@ -1205,7 +1326,9 @@ export const useApp = create<AppStore>((set, get) => {
               ? { ...tab.state, running: false }
               : tab.state.kind === "table"
                 ? { ...tab.state, loading: false, ...noTableEdits() }
-                : { ...tab.state, loading: false, ...noStructureEdits() };
+                : tab.state.kind === "structure"
+                  ? { ...tab.state, loading: false, ...noStructureEdits() }
+                  : { ...tab.state, loading: false };
           return { tab: { ...tab, state }, index };
         });
       const tabs = s.tabs.filter((t) => !idSet.has(t.id));

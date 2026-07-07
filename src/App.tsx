@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
+import { ActivityTab } from "./components/ActivityTab";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
 import { AppPalette } from "./components/Palette";
@@ -121,6 +122,9 @@ function App() {
         } else if (tab?.state.kind === "structure") {
           e.preventDefault();
           void s.loadStructure(tab.id);
+        } else if (tab?.state.kind === "activity") {
+          e.preventDefault();
+          void s.loadActivity(tab.id);
         }
       } else if (!isMac && e.ctrlKey && !e.altKey) {
         // JS fallback for the shortcuts the mac menu owns
@@ -201,6 +205,8 @@ function App() {
                     <QueryTab key={activeTab.id} tab={activeTab} />
                   ) : activeTab.state.kind === "table" ? (
                     <TableTab key={activeTab.id} tab={activeTab} />
+                  ) : activeTab.state.kind === "activity" ? (
+                    <ActivityTab key={activeTab.id} tab={activeTab} />
                   ) : (
                     <StructureTab key={activeTab.id} tab={activeTab} />
                   )

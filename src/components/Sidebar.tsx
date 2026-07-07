@@ -1,4 +1,5 @@
 import {
+  Activity,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -238,6 +239,7 @@ export function Sidebar() {
     reconnect,
     activeProfileId,
     openQueryTab,
+    openActivityTab,
     refreshTables,
     setLauncherOpen,
   } = useApp();
@@ -297,6 +299,12 @@ export function Sidebar() {
             onClick={() => openQueryTab(activeProfileId)}
           >
             <FilePlus2 size={13} />
+          </IconBtn>
+          <IconBtn
+            title="Server activity (pg_stat_activity)"
+            onClick={() => openActivityTab(activeProfileId)}
+          >
+            <Activity size={13} />
           </IconBtn>
           <IconBtn
             title="Refresh tables"
