@@ -3,12 +3,14 @@
 //! (`kai discover`) и умеет прямой fallback через ssh+docker exec (`kai exec`).
 //!
 //! Сессия по умолчанию read-only (`SET default_transaction_read_only = on`);
-//! запись — только с явным `--write`.
+//! запись — только с явным `--write`. Чувствительные колонки (password/
+//! secret/*_token/*_key) в выводе маскируются; отключение — `--no-redact`.
 
 mod discover;
 mod doctor;
 mod execmode;
 mod output;
+mod redact;
 mod remote;
 mod rotate;
 mod sec;
@@ -38,7 +40,7 @@ use output::Format;
         echo \"SELECT now()\" | kai orchestrator --json\n  \
         kai discover coordinator       # ssh-хост -> профиль (+ пароль в vault)\n  \
         kai exec coordinator -c \"SELECT 1\"   # fallback: ssh + docker exec psql\n  \
-        kai tables orchestrator\n  \
+        kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
         kai vault trust                # тихий доступ CLI к паролям vault"
 )]
 struct Cli {
@@ -93,7 +95,9 @@ enum Cmd {
 
 #[derive(Args)]
 struct FormatArgs {
-    /// JSON-вывод (columns/rows/rowsAffected/truncated)
+    /// JSON-вывод (columns/rows/rowsAffected/truncated); значения приведены
+    /// к типам колонок БД: числа/bool/null/json (точное строковое
+    /// представление — кастуй в ::text)
     #[arg(long, group = "fmt")]
     json: bool,
     /// CSV-вывод
@@ -148,6 +152,9 @@ struct QueryArgs {
     /// Не записывать запрос в историю
     #[arg(long)]
     no_history: bool,
+    /// Не маскировать чувствительные колонки (password/secret/*_token/*_key)
+    #[arg(long)]
+    no_redact: bool,
     /// Не переиспользовать ssh-туннель (без ControlMaster)
     #[arg(long)]
     no_mux: bool,
@@ -199,6 +206,9 @@ enum ProfilesCmd {
 struct TablesArgs {
     /// Профиль: имя, id или группа
     alias: String,
+    /// Примерное число строк (pg_class.reltuples; '?' = не анализировалась)
+    #[arg(long)]
+    counts: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, value_name = "VAR")]
@@ -264,6 +274,9 @@ enum SavedCmd {
         /// Ключ sec для пароля (proj/KEY); включает --from-sec
         #[arg(long, value_name = "PROJ/KEY")]
         sec_key: Option<String>,
+        /// Не маскировать чувствительные колонки (password/secret/*_token/*_key)
+        #[arg(long)]
+        no_redact: bool,
         /// Не переиспользовать ssh-туннель (без ControlMaster)
         #[arg(long)]
         no_mux: bool,
@@ -415,8 +428,29 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
         });
     }
     match outcome {
-        Ok(exec) => {
-            output::print_exec(&exec, a.fmt.pick());
+        Ok(mut exec) => {
+            if !a.no_redact {
+                let masked = redact::redact_exec(&mut exec);
+                if !masked.is_empty() {
+                    eprintln!(
+                        "⚠ kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
+                        masked.join(", ")
+                    );
+                }
+            }
+            let fmt = a.fmt.pick();
+            if fmt == Format::Json {
+                let types =
+                    db::statement_column_types(&connected.session.client, &sql).await;
+                let untyped = output::print_exec_json(&exec, &types);
+                if untyped > 0 {
+                    eprintln!(
+                        "⚠ kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
+                    );
+                }
+            } else {
+                output::print_exec(&exec, fmt);
+            }
             if a.verbose {
                 eprintln!("({} ms)", exec.duration_ms);
             }
@@ -446,7 +480,8 @@ async fn cmd_tables(a: TablesArgs) -> Result<ExitCode, AppError> {
         true,
     )
     .await?;
-    let rows = db::query_rows(&connected.session.client, db::TABLES_SQL).await?;
+    let sql = if a.counts { db::TABLES_COUNTS_SQL } else { db::TABLES_SQL };
+    let rows = db::query_rows(&connected.session.client, sql).await?;
     let mapped: Vec<Vec<Option<String>>> = rows
         .into_iter()
         .map(|row| {
@@ -456,10 +491,19 @@ async fn cmd_tables(a: TablesArgs) -> Result<ExitCode, AppError> {
                 Some("f") => "foreign",
                 _ => "table",
             };
-            vec![row[0].clone(), row[1].clone(), Some(kind.to_string())]
+            let mut out = vec![row[0].clone(), row[1].clone(), Some(kind.to_string())];
+            if a.counts {
+                out.push(row.get(3).cloned().flatten());
+            }
+            out
         })
         .collect();
-    output::print_rows(&["schema", "name", "kind"], &mapped, a.json);
+    let headers: &[&str] = if a.counts {
+        &["schema", "name", "kind", "~rows"]
+    } else {
+        &["schema", "name", "kind"]
+    };
+    output::print_rows(headers, &mapped, a.json);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -687,6 +731,7 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
             password_env,
             from_sec,
             sec_key,
+            no_redact,
             no_mux,
             verbose,
         } => {
@@ -713,6 +758,7 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 from_sec,
                 sec_key,
                 no_history: false,
+                no_redact,
                 no_mux,
                 verbose,
             })

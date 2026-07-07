@@ -1,20 +1,18 @@
-//! Рендеры результатов: pretty-таблица, JSON, CSV, tuples-only.
+//! Рендеры результатов: pretty-таблица, JSON (строки/типизированный), CSV,
+//! tuples-only.
 
-use sql_tauri_lib::db::{ExecResult, StatementResult};
+use sql_tauri_lib::db::{ExecResult, StatementResult, Type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Table,
+    /// JSON с типизацией значений по колонкам — рендерится print_exec_json.
     Json,
     Csv,
     Tuples,
 }
 
 pub fn print_exec(exec: &ExecResult, fmt: Format) {
-    if fmt == Format::Json {
-        println!("{}", serde_json::to_string_pretty(exec).unwrap());
-        return;
-    }
     let mut first = true;
     for r in &exec.results {
         // Пустые columns = не-SELECT (INSERT/UPDATE/SET/...): в таблице
@@ -40,9 +38,95 @@ pub fn print_exec(exec: &ExecResult, fmt: Format) {
                     println!("{}", vals.join("|"));
                 }
             }
-            Format::Json => unreachable!(),
+            Format::Json => unreachable!("Json рендерится print_exec_json"),
         }
     }
+}
+
+/// --json: {results:[{columns, rows, rowsAffected, truncated}], durationMs},
+/// значения приведены к JSON-типам по типам колонок из Parse
+/// (`db::statement_column_types`). `stmt_types` идёт в порядке стейтментов и
+/// сверяется с результатом по именам колонок; при несовпадении (или None)
+/// значения того результата остаются строками. Возвращает число result-set'ов
+/// с колонками, для которых типизация не удалась, — для предупреждения в stderr.
+pub fn print_exec_json(exec: &ExecResult, stmt_types: &[Option<Vec<(String, Type)>>]) -> usize {
+    use serde_json::{json, Value};
+    let mut untyped = 0usize;
+    let mut types_iter = stmt_types.iter();
+    let results: Vec<Value> = exec
+        .results
+        .iter()
+        .map(|r| {
+            let types = types_iter.next().and_then(|t| t.as_ref()).filter(|cols| {
+                cols.len() == r.columns.len()
+                    && cols.iter().zip(&r.columns).all(|((n, _), c)| n == c)
+            });
+            if types.is_none() && !r.columns.is_empty() {
+                untyped += 1;
+            }
+            let rows: Vec<Value> = r
+                .rows
+                .iter()
+                .map(|row| {
+                    Value::Array(
+                        row.iter()
+                            .enumerate()
+                            .map(|(i, cell)| match (cell, types) {
+                                (None, _) => Value::Null,
+                                (Some(text), Some(cols)) => typed_value(text, &cols[i].1),
+                                (Some(text), None) => Value::String(text.clone()),
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            json!({
+                "columns": r.columns,
+                "rows": rows,
+                "rowsAffected": r.rows_affected,
+                "truncated": r.truncated,
+            })
+        })
+        .collect();
+    let out = json!({ "results": results, "durationMs": exec.duration_ms });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    untyped
+}
+
+/// Текст значения (simple-query отдаёт всё текстом) -> JSON-значение по типу
+/// колонки. Всё, что не парсится или не мапится (в т.ч. [redacted] в числовой
+/// колонке, NaN, numeric за пределами f64), остаётся строкой.
+fn typed_value(text: &str, ty: &Type) -> serde_json::Value {
+    use serde_json::Value;
+    if *ty == Type::BOOL {
+        return match text {
+            "t" | "true" => Value::Bool(true),
+            "f" | "false" => Value::Bool(false),
+            _ => Value::String(text.to_string()),
+        };
+    }
+    if [Type::INT2, Type::INT4, Type::INT8, Type::OID].contains(ty) {
+        return text
+            .parse::<i64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(text.to_string()));
+    }
+    if [Type::FLOAT4, Type::FLOAT8, Type::NUMERIC].contains(ty) {
+        if let Ok(n) = text.parse::<i64>() {
+            return Value::from(n);
+        }
+        return text
+            .parse::<f64>()
+            .ok()
+            .filter(|f| f.is_finite())
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(text.to_string()));
+    }
+    if *ty == Type::JSON || *ty == Type::JSONB {
+        return serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()));
+    }
+    Value::String(text.to_string())
 }
 
 /// Таблица для интроспекции/списков: столбцы заданы кодом, не сервером.
@@ -130,5 +214,37 @@ fn csv_field(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typed_value;
+    use serde_json::{json, Value};
+    use sql_tauri_lib::db::Type;
+
+    #[test]
+    fn typed_value_converts_by_column_type() {
+        assert_eq!(typed_value("3", &Type::INT8), json!(3));
+        assert_eq!(typed_value("t", &Type::BOOL), json!(true));
+        assert_eq!(typed_value("f", &Type::BOOL), json!(false));
+        assert_eq!(typed_value("1.5", &Type::NUMERIC), json!(1.5));
+        // целый numeric остаётся целым, не 42.0
+        assert_eq!(typed_value("42", &Type::NUMERIC), json!(42));
+        assert_eq!(
+            typed_value("{\"a\": 1}", &Type::JSONB),
+            json!({"a": 1})
+        );
+        // текстовая колонка с цифрами — строка, никакого угадывания
+        assert_eq!(typed_value("3", &Type::TEXT), json!("3"));
+    }
+
+    #[test]
+    fn typed_value_falls_back_to_string() {
+        assert_eq!(
+            typed_value("[redacted]", &Type::INT4),
+            Value::String("[redacted]".into())
+        );
+        assert_eq!(typed_value("NaN", &Type::NUMERIC), Value::String("NaN".into()));
     }
 }
