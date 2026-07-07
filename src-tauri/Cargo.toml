@@ -48,6 +48,7 @@ zeroize = "1"
 clap = { version = "4", features = ["derive", "wrap_help"], optional = true }
 rpassword = { version = "7", optional = true }
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

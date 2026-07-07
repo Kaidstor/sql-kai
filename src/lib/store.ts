@@ -11,6 +11,7 @@ import {
   restoreWorkspace,
   type ClosedTab,
 } from "./persist";
+import { notifyQueryDone } from "./notify";
 import { countStatements, dangerousStatements } from "./sql";
 import { structureDdl, tableDml } from "./sqlgen";
 import { applyTheme } from "./themes";
@@ -1502,6 +1503,16 @@ export const useApp = create<AppStore>((set, get) => {
         });
     };
     patchTab<QueryTabState>(tabId, { running: true, error: undefined });
+    const started = Date.now();
+    // native ping when a long query lands while the app is in the background
+    const notify = (ok: boolean) =>
+      void notifyQueryDone({
+        profileName:
+          get().profiles.find((p) => p.id === tab.profileId)?.name ?? "?",
+        durationMs: Date.now() - started,
+        ok,
+        sql,
+      });
     try {
       const result = await api.executeSql(
         session.sessionId,
@@ -1509,6 +1520,7 @@ export const useApp = create<AppStore>((set, get) => {
         tab.state.maxRows,
       );
       pushHistory(true);
+      notify(true);
       patchTab<QueryTabState>(tabId, {
         result,
         explain: undefined,
@@ -1516,6 +1528,7 @@ export const useApp = create<AppStore>((set, get) => {
       });
     } catch (e) {
       pushHistory(false);
+      notify(false);
       const message = errText(e);
       patchTab<QueryTabState>(tabId, {
         error: message,
@@ -1541,6 +1554,7 @@ export const useApp = create<AppStore>((set, get) => {
     if (analyze && !confirmProdRun(tab.profileId, sql)) return;
     const explainSql = `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${sql}`;
     patchTab<QueryTabState>(tabId, { running: true, error: undefined });
+    const started = Date.now();
     try {
       const exec = await api.executeSql(session.sessionId, explainSql, 10);
       const raw = exec.results[0]?.rows[0]?.[0];
@@ -1549,6 +1563,13 @@ export const useApp = create<AppStore>((set, get) => {
         ? (parsed[0] as ExplainResult | undefined)
         : undefined;
       if (!root?.Plan) throw new Error("Unexpected EXPLAIN output");
+      void notifyQueryDone({
+        profileName:
+          get().profiles.find((p) => p.id === tab.profileId)?.name ?? "?",
+        durationMs: Date.now() - started,
+        ok: true,
+        sql: explainSql,
+      });
       patchTab<QueryTabState>(tabId, {
         explain: { ...root, analyzed: analyze },
         running: false,
