@@ -1,4 +1,12 @@
-import { Cable, ChevronUp, Lock, Plug, Settings, ShieldCheck } from "lucide-react";
+import {
+  Cable,
+  ChevronUp,
+  LayoutGrid,
+  Lock,
+  Plug,
+  Settings,
+  ShieldCheck,
+} from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
 import { accentColor } from "../lib/colors";
@@ -8,8 +16,14 @@ import { ColorDot, Popover, cn } from "./ui";
 
 /** Beekeeper-style bottom-left switcher between active connections. */
 function ConnectionSwitcher() {
-  const { profiles, sessions, activeProfileId, selectProfile, setPalette } =
-    useApp();
+  const {
+    profiles,
+    sessions,
+    activeProfileId,
+    selectProfile,
+    setPalette,
+    setLauncherOpen,
+  } = useApp();
   const [open, setOpen] = useState(false);
 
   const connected = connectedProfiles(profiles, sessions);
@@ -93,6 +107,16 @@ function ConnectionSwitcher() {
         <Plug size={12} className="text-zinc-500" />
         Open connection…
         <span className="ml-auto text-[10px] text-zinc-600">⌘⌥O</span>
+      </div>
+      <div
+        onClick={() => {
+          setOpen(false);
+          setLauncherOpen(true);
+        }}
+        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-[12px] text-zinc-300 hover:bg-zinc-800/60"
+      >
+        <LayoutGrid size={12} className="text-zinc-500" />
+        All connections
       </div>
     </Popover>
   );

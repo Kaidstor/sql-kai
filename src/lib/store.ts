@@ -165,6 +165,9 @@ interface AppStore {
   settingsOpen: boolean;
   /** Sidebar visibility (⌘B). */
   sidebarHidden: boolean;
+  /** Launcher explicitly opened over a live workspace ("All connections").
+   *  With nothing connected the launcher shows regardless of this flag. */
+  launcherOpen: boolean;
   /** Vault gate: null until checked, then whether it exists / is unlocked. */
   vault: VaultStatus | null;
   /** init() failed before the vault state was known — show a retry screen. */
@@ -182,6 +185,7 @@ interface AppStore {
   setPalette: (palette: PaletteKind | null) => void;
   setSettingsOpen: (open: boolean) => void;
   toggleSidebar: () => void;
+  setLauncherOpen: (open: boolean) => void;
   /** Applies the theme immediately and persists it to settings.json. */
   setTheme: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
@@ -537,6 +541,7 @@ export const useApp = create<AppStore>((set, get) => {
   settings: {},
   settingsOpen: false,
   sidebarHidden: false,
+  launcherOpen: false,
   vault: null,
   vaultError: null,
   tableColumns: {},
@@ -546,6 +551,8 @@ export const useApp = create<AppStore>((set, get) => {
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
   toggleSidebar: () => set((s) => ({ sidebarHidden: !s.sidebarHidden })),
+
+  setLauncherOpen: (launcherOpen) => set({ launcherOpen }),
 
   setTheme: async (id) => {
     applyTheme(id);
@@ -774,6 +781,7 @@ export const useApp = create<AppStore>((set, get) => {
         return {
           sessions: { ...s.sessions, [profileId]: info },
           activeProfileId: profileId,
+          launcherOpen: false,
           lost,
           // Tabs that errored with the dead session: clear the error (and the
           // stale payload) in the same commit the session appears, so their
@@ -893,7 +901,7 @@ export const useApp = create<AppStore>((set, get) => {
         const own = s.tabs.filter((t) => t.profileId === profileId);
         activeTabId = own[own.length - 1]?.id ?? null;
       }
-      return { activeProfileId: profileId, activeTabId };
+      return { activeProfileId: profileId, activeTabId, launcherOpen: false };
     }),
 
   refreshTables: async (profileId) => {

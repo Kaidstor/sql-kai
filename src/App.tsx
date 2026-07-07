@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { Launcher } from "./components/Launcher";
 import { AppPalette } from "./components/Palette";
 import { QueryTab } from "./components/QueryTab";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -20,8 +21,16 @@ import { initUpdater, useUpdater } from "./lib/updater";
 const CHORD_MS = 5000;
 
 function App() {
-  const { init, tabs, activeTabId, activeProfileId, sessions, sidebarHidden } =
-    useApp();
+  const {
+    init,
+    tabs,
+    activeTabId,
+    activeProfileId,
+    sessions,
+    lost,
+    launcherOpen,
+    sidebarHidden,
+  } = useApp();
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.
@@ -167,36 +176,47 @@ function App() {
   }, []);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  // The workspace (sidebar + tabs) needs an active connection behind it —
+  // live or lost-but-cached. Anything else shows the launcher; it also
+  // opens on demand over a live workspace ("All connections").
+  const hasWorkspace = Boolean(
+    activeProfileId && (sessions[activeProfileId] || lost[activeProfileId]),
+  );
+  const showLauncher = launcherOpen || !hasWorkspace;
 
   return (
     <VaultGate>
     <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200 text-[13px] antialiased">
       <div className="flex flex-1 min-h-0">
-        {!sidebarHidden && <Sidebar />}
-        <main className="flex-1 flex flex-col min-w-0 min-h-0">
-          <TabsBar />
-          <div className="flex-1 min-h-0">
-            {activeTab ? (
-              activeTab.state.kind === "query" ? (
-                <QueryTab key={activeTab.id} tab={activeTab} />
-              ) : activeTab.state.kind === "table" ? (
-                <TableTab key={activeTab.id} tab={activeTab} />
-              ) : (
-                <StructureTab key={activeTab.id} tab={activeTab} />
-              )
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center gap-2 overflow-y-auto text-zinc-600">
-                <div className="text-[15px]">sql-tauri</div>
-                <div className="text-[12px]">
-                  {activeProfileId && sessions[activeProfileId]
-                    ? "No open tabs — ⌘N starts a new query"
-                    : "Connect to a database to get started"}
-                </div>
-                <ShortcutSections className="mt-8 px-6" />
+        {showLauncher ? (
+          <Launcher />
+        ) : (
+          <>
+            {!sidebarHidden && <Sidebar />}
+            <main className="flex-1 flex flex-col min-w-0 min-h-0">
+              <TabsBar />
+              <div className="flex-1 min-h-0">
+                {activeTab ? (
+                  activeTab.state.kind === "query" ? (
+                    <QueryTab key={activeTab.id} tab={activeTab} />
+                  ) : activeTab.state.kind === "table" ? (
+                    <TableTab key={activeTab.id} tab={activeTab} />
+                  ) : (
+                    <StructureTab key={activeTab.id} tab={activeTab} />
+                  )
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center gap-2 overflow-y-auto text-zinc-600">
+                    <div className="text-[15px]">sql-kai</div>
+                    <div className="text-[12px]">
+                      No open tabs — ⌘N starts a new query
+                    </div>
+                    <ShortcutSections className="mt-8 px-6" />
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </main>
+            </main>
+          </>
+        )}
       </div>
       <StatusBar />
       <UpdateToast />
