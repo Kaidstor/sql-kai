@@ -1,6 +1,6 @@
 import { Plus, SquareTerminal, Table2, Wrench, X } from "lucide-react";
 import { useRef, useState, type PointerEvent } from "react";
-import { useApp } from "../lib/store";
+import { isQueryTabDirty, useApp } from "../lib/store";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,6 +25,7 @@ export function TabsBar() {
     activeProfileId,
     sessions,
     openQueryTab,
+    queries,
   } = useApp();
   /** Tab under the last right-click (null = empty bar area). */
   const [menuTabId, setMenuTabId] = useState<string | null>(null);
@@ -138,14 +139,28 @@ export function TabsBar() {
             <Table2 size={12} className="text-sky-500/80 shrink-0" />
           )}
           {tab.title}
+          {/* Dirty mark sits in the close button's slot; hover swaps it for ✕. */}
           <button
-            className="rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-zinc-700"
+            className={cn(
+              "rounded p-0.5 hover:bg-zinc-700",
+              !isQueryTabDirty(tab, queries) &&
+                "opacity-0 group-hover:opacity-100",
+            )}
             onClick={(e) => {
               e.stopPropagation();
               closeTab(tab.id);
             }}
           >
-            <X size={11} />
+            {isQueryTabDirty(tab, queries) ? (
+              <>
+                <span className="block group-hover:hidden size-[11px] p-[3px]">
+                  <span className="block size-full rounded-full bg-current" />
+                </span>
+                <X size={11} className="hidden group-hover:block" />
+              </>
+            ) : (
+              <X size={11} />
+            )}
           </button>
         </div>
       ))}

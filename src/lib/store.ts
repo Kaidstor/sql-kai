@@ -115,6 +115,16 @@ export interface Tab {
   state: QueryTabState | TableTabState | StructureTabState;
 }
 
+/** Query tab has SQL that isn't persisted as a saved query (never saved,
+ *  or diverged from the linked one) — drives the • dirty mark on tabs. */
+export function isQueryTabDirty(tab: Tab, queries: SavedQuery[]): boolean {
+  if (tab.state.kind !== "query") return false;
+  const { sql, savedQueryId } = tab.state;
+  if (!sql.trim()) return false;
+  const saved = savedQueryId && queries.find((q) => q.id === savedQueryId);
+  return !saved || saved.sql !== sql;
+}
+
 interface Toast {
   message: string;
   kind: "error" | "info" | "success";
