@@ -36,6 +36,10 @@ interface PaletteItem {
   action: () => void;
 }
 
+/** Rows rendered at once — symbol lists reach thousands of items, and the
+ *  list isn't virtualized; typing narrows it down. */
+const RENDER_CAP = 100;
+
 function PaletteModal({
   placeholder,
   items,
@@ -49,12 +53,16 @@ function PaletteModal({
   const [sel, setSel] = useState(0);
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return items;
-    return items
-      .map((item) => ({ item, score: fuzzyScore(query, item.keywords) }))
-      .filter((x): x is { item: PaletteItem; score: number } => x.score !== null)
-      .sort((a, b) => b.score - a.score)
-      .map((x) => x.item);
+    const all = query.trim()
+      ? items
+          .map((item) => ({ item, score: fuzzyScore(query, item.keywords) }))
+          .filter(
+            (x): x is { item: PaletteItem; score: number } => x.score !== null,
+          )
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.item)
+      : items;
+    return all.slice(0, RENDER_CAP);
   }, [query, items]);
 
   useEffect(() => setSel(0), [query]);
@@ -141,7 +149,8 @@ function PaletteModal({
   );
 }
 
-/** ⌘O — fuzzy connection switcher; ⌘P — saved queries of the active collection. */
+/** ⌘⌥O — fuzzy connection switcher; ⌘P — saved queries; ⌘T — tables/columns/
+ *  functions of the active database. */
 export function AppPalette() {
   const {
     palette,
@@ -154,7 +163,21 @@ export function AppPalette() {
     selectProfile,
     activeProfileId,
     openSavedQuery,
+    tables,
+    schemaColumns,
+    schemaFunctions,
+    loadSchemaFunctions,
+    openTableTab,
+    openQueryTab,
   } = useApp();
+
+  // Functions are the only symbol source not already in memory — fetch once
+  // per connection when the symbols palette first opens.
+  useEffect(() => {
+    if (palette === "symbols" && activeProfileId) {
+      void loadSchemaFunctions(activeProfileId);
+    }
+  }, [palette, activeProfileId, loadSchemaFunctions]);
 
   if (!palette) return null;
   const close = () => setPalette(null);
@@ -181,6 +204,58 @@ export function AppPalette() {
     return (
       <PaletteModal
         placeholder="Open connection…  (try: m s dev)"
+        items={items}
+        onClose={close}
+      />
+    );
+  }
+
+  if (palette === "symbols") {
+    if (!activeProfileId || !sessions[activeProfileId]) {
+      return (
+        <PaletteModal placeholder="No active connection" items={[]} onClose={close} />
+      );
+    }
+    const pid = activeProfileId;
+    const items: PaletteItem[] = [
+      ...(tables[pid] ?? []).map((t): PaletteItem => ({
+        id: `t:${t.schema}.${t.name}`,
+        title: t.schema === "public" ? t.name : `${t.schema}.${t.name}`,
+        badge: t.kind === "table" ? undefined : t.kind,
+        keywords: `${t.schema} ${t.name}`,
+        hint: "⏎ open data",
+        action: () => openTableTab(pid, t.schema, t.name),
+      })),
+      ...(schemaColumns[pid] ?? []).flatMap((t) =>
+        t.columns.map(
+          (col): PaletteItem => ({
+            id: `c:${t.schema}.${t.table}.${col}`,
+            title: `${t.table}.${col}`,
+            badge: t.schema === "public" ? undefined : t.schema,
+            subtitle: "column",
+            keywords: `${t.schema} ${t.table} ${col}`,
+            hint: "⏎ open table",
+            action: () => openTableTab(pid, t.schema, t.table),
+          }),
+        ),
+      ),
+      ...(schemaFunctions[pid] ?? []).map((f): PaletteItem => {
+        const qual = f.schema === "public" ? f.name : `${f.schema}.${f.name}`;
+        return {
+          id: `f:${f.schema}.${f.name}(${f.args})`,
+          title: `${f.name}(${f.args})`,
+          badge: f.schema === "public" ? undefined : f.schema,
+          subtitle: "function",
+          keywords: `${f.schema} ${f.name}`,
+          hint: "⏎ query",
+          action: () =>
+            openQueryTab(pid, `SELECT ${qual}(${f.args ? `/* ${f.args} */` : ""});`, f.name),
+        };
+      }),
+    ];
+    return (
+      <PaletteModal
+        placeholder="Table, column or function…"
         items={items}
         onClose={close}
       />

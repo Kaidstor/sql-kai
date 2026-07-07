@@ -18,6 +18,7 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
     items: [
       { keys: [MOD, ALT, "O"], label: "Connections palette" },
       { keys: [MOD, "P"], label: "Saved queries palette" },
+      { keys: [MOD, "T"], label: "Find table / column / function" },
       { keys: ["Ctrl", "1…9"], label: "Switch connection" },
       { keys: [MOD, "N"], label: "New query tab" },
       { keys: [MOD, "W"], label: "Close tab" },

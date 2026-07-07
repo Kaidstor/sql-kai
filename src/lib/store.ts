@@ -172,7 +172,15 @@ interface Toast {
   kind: "error" | "info" | "success";
 }
 
-export type PaletteKind = "connections" | "queries";
+export type PaletteKind = "connections" | "queries" | "symbols";
+
+/** One user-defined function for the symbols palette. */
+export interface FunctionInfo {
+  schema: string;
+  name: string;
+  /** Identity argument list, e.g. "integer, text". */
+  args: string;
+}
 
 interface AppStore {
   profiles: Profile[];
@@ -184,6 +192,8 @@ interface AppStore {
   tables: Record<string, TableInfo[]>; // keyed by profileId
   /** All columns of all relations for editor autocomplete, keyed by profileId. */
   schemaColumns: Record<string, TableColumns[]>;
+  /** User functions for the symbols palette, fetched on first open. */
+  schemaFunctions: Record<string, FunctionInfo[]>;
   activeProfileId: string | null;
   tabs: Tab[];
   activeTabId: string | null;
@@ -220,6 +230,8 @@ interface AppStore {
   /** Lock the vault: drops in-memory secrets and all live sessions. */
   lockVault: () => Promise<void>;
   setPalette: (palette: PaletteKind | null) => void;
+  /** Fetches the profile's functions once (symbols palette data). */
+  loadSchemaFunctions: (profileId: string) => Promise<void>;
   setSettingsOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setLauncherOpen: (open: boolean) => void;
@@ -626,6 +638,7 @@ export const useApp = create<AppStore>((set, get) => {
   lost: {},
   tables: {},
   schemaColumns: {},
+  schemaFunctions: {},
   activeProfileId: null,
   tabs: [],
   activeTabId: null,
@@ -646,6 +659,29 @@ export const useApp = create<AppStore>((set, get) => {
   tableRelations: {},
 
   setPalette: (palette) => set({ palette }),
+
+  loadSchemaFunctions: async (profileId) => {
+    if (get().schemaFunctions[profileId]) return;
+    const session = get().sessions[profileId];
+    if (!session) return;
+    const sql = `SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+ ORDER BY 1, 2`;
+    try {
+      const exec = await api.executeSql(session.sessionId, sql, 5000);
+      const funcs: FunctionInfo[] = (exec.results[0]?.rows ?? []).map((r) => ({
+        schema: r[0] ?? "",
+        name: r[1] ?? "",
+        args: r[2] ?? "",
+      }));
+      set((s) => ({
+        schemaFunctions: { ...s.schemaFunctions, [profileId]: funcs },
+      }));
+    } catch {
+      // non-fatal: the palette just shows tables/columns only
+    }
+  },
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
@@ -741,6 +777,7 @@ export const useApp = create<AppStore>((set, get) => {
         sessions: {},
         tables: {},
         schemaColumns: {},
+        schemaFunctions: {},
         tabs: [],
         activeTabId: null,
         activeProfileId: null,
@@ -949,6 +986,8 @@ export const useApp = create<AppStore>((set, get) => {
       delete tables[profileId];
       const schemaColumns = { ...s.schemaColumns };
       delete schemaColumns[profileId];
+      const schemaFunctions = { ...s.schemaFunctions };
+      delete schemaFunctions[profileId];
       const tableColumns = Object.fromEntries(
         Object.entries(s.tableColumns).filter(
           ([key]) => !key.startsWith(`${profileId}|`),
@@ -965,6 +1004,7 @@ export const useApp = create<AppStore>((set, get) => {
         lost,
         tables,
         schemaColumns,
+        schemaFunctions,
         tableColumns,
         tableRelations,
         tabs,

@@ -74,6 +74,12 @@ function App() {
       } else if (mod && !e.altKey && key === "p") {
         e.preventDefault();
         s.setPalette(s.palette === "queries" ? null : "queries");
+      } else if (mod && !e.altKey && !e.shiftKey && key === "t") {
+        // ⌘T — symbols palette (tables / columns / functions)
+        if (s.activeProfileId && s.sessions[s.activeProfileId]) {
+          e.preventDefault();
+          s.setPalette(s.palette === "symbols" ? null : "symbols");
+        }
       } else if (mod && !e.altKey && !e.shiftKey && key === ",") {
         // ⌘, — on mac the menu accelerator normally consumes this first
         e.preventDefault();
