@@ -16,6 +16,10 @@ pub struct SshConfig {
     pub port: Option<u16>,
     #[serde(default)]
     pub key_path: Option<String>,
+    /// Seconds between keepalive pings when idle (ssh ServerAliveInterval).
+    /// None = app default, Some(0) = keepalive off.
+    #[serde(default)]
+    pub keepalive_interval: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

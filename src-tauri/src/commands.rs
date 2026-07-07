@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio_postgres::{Client, NoTls};
 
 use crate::db::{self, cell, cell_bool, ExecResult, Session, StatementResult};
 use crate::error::AppError;
+use crate::logging;
 use crate::store::{self, HistoryEntry, Profile, SavedQuery};
 use crate::vault;
 
@@ -42,13 +43,17 @@ fn with_session<T>(
 /// "connection lost" error the frontend recognises to offer a reconnect.
 fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
     let mut sessions = state.sessions.lock().unwrap();
-    let client = sessions
+    let session = sessions
         .get(session_id)
-        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?
-        .client
-        .clone();
+        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?;
+    let client = session.client.clone();
     if client.is_closed() {
+        let name = session.profile_name.clone();
         sessions.remove(session_id);
+        logging::log(
+            "session",
+            &format!("\"{name}\": dead client detected on API call — session dropped"),
+        );
         return Err(AppError::Msg(
             "connection lost (tunnel or server dropped) — reconnect the profile".into(),
         ));
@@ -249,8 +254,24 @@ pub async fn connect_profile(
 
 #[tauri::command]
 pub fn disconnect_session(state: State<'_, AppState>, session_id: String) -> Result<(), AppError> {
-    state.sessions.lock().unwrap().remove(&session_id);
+    let removed = state.sessions.lock().unwrap().remove(&session_id);
+    if let Some(s) = &removed {
+        logging::log("session", &format!("\"{}\": disconnected", s.profile_name));
+    }
     Ok(())
+}
+
+/// Where the diagnostics log lives — shown in Settings so it's easy to find.
+#[tauri::command]
+pub fn log_path() -> Result<String, AppError> {
+    Ok(logging::log_path()?.to_string_lossy().into_owned())
+}
+
+/// Frontend-observed connection events land in the same log, so backend and
+/// UI views of a drop can be correlated on one timeline.
+#[tauri::command]
+pub fn log_event(message: String) {
+    logging::log("ui", &message);
 }
 
 /// Connects with the given (possibly unsaved) profile, checks the DB responds, tears down.
@@ -532,6 +553,13 @@ pub struct TablePage {
     pub approx_rows: i64,
 }
 
+/// One ORDER BY entry; the grid sends a list for multi-column sort.
+#[derive(Deserialize)]
+pub struct SortSpec {
+    pub column: String,
+    pub dir: Option<String>,
+}
+
 #[tauri::command]
 pub async fn get_table_page(
     state: State<'_, AppState>,
@@ -540,20 +568,27 @@ pub async fn get_table_page(
     table: String,
     limit: u32,
     offset: u64,
-    order_by: Option<String>,
-    order_dir: Option<String>,
+    sorts: Option<Vec<SortSpec>>,
 ) -> Result<TablePage, AppError> {
     let client = client_of(&state, &session_id)?;
     let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
     let limit = limit.clamp(1, 1000);
 
     let mut sql = format!("SELECT * FROM {qualified}");
-    if let Some(col) = order_by.filter(|c| !c.is_empty()) {
-        let dir = match order_dir.as_deref() {
-            Some("desc") | Some("DESC") => "DESC",
-            _ => "ASC",
-        };
-        sql.push_str(&format!(" ORDER BY {} {dir}", db::quote_ident(&col)));
+    let order: Vec<String> = sorts
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| !s.column.is_empty())
+        .map(|s| {
+            let dir = match s.dir.as_deref() {
+                Some("desc") | Some("DESC") => "DESC",
+                _ => "ASC",
+            };
+            format!("{} {dir}", db::quote_ident(&s.column))
+        })
+        .collect();
+    if !order.is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", order.join(", ")));
     }
     sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 

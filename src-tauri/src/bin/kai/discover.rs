@@ -147,6 +147,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
             user: None,
             port: None,
             key_path: None,
+            keepalive_interval: None,
         }),
         group: existing.as_ref().and_then(|e| e.group.clone()),
         color: existing.as_ref().and_then(|e| e.color.clone()),

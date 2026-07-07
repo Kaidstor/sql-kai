@@ -1,11 +1,12 @@
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::error::AppError;
+use crate::logging;
 use crate::store::SshConfig;
 
 const ASKPASS_ENV: &str = "SQL_TAURI_SSH_PASSPHRASE";
@@ -33,6 +34,21 @@ pub struct Tunnel {
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
+        // Distinguish "we tore it down" from "it was already dead" — the
+        // latter means the drop originated on the ssh/network side.
+        match self.child.try_wait() {
+            Ok(Some(status)) => logging::log(
+                "tunnel",
+                &format!(
+                    "local port {}: ssh had already exited ({status}) before teardown",
+                    self.local_port
+                ),
+            ),
+            _ => logging::log(
+                "tunnel",
+                &format!("local port {}: closed by the app", self.local_port),
+            ),
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -49,6 +65,14 @@ fn ssh_target(ssh: &SshConfig) -> String {
         Some(user) => format!("{user}@{}", ssh.host),
         None => ssh.host.clone(),
     }
+}
+
+/// Keepalive pings so an idle tunnel survives NAT/firewall timeouts.
+/// Per-profile ServerAliveInterval, 15s when unset; 0 = ssh's "off".
+fn push_keepalive(cmd: &mut Command, ssh: &SshConfig) {
+    let interval = ssh.keepalive_interval.unwrap_or(15);
+    cmd.args(["-o", &format!("ServerAliveInterval={interval}")])
+        .args(["-o", "ServerAliveCountMax=3"]);
 }
 
 /// Connection-identifying args (`-p`/`-i` then the target) — identical between
@@ -165,9 +189,8 @@ fn ensure_master(ssh: &SshConfig, passphrase: Option<&str>, ttl: u32, ctl: &Path
         .arg("-f") // fork to background after auth
         .arg("-N")
         .args(["-o", &format!("ControlPersist={ttl}")])
-        .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "ServerAliveInterval=15"])
-        .args(["-o", "ServerAliveCountMax=3"]);
+        .args(["-o", "ConnectTimeout=10"]);
+    push_keepalive(&mut cmd, ssh);
     if apply_auth(&mut cmd, passphrase).is_err() {
         return;
     }
@@ -249,6 +272,14 @@ pub async fn open_tunnel(
     mux_ttl: Option<u32>,
 ) -> Result<Tunnel, AppError> {
     let local_port = free_port()?;
+    let target = ssh_target(ssh);
+    logging::log(
+        "tunnel",
+        &format!(
+            "opening {target}: -L 127.0.0.1:{local_port}:{db_host}:{db_port}, keepalive {}s",
+            ssh.keepalive_interval.unwrap_or(15)
+        ),
+    );
 
     let ctl = match mux_ttl {
         Some(ttl) => match control_path(ssh) {
@@ -265,9 +296,8 @@ pub async fn open_tunnel(
     cmd.arg("-N");
     apply_auth(&mut cmd, passphrase)?;
     cmd.args(["-o", "ExitOnForwardFailure=yes"])
-        .args(["-o", "ConnectTimeout=10"])
-        .args(["-o", "ServerAliveInterval=15"])
-        .args(["-o", "ServerAliveCountMax=3"]);
+        .args(["-o", "ConnectTimeout=10"]);
+    push_keepalive(&mut cmd, ssh);
     if let Some(ctl) = &ctl {
         // Attach to the shared master (fast). If it's gone, ssh falls back to a
         // direct connection instead of creating a new master.
@@ -309,6 +339,21 @@ pub async fn open_tunnel(
                 ));
             }
         }
+    }
+
+    // Stream ssh's stderr into the log for the tunnel's lifetime: when the
+    // forward dies later (keepalive timeout, network drop, server reboot),
+    // ssh's last words ("Timeout, server not responding", "broken pipe", …)
+    // are the diagnosis. The thread ends at EOF — i.e. when ssh exits.
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    logging::log("ssh", &format!("{target}: {line}"));
+                }
+            }
+            logging::log("ssh", &format!("{target}: process exited"));
+        });
     }
 
     Ok(Tunnel { local_port, child })

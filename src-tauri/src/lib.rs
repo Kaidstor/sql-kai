@@ -3,6 +3,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod fsio;
+pub mod logging;
 pub mod store;
 pub mod tunnel;
 pub mod vault;
@@ -19,11 +20,14 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Emitter;
 
     let handle = app.handle();
+    let check_updates =
+        MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(handle)?;
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(handle)?;
     let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
+        .item(&check_updates)
         .separator()
         .item(&settings)
         .separator()
@@ -70,7 +74,10 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         let id = event.id().as_ref();
-        if matches!(id, "new-query-tab" | "close-tab" | "reopen-tab" | "settings") {
+        if matches!(
+            id,
+            "new-query-tab" | "close-tab" | "reopen-tab" | "settings" | "check-updates"
+        ) {
             let _ = app.emit(&format!("menu://{id}"), ());
         }
     });
@@ -110,6 +117,8 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::settings_path,
+            commands::log_path,
+            commands::log_event,
             commands::list_history,
             commands::record_history,
             commands::delete_history_entry,

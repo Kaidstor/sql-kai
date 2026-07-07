@@ -4,12 +4,17 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 
+pub use tokio_postgres::types::Type;
+
 use crate::error::AppError;
+use crate::logging;
 use crate::store::{self, Profile};
 use crate::tunnel::{self, Tunnel};
 
 pub struct Session {
     pub profile_id: String,
+    /// For the diagnostics log — ids alone are unreadable there.
+    pub profile_name: String,
     // Kept so a reloaded frontend can re-adopt live sessions (list_sessions).
     pub server_version: String,
     pub tunnel_port: Option<u16>,
@@ -51,16 +56,21 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             let passphrase = opts
                 .ssh_passphrase_override
                 .or_else(|| store::get_ssh_passphrase(profile));
-            Some(
-                tunnel::open_tunnel(
-                    ssh,
-                    &profile.host,
-                    profile.port,
-                    passphrase.as_deref(),
-                    opts.ssh_mux_ttl,
-                )
-                .await?,
+            let tunnel = tunnel::open_tunnel(
+                ssh,
+                &profile.host,
+                profile.port,
+                passphrase.as_deref(),
+                opts.ssh_mux_ttl,
             )
+            .await
+            .inspect_err(|e| {
+                logging::log(
+                    "connect",
+                    &format!("\"{}\": ssh tunnel failed: {e}", profile.name),
+                );
+            })?;
+            Some(tunnel)
         }
         _ => None,
     };
@@ -81,10 +91,25 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
         cfg.password(&pw);
     }
 
-    let (client, connection) = cfg.connect(NoTls).await?;
+    let (client, connection) = cfg.connect(NoTls).await.inspect_err(|e| {
+        logging::log(
+            "connect",
+            &format!("\"{}\": pg connect to {host}:{port} failed: {e}", profile.name),
+        );
+    })?;
+    // The connection future resolves when the wire dies — its resolution is
+    // the ground truth for "why did this session drop".
+    let log_name = profile.name.clone();
     let conn_task = tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("pg connection error: {e}");
+        match connection.await {
+            Ok(()) => logging::log(
+                "session",
+                &format!("\"{log_name}\": connection closed by server or tunnel"),
+            ),
+            Err(e) => logging::log(
+                "session",
+                &format!("\"{log_name}\": connection terminated: {e}"),
+            ),
         }
     });
     let client = Arc::new(client);
@@ -102,9 +127,22 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
     };
 
     let tunnel_port = tunnel.as_ref().map(|t| t.local_port);
+    logging::log(
+        "connect",
+        &format!(
+            "\"{}\": connected to {}:{}{} (PostgreSQL {server_version})",
+            profile.name,
+            profile.host,
+            profile.port,
+            tunnel_port
+                .map(|p| format!(" via ssh tunnel 127.0.0.1:{p}"))
+                .unwrap_or_default(),
+        ),
+    );
     Ok(Connected {
         session: Session {
             profile_id: profile.id.clone(),
+            profile_name: profile.name.clone(),
             server_version: server_version.clone(),
             tunnel_port,
             client,
@@ -213,6 +251,139 @@ pub async fn query_scalar(client: &Client, sql: &str) -> Result<Option<String>, 
     Ok(query_rows(client, sql).await?.first().and_then(|r| r[0].clone()))
 }
 
+/// Splits multi-statement SQL on `;`, honoring '…'/E'…' strings, "…"
+/// identifiers, $tag$…$tag$ dollar quoting and --/nested /* */ comments.
+/// Statements that are only whitespace/comments are dropped — the simple-query
+/// protocol yields no result for them, keeping this 1:1 with [`execute`].
+pub fn split_statements(sql: &str) -> Vec<String> {
+    let b = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0; // byte offset where the current statement begins
+    let mut has_token = false; // current statement has non-comment content
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 1;
+                i += 2;
+                while i < b.len() && depth > 0 {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'\'' => {
+                // E'…' also understands backslash escapes
+                let estring = i > 0
+                    && (b[i - 1] == b'e' || b[i - 1] == b'E')
+                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
+                has_token = true;
+                i += 1;
+                while i < b.len() {
+                    if estring && b[i] == b'\\' {
+                        i += 2;
+                    } else if b[i] == b'\'' {
+                        if b.get(i + 1) == Some(&b'\'') {
+                            i += 2; // '' — escaped quote
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                has_token = true;
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'"' {
+                        if b.get(i + 1) == Some(&b'"') {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'$' => {
+                // $tag$ … $tag$; $1 (a digit after $) is a parameter, not a tag
+                let mut j = i + 1;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                let is_tag = j < b.len()
+                    && b[j] == b'$'
+                    && (j == i + 1 || !b[i + 1].is_ascii_digit());
+                has_token = true;
+                if is_tag {
+                    let tag = &b[i..=j];
+                    i = j + 1;
+                    while i + tag.len() <= b.len() && &b[i..i + tag.len()] != tag {
+                        i += 1;
+                    }
+                    i = (i + tag.len()).min(b.len());
+                } else {
+                    i += 1;
+                }
+            }
+            b';' => {
+                if has_token {
+                    out.push(sql[start..i].trim().to_string());
+                }
+                start = i + 1;
+                has_token = false;
+                i += 1;
+            }
+            c => {
+                if !c.is_ascii_whitespace() {
+                    has_token = true;
+                }
+                i += 1;
+            }
+        }
+    }
+    if has_token {
+        out.push(sql[start..].trim().to_string());
+    }
+    out
+}
+
+/// Column (name, type) per statement, obtained by preparing each one (Parse
+/// only — nothing is executed). None for statements that fail to prepare,
+/// e.g. ones referencing objects created earlier in the same batch.
+pub async fn statement_column_types(
+    client: &Client,
+    sql: &str,
+) -> Vec<Option<Vec<(String, Type)>>> {
+    let mut out = Vec::new();
+    for stmt in split_statements(sql) {
+        let cols = client.prepare(&stmt).await.ok().map(|s| {
+            s.columns()
+                .iter()
+                .map(|c| (c.name().to_string(), c.type_().clone()))
+                .collect()
+        });
+        out.push(cols);
+    }
+    out
+}
+
 pub fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
@@ -228,6 +399,27 @@ pub fn regclass_literal(schema: &str, table: &str) -> String {
 
 pub const TABLES_SQL: &str = "\
 SELECT n.nspname, c.relname, c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','v','m','f')
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY n.nspname, c.relname";
+
+/// TABLES_SQL + a 4th column: approximate row count from pg_class.reltuples.
+/// '?' = never analyzed (reltuples = -1); partitioned parents sum their
+/// direct partitions; views get NULL.
+pub const TABLES_COUNTS_SQL: &str = "\
+SELECT n.nspname, c.relname, c.relkind::text,
+       CASE
+         WHEN c.relkind = 'p' THEN COALESCE((
+             SELECT sum(GREATEST(ch.reltuples, 0))::bigint
+             FROM pg_inherits i JOIN pg_class ch ON ch.oid = i.inhrelid
+             WHERE i.inhparent = c.oid), 0)::text
+         WHEN c.relkind IN ('r','m','f') THEN
+           CASE WHEN c.reltuples < 0 THEN '?' ELSE c.reltuples::bigint::text END
+       END
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r','p','v','m','f')
@@ -447,4 +639,65 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
     }
 
     Ok(ddl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_statements;
+
+    #[test]
+    fn splits_plain_statements() {
+        assert_eq!(
+            split_statements("SELECT 1; SELECT 2;"),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        // trailing statement without ';'
+        assert_eq!(split_statements("SELECT 1"), vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn semicolons_inside_quoting_do_not_split() {
+        assert_eq!(
+            split_statements("SELECT 'a;b'; SELECT \";\""),
+            vec!["SELECT 'a;b'", "SELECT \";\""]
+        );
+        // '' escape inside a string
+        assert_eq!(
+            split_statements("SELECT 'it''s; fine'"),
+            vec!["SELECT 'it''s; fine'"]
+        );
+        // E'' with a backslash-escaped quote
+        assert_eq!(
+            split_statements(r"SELECT E'a\';b'; SELECT 2"),
+            vec![r"SELECT E'a\';b'", "SELECT 2"]
+        );
+        // dollar quoting, tagged and bare
+        assert_eq!(
+            split_statements("SELECT $$x;y$$; SELECT $fn$a;b$fn$"),
+            vec!["SELECT $$x;y$$", "SELECT $fn$a;b$fn$"]
+        );
+    }
+
+    #[test]
+    fn comments_are_opaque_and_empty_statements_dropped() {
+        assert_eq!(
+            split_statements("SELECT 1 -- ; not a split\n; SELECT 2"),
+            vec!["SELECT 1 -- ; not a split", "SELECT 2"]
+        );
+        assert_eq!(
+            split_statements("/* a; /* nested; */ b; */ SELECT 1"),
+            vec!["/* a; /* nested; */ b; */ SELECT 1"]
+        );
+        // comment-only / whitespace-only chunks yield no statement
+        assert_eq!(split_statements("-- only a comment\n; ;"), Vec::<String>::new());
+        assert_eq!(split_statements(";;  ;"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn dollar_parameter_is_not_a_tag() {
+        assert_eq!(
+            split_statements("SELECT $1; SELECT 2"),
+            vec!["SELECT $1", "SELECT 2"]
+        );
+    }
 }
