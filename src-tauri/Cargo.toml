@@ -1,9 +1,11 @@
 [package]
 name = "sql-tauri"
-version = "0.1.3"
+version = "0.1.4"
 description = "Postgres client with SSH tunnels"
 authors = ["kaidstor"]
 edition = "2021"
+# `cargo run` (tauri dev) must pick the app, not the kai CLI bin
+default-run = "sql-tauri"
 
 [lib]
 name = "sql_tauri_lib"
