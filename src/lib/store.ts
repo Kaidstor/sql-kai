@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, errText } from "./api";
+import { api, errText, isConnectionLost } from "./api";
 import {
   CLOSED_CAP,
   dropLegacyHistory,
@@ -140,6 +140,9 @@ interface AppStore {
   profiles: Profile[];
   sessions: Record<string, SessionInfo>; // keyed by profileId
   connecting: Record<string, boolean>;
+  /** Profiles whose session died underneath us (server/tunnel drop) —
+   *  drives the red dot and the Reconnect affordances. */
+  lost: Record<string, boolean>;
   tables: Record<string, TableInfo[]>; // keyed by profileId
   /** All columns of all relations for editor autocomplete, keyed by profileId. */
   schemaColumns: Record<string, TableColumns[]>;
@@ -215,6 +218,9 @@ interface AppStore {
   deleteProfile: (id: string) => Promise<void>;
   connect: (profileId: string) => Promise<void>;
   disconnect: (profileId: string) => Promise<void>;
+  /** Re-dials the profile in place: tabs survive (unlike disconnect→connect),
+   *  and tabs that errored with the dead session reload once connected. */
+  reconnect: (profileId: string) => Promise<void>;
   selectProfile: (profileId: string) => void;
   refreshTables: (profileId: string) => Promise<void>;
   openQueryTab: (
@@ -387,6 +393,22 @@ export const useApp = create<AppStore>((set, get) => {
     return session ?? null;
   };
 
+  /** A failed call whose error means the session died (not a bad query):
+   *  drop it so the sidebar flips to "connection lost" and every entry
+   *  point offers Reconnect. Tabs stay — reconnect restores them live. */
+  const noteSessionLost = (profileId: string, message: string) => {
+    if (!isConnectionLost(message)) return;
+    const session = get().sessions[profileId];
+    if (!session) return; // already marked (or explicitly disconnected)
+    // free the backend half (tunnel included); it may already be gone
+    api.disconnect(session.sessionId).catch(() => {});
+    set((s) => {
+      const sessions = { ...s.sessions };
+      delete sessions[profileId];
+      return { sessions, lost: { ...s.lost, [profileId]: true } };
+    });
+  };
+
   /** Tab by id, narrowed to the given kind; null when missing or another kind. */
   const tabOf = <K extends Tab["state"]["kind"]>(tabId: string, kind: K) => {
     const tab = get().tabs.find((t) => t.id === tabId);
@@ -493,6 +515,7 @@ export const useApp = create<AppStore>((set, get) => {
   profiles: [],
   sessions: {},
   connecting: {},
+  lost: {},
   tables: {},
   schemaColumns: {},
   activeProfileId: null,
@@ -714,10 +737,13 @@ export const useApp = create<AppStore>((set, get) => {
     set((s) => {
       const sessions = { ...s.sessions };
       delete sessions[id];
+      const lost = { ...s.lost };
+      delete lost[id];
       const tabs = s.tabs.filter((t) => t.profileId !== id);
       return {
         profiles: s.profiles.filter((p) => p.id !== id),
         sessions,
+        lost,
         tabs,
         closedTabs: s.closedTabs.filter((c) => c.tab.profileId !== id),
         activeProfileId: s.activeProfileId === id ? null : s.activeProfileId,
@@ -733,10 +759,47 @@ export const useApp = create<AppStore>((set, get) => {
     set((s) => ({ connecting: { ...s.connecting, [profileId]: true } }));
     try {
       const info = await api.connect(profileId);
-      set((s) => ({
-        sessions: { ...s.sessions, [profileId]: info },
-        activeProfileId: profileId,
-      }));
+      set((s) => {
+        const lost = { ...s.lost };
+        delete lost[profileId];
+        return {
+          sessions: { ...s.sessions, [profileId]: info },
+          activeProfileId: profileId,
+          lost,
+          // Tabs that errored with the dead session: clear the error (and the
+          // stale payload) in the same commit the session appears, so their
+          // lazy-load effect refetches on this very render.
+          tabs: s.tabs.map((t) => {
+            if (
+              t.profileId !== profileId ||
+              !t.state.error ||
+              !isConnectionLost(t.state.error)
+            ) {
+              return t;
+            }
+            if (t.state.kind === "table") {
+              return {
+                ...t,
+                state: { ...t.state, error: undefined, data: undefined },
+              };
+            }
+            if (t.state.kind === "structure") {
+              return {
+                ...t,
+                state: {
+                  ...t.state,
+                  error: undefined,
+                  columns: undefined,
+                  indexes: undefined,
+                  relations: undefined,
+                  triggers: undefined,
+                },
+              };
+            }
+            return { ...t, state: { ...t.state, error: undefined } };
+          }),
+        };
+      });
       await get().refreshTables(profileId);
       if (
         !get().tabs.some((t) => t.profileId === profileId) &&
@@ -764,6 +827,8 @@ export const useApp = create<AppStore>((set, get) => {
     set((s) => {
       const sessions = { ...s.sessions };
       delete sessions[profileId];
+      const lost = { ...s.lost };
+      delete lost[profileId];
       const tables = { ...s.tables };
       delete tables[profileId];
       const schemaColumns = { ...s.schemaColumns };
@@ -776,6 +841,7 @@ export const useApp = create<AppStore>((set, get) => {
       const tabs = s.tabs.filter((t) => t.profileId !== profileId);
       return {
         sessions,
+        lost,
         tables,
         schemaColumns,
         tableColumns,
@@ -787,6 +853,25 @@ export const useApp = create<AppStore>((set, get) => {
           : null,
       };
     });
+  },
+
+  reconnect: async (profileId) => {
+    if (get().connecting[profileId]) return;
+    const session = get().sessions[profileId];
+    if (session) {
+      // drop the old session but keep the tabs (unlike disconnect)
+      set((s) => {
+        const sessions = { ...s.sessions };
+        delete sessions[profileId];
+        return { sessions };
+      });
+      try {
+        await api.disconnect(session.sessionId);
+      } catch {
+        // it may already be gone server-side
+      }
+    }
+    await get().connect(profileId);
   },
 
   selectProfile: (profileId) =>
@@ -809,7 +894,9 @@ export const useApp = create<AppStore>((set, get) => {
       const tables = await api.getTables(session.sessionId);
       set((s) => ({ tables: { ...s.tables, [profileId]: tables } }));
     } catch (e) {
-      get().showToast(errText(e));
+      const message = errText(e);
+      get().showToast(message);
+      noteSessionLost(profileId, message);
     }
     // Editor autocomplete data; non-fatal — on failure completion just
     // stays keyword-only.
@@ -878,7 +965,9 @@ export const useApp = create<AppStore>((set, get) => {
         ...(await fetch[section]()),
       });
     } catch (e) {
-      patchTab<StructureTabState>(tabId, { loading: false, error: errText(e) });
+      const message = errText(e);
+      patchTab<StructureTabState>(tabId, { loading: false, error: message });
+      noteSessionLost(tab.profileId, message);
     }
   },
 
@@ -891,7 +980,9 @@ export const useApp = create<AppStore>((set, get) => {
     try {
       await api.executeSql(session.sessionId, sql, 10);
     } catch (e) {
-      get().showToast(errText(e));
+      const message = errText(e);
+      get().showToast(message);
+      noteSessionLost(tab.profileId, message);
       return false;
     }
     // sidebar column cache is stale now
@@ -970,8 +1061,10 @@ export const useApp = create<AppStore>((set, get) => {
     try {
       await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
     } catch (e) {
+      const message = errText(e);
       patchTab<StructureTabState>(tabId, { loading: false });
-      get().showToast(errText(e)); // rolled back, edits stay staged
+      get().showToast(message); // rolled back, edits stay staged
+      noteSessionLost(tab.profileId, message);
       return;
     }
     // clear staged + drop the stale sidebar column cache before reloading
@@ -990,7 +1083,9 @@ export const useApp = create<AppStore>((set, get) => {
       const cols = await api.getColumns(session.sessionId, schema, table);
       set((s) => ({ tableColumns: { ...s.tableColumns, [key]: cols } }));
     } catch (e) {
-      get().showToast(errText(e));
+      const message = errText(e);
+      get().showToast(message);
+      noteSessionLost(profileId, message);
     }
   },
 
@@ -1160,13 +1255,7 @@ export const useApp = create<AppStore>((set, get) => {
         result: undefined,
         running: false,
       });
-      if (message.includes("connection lost")) {
-        set((s) => {
-          const sessions = { ...s.sessions };
-          delete sessions[tab.profileId];
-          return { sessions };
-        });
-      }
+      noteSessionLost(tab.profileId, message);
     }
   },
 
@@ -1217,7 +1306,9 @@ export const useApp = create<AppStore>((set, get) => {
         applyError: undefined,
       });
     } catch (e) {
-      patchTab<TableTabState>(tabId, { error: errText(e), loading: false });
+      const message = errText(e);
+      patchTab<TableTabState>(tabId, { error: message, loading: false });
+      noteSessionLost(tab.profileId, message);
     }
   },
 
@@ -1340,13 +1431,15 @@ export const useApp = create<AppStore>((set, get) => {
     try {
       await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
     } catch (e) {
+      const message = errText(e);
       patchTab<TableTabState>(tabId, {
         loading: false,
         // the whole tx rolled back — every staged cell is unsaved
         applyFailed: true,
-        applyError: errText(e),
+        applyError: message,
       });
-      get().showToast(errText(e)); // rolled back, edits stay staged
+      get().showToast(message); // rolled back, edits stay staged
+      noteSessionLost(tab.profileId, message);
       return;
     }
     const done = [

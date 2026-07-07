@@ -8,9 +8,9 @@ import {
   type Tab,
 } from "../lib/store";
 import { quoteIdent as qi } from "../lib/sql";
+import { TabError } from "./TabError";
 import {
   Button,
-  ErrorPre,
   IconBtn,
   Input,
   PendingChangesBar,
@@ -292,7 +292,9 @@ export function StructureTab({ tab }: { tab: Tab }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {state.error && <ErrorPre>{state.error}</ErrorPre>}
+        {state.error && (
+          <TabError profileId={tab.profileId} error={state.error} />
+        )}
 
         {!state.error && state.section === "columns" && (
           <SectionTable

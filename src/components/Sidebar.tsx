@@ -60,9 +60,11 @@ function ProfileRow({ profile }: { profile: Profile }) {
   const {
     sessions,
     connecting,
+    lost,
     activeProfileId,
     connect,
     disconnect,
+    reconnect,
     selectProfile,
     openDialog,
     deleteProfile,
@@ -70,6 +72,7 @@ function ProfileRow({ profile }: { profile: Profile }) {
   } = useApp();
   const connected = Boolean(sessions[profile.id]);
   const busy = Boolean(connecting[profile.id]);
+  const lostConn = !connected && !busy && Boolean(lost[profile.id]);
   const active = activeProfileId === profile.id;
   const color = accentColor(profile.color);
 
@@ -86,9 +89,16 @@ function ProfileRow({ profile }: { profile: Profile }) {
       onDoubleClick={() => !connected && !busy && void connect(profile.id)}
     >
       <span
+        title={lostConn ? "Connection lost — reconnect" : undefined}
         className={cn(
           "size-2 rounded-full shrink-0",
-          connected ? "bg-emerald-500" : busy ? "bg-amber-400" : "bg-zinc-600",
+          connected
+            ? "bg-emerald-500"
+            : busy
+              ? "bg-amber-400"
+              : lostConn
+                ? "bg-red-500"
+                : "bg-zinc-600",
         )}
       />
       <div className="min-w-0 flex-1">
@@ -113,13 +123,13 @@ function ProfileRow({ profile }: { profile: Profile }) {
           </IconBtn>
         ) : (
           <IconBtn
-            title="Connect"
+            title={lostConn ? "Reconnect" : "Connect"}
             onClick={(e) => {
               e.stopPropagation();
               void connect(profile.id);
             }}
           >
-            <Plug size={13} />
+            {lostConn ? <RefreshCw size={13} /> : <Plug size={13} />}
           </IconBtn>
         )}
         <IconBtn
@@ -147,16 +157,24 @@ function ProfileRow({ profile }: { profile: Profile }) {
     </ContextMenuTrigger>
     <ContextMenuContent>
       {connected ? (
-        <ContextMenuItem icon={Unplug} onClick={() => void disconnect(profile.id)}>
-          Disconnect
-        </ContextMenuItem>
+        <>
+          <ContextMenuItem
+            icon={RefreshCw}
+            onClick={() => void reconnect(profile.id)}
+          >
+            Reconnect
+          </ContextMenuItem>
+          <ContextMenuItem icon={Unplug} onClick={() => void disconnect(profile.id)}>
+            Disconnect
+          </ContextMenuItem>
+        </>
       ) : (
         <ContextMenuItem
-          icon={Plug}
+          icon={lostConn ? RefreshCw : Plug}
           disabled={busy}
           onClick={() => void connect(profile.id)}
         >
-          Connect
+          {lostConn ? "Reconnect" : "Connect"}
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />

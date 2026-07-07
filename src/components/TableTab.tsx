@@ -9,7 +9,8 @@ import { useEffect } from "react";
 import { quoteIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
 import { ResultsGrid } from "./ResultsGrid";
-import { ErrorPre, IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
+import { TabError } from "./TabError";
+import { IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
 
 function formatApprox(n: number): string {
   if (n < 0) return "~?";
@@ -205,7 +206,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
       <div className="flex-1 min-h-0">
         {state.error ? (
-          <ErrorPre>{state.error}</ErrorPre>
+          <TabError profileId={tab.profileId} error={state.error} />
         ) : state.data ? (
           <ResultsGrid
             result={state.data.result}

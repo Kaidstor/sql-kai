@@ -148,6 +148,7 @@ export function AppPalette() {
     setPalette,
     profiles,
     sessions,
+    lost,
     queries,
     connect,
     selectProfile,
@@ -169,7 +170,11 @@ export function AppPalette() {
       subtitle: profileAddr(p),
       color: p.color ?? null,
       keywords: `${p.group ?? ""} ${p.name} ${p.database} ${p.host}`,
-      hint: sessions[p.id] ? "connected" : undefined,
+      hint: sessions[p.id]
+        ? "connected"
+        : lost[p.id]
+          ? "connection lost — ⏎ reconnects"
+          : undefined,
       action: () =>
         sessions[p.id] ? selectProfile(p.id) : void connect(p.id),
     }));

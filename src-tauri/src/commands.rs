@@ -37,8 +37,23 @@ fn with_session<T>(
     Ok(f(session))
 }
 
+/// Client of a live session. A closed client can't recover, so it is removed
+/// here (tearing the tunnel down with it) and every command reports the same
+/// "connection lost" error the frontend recognises to offer a reconnect.
 fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
-    with_session(state, session_id, |s| s.client.clone())
+    let mut sessions = state.sessions.lock().unwrap();
+    let client = sessions
+        .get(session_id)
+        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?
+        .client
+        .clone();
+    if client.is_closed() {
+        sessions.remove(session_id);
+        return Err(AppError::Msg(
+            "connection lost (tunnel or server dropped) — reconnect the profile".into(),
+        ));
+    }
+    Ok(client)
 }
 
 #[tauri::command]
@@ -271,12 +286,6 @@ pub async fn execute_sql(
     max_rows: Option<usize>,
 ) -> Result<ExecResult, AppError> {
     let client = client_of(&state, &session_id)?;
-    if client.is_closed() {
-        state.sessions.lock().unwrap().remove(&session_id);
-        return Err(AppError::Msg(
-            "connection lost (tunnel or server dropped) — reconnect the profile".into(),
-        ));
-    }
     db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await
 }
 

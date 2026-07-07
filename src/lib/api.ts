@@ -137,6 +137,15 @@ export function errText(e: unknown): string {
   return String(e);
 }
 
+/** Errors that mean the session itself is dead (server/tunnel dropped or the
+ *  backend already discarded it) — the fix is a reconnect, not a better query,
+ *  so the UI offers one wherever such an error surfaces. */
+export function isConnectionLost(message: string): boolean {
+  return /connection (closed|lost|reset)|session not found|broken pipe|error communicating with the server/i.test(
+    message,
+  );
+}
+
 // Hot-swapping this module would leave stale references in the store —
 // do a clean reload instead (sessions are re-adopted via list_sessions).
 if (import.meta.hot) {

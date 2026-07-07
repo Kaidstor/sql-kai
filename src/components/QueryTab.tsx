@@ -10,7 +10,8 @@ import type { StatementResult } from "../lib/types";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
-import { Button, ErrorPre, Select } from "./ui";
+import { TabError } from "./TabError";
+import { Button, Select } from "./ui";
 
 function ResultBlock({ result }: { result: StatementResult }) {
   if (result.columns.length === 0) {
@@ -178,7 +179,9 @@ export function QueryTab({ tab }: { tab: Tab }) {
         </div>
 
         <div className="flex-1 min-h-0 flex flex-col overflow-auto">
-          {state.error && <ErrorPre>{state.error}</ErrorPre>}
+          {state.error && (
+            <TabError profileId={tab.profileId} error={state.error} />
+          )}
           {!state.error &&
             state.result?.results.map((result, i) => (
               <ResultBlock key={i} result={result} />
