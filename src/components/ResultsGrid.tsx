@@ -46,14 +46,18 @@ type Row = (string | null)[];
 
 /** Inline cell editor. Blur stages the draft (clicking away mustn't lose the
  *  input); Enter stages and refocuses the grid; Esc cancels and refocuses.
- *  Keeping the draft local means typing doesn't re-render the whole grid. */
+ *  Keeping the draft local means typing doesn't re-render the whole grid.
+ *  The input is borderless — the host cell carries the editing highlight. */
 function CellInput({
   initial,
   onStage,
+  onNull,
   onClose,
 }: {
   initial: string;
   onStage: (value: string) => void;
+  /** Stages NULL via the ⊗ button; present only for nullable columns. */
+  onNull?: () => void;
   /** refocus=true hands focus back to the grid (Enter/Esc, not blur). */
   onClose: (refocus: boolean) => void;
 }) {
@@ -63,31 +67,50 @@ function CellInput({
   // Esc, explicitly cancelled).
   const skipBlur = useRef(false);
   return (
-    <input
-      autoFocus
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onBlur={() => {
-        if (skipBlur.current) return;
-        onStage(draft);
-        onClose(false);
-      }}
-      onKeyDown={(e) => {
-        // Don't let Esc bubble up and discard ALL edits.
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          skipBlur.current = true;
+    <span className="flex h-[18px] w-full min-w-24 items-center gap-1">
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onBlur={() => {
+          if (skipBlur.current) return;
           onStage(draft);
-          onClose(true);
-        }
-        if (e.key === "Escape") {
-          skipBlur.current = true;
-          onClose(true);
-        }
-      }}
-      className="block h-[18px] w-full min-w-24 -mx-1 rounded-sm border border-sky-500 bg-zinc-900 px-1 font-mono text-[12px] text-zinc-100 outline-none"
-    />
+          onClose(false);
+        }}
+        onKeyDown={(e) => {
+          // Don't let Esc bubble up and discard ALL edits.
+          e.stopPropagation();
+          if (e.key === "Enter") {
+            skipBlur.current = true;
+            onStage(draft);
+            onClose(true);
+          }
+          if (e.key === "Escape") {
+            skipBlur.current = true;
+            onClose(true);
+          }
+        }}
+        className="w-full min-w-0 flex-1 bg-transparent p-0 font-mono text-[12px] text-zinc-100 outline-none"
+      />
+      {onNull && (
+        <button
+          title="Set NULL"
+          // preventDefault keeps focus on the input so blur doesn't stage
+          // the draft before the click lands
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            e.stopPropagation();
+            skipBlur.current = true;
+            onNull();
+            onClose(true);
+          }}
+          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-zinc-400 text-zinc-950 hover:bg-zinc-100"
+        >
+          <X size={9} strokeWidth={3} />
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -120,6 +143,9 @@ interface Props {
   editing?: GridEditing;
   /** Declared column types aligned with result.columns (json/jsonb get pretty view). */
   columnTypes?: (string | undefined)[];
+  /** Column nullability aligned with result.columns — shows the ⊗ (set NULL)
+   *  button in the cell editor. */
+  columnNullable?: (boolean | undefined)[];
   /** Source relation of the rows; enables "Copy as INSERT" in the menu. */
   insertTarget?: { schema: string; table: string };
 }
@@ -131,6 +157,7 @@ export function ResultsGrid({
   onSort,
   editing,
   columnTypes,
+  columnNullable,
   insertTarget,
 }: Props) {
   const showToast = useApp((s) => s.showToast);
@@ -573,7 +600,11 @@ export function ResultsGrid({
               key={ci}
               title={v ?? undefined}
               onDoubleClick={() => startInsertEdit(ii, ci)}
-              className="border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-pre text-emerald-100/90 max-w-105 truncate"
+              className={cn(
+                "border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-pre text-emerald-100/90 max-w-105 truncate",
+                isEd &&
+                  "bg-zinc-900 shadow-[inset_0_0_0_1.5px_var(--color-amber-400)]",
+              )}
             >
               {isEd ? (
                 <CellInput
@@ -585,6 +616,11 @@ export function ResultsGrid({
                       // an untouched generated column stays on DEFAULT
                       val === "" && v === undefined ? undefined : val,
                     )
+                  }
+                  onNull={
+                    columnNullable?.[ci]
+                      ? () => editing.onInsertEdit(ii, ci, null)
+                      : undefined
                   }
                   onClose={(refocus) => {
                     setEditIns(null);
@@ -819,23 +855,37 @@ export function ResultsGrid({
                           "border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-pre text-zinc-200 max-w-105 truncate",
                           staged.has &&
                             !isDeleted &&
+                            !isEditing &&
                             (errored
                               ? "bg-red-500/15 text-red-300"
                               : "bg-amber-500/15 text-amber-200"),
                           isDeleted && "text-zinc-600 line-through",
-                          rectCount > 1 && inRect(ri, ci) && "bg-sky-500/15",
+                          rectCount > 1 &&
+                            inRect(ri, ci) &&
+                            !isEditing &&
+                            "bg-sky-500/15",
                           // Error state owns the ring so a focused failed cell
                           // reads as an error, not just a selection.
                           isFocused &&
+                            !isEditing &&
                             (errored
                               ? "bg-red-500/25 shadow-[inset_0_0_0_1px_var(--color-red-500)]"
                               : "bg-sky-500/20 shadow-[inset_0_0_0_1px_var(--color-sky-500)]"),
+                          // The editing highlight lives on the cell, not the
+                          // input — it replaces any other background/ring.
+                          isEditing &&
+                            "bg-zinc-900 shadow-[inset_0_0_0_1.5px_var(--color-amber-400)]",
                         )}
                       >
                         {isEditing ? (
                           <CellInput
                             initial={editCell.initial}
                             onStage={(v) => editing?.onEdit(ri, ci, v)}
+                            onNull={
+                              columnNullable?.[ci]
+                                ? () => editing?.onEdit(ri, ci, null)
+                                : undefined
+                            }
                             onClose={(refocus) => {
                               setEditCell(null);
                               if (refocus) focusGrid();

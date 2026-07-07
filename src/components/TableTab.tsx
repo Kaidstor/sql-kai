@@ -96,6 +96,9 @@ export function TableTab({ tab }: { tab: Tab }) {
   const columnTypes = state.data?.result.columns.map(
     (name) => cols?.find((c) => c.name === name)?.dataType,
   );
+  const columnNullable = state.data?.result.columns.map(
+    (name) => cols?.find((c) => c.name === name)?.nullable,
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -210,6 +213,7 @@ export function TableTab({ tab }: { tab: Tab }) {
             sortDir={state.orderDir}
             onSort={onSort}
             columnTypes={columnTypes}
+            columnNullable={columnNullable}
             insertTarget={{ schema: state.schema, table: state.table }}
             editing={{
               edits: state.edits,
