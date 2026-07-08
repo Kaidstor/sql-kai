@@ -48,7 +48,7 @@ jq --arg v "$NEW_VER" '.version = $v' src-tauri/tauri.conf.json > "$tmp" \
 # CLI kai показывает версию из Cargo.toml (clap `version`) — бампаем и его
 # (+ Cargo.lock, чтобы дерево осталось чистым после сборки)
 perl -0pi -e "s/(\[package\][^\[]*?version = \")[^\"]+/\${1}$NEW_VER/s" src-tauri/Cargo.toml
-perl -0pi -e "s/(name = \"sql-tauri\"\nversion = \")[^\"]+/\${1}$NEW_VER/" src-tauri/Cargo.lock
+perl -0pi -e "s/(name = \"sql-kai\"\nversion = \")[^\"]+/\${1}$NEW_VER/" src-tauri/Cargo.lock
 
 git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
 git commit -m "release: ${TAG}"

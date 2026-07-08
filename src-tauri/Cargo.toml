@@ -1,14 +1,14 @@
 [package]
-name = "sql-tauri"
+name = "sql-kai"
 version = "0.1.16"
 description = "Postgres client with SSH tunnels"
 authors = ["kaidstor"]
 edition = "2021"
 # `cargo run` (tauri dev) must pick the app, not the kai CLI bin
-default-run = "sql-tauri"
+default-run = "sql-kai"
 
 [lib]
-name = "sql_tauri_lib"
+name = "sql_kai_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 # CLI поверх того же ядра (db/store/vault/tunnel). Собирается только с
@@ -33,6 +33,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 tokio-postgres = "0.7"
+# SCRAM-verifier для `kai rotate` — пароль не уходит на сервер открытым текстом
+postgres-protocol = "0.6"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"

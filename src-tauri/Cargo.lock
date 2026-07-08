@@ -4109,7 +4109,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sql-tauri"
+name = "sql-kai"
 version = "0.1.16"
 dependencies = [
  "aes-gcm",
@@ -4122,6 +4122,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-local-authentication",
+ "postgres-protocol",
  "rand 0.8.6",
  "rpassword",
  "security-framework",

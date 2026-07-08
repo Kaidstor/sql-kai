@@ -390,6 +390,14 @@ function ResultsGridImpl({
       : { has: false, value: null };
   };
 
+  /** Значение так, как оно показано на экране: staged-правка, если есть,
+   *  иначе значение из результата. Все copy/export-пути идут через него —
+   *  ⌘C по отредактированной ячейке копирует то, что видит пользователь. */
+  const shownValue = (ri: number, ci: number): string | null => {
+    const staged = stagedOf(ri, ci);
+    return staged.has ? staged.value : (result.rows[ri]?.[ci] ?? null);
+  };
+
   const startEdit = (ri: number, ci: number) => {
     if (!editing) return;
     if (editing.disabledReason) {
@@ -488,7 +496,9 @@ function ResultsGridImpl({
   const copyRows = (sep: string, suffix: string) => {
     if (!n) return;
     const text = selRows
-      .map((i) => result.rows[i].map((v) => v ?? "").join(sep))
+      .map((i) =>
+        result.columns.map((_, ci) => shownValue(i, ci) ?? "").join(sep),
+      )
       .join("\n");
     copyAndToast(text, `Copied ${n} row(s) ${suffix}`);
   };
@@ -496,7 +506,7 @@ function ResultsGridImpl({
   const copyJson = () => {
     if (!n) return;
     const objs = selRows.map((i) =>
-      Object.fromEntries(result.columns.map((c, ci) => [c, result.rows[i][ci]])),
+      Object.fromEntries(result.columns.map((c, ci) => [c, shownValue(i, ci)])),
     );
     copyAndToast(
       JSON.stringify(n === 1 ? objs[0] : objs, null, 2),
@@ -512,8 +522,11 @@ function ResultsGridImpl({
     const cols = result.columns.map(quoteIdent).join(", ");
     const tuples = selRows.map(
       (i) =>
-        `  (${result.rows[i]
-          .map((v) => (v === null ? "NULL" : quoteLit(v)))
+        `  (${result.columns
+          .map((_, ci) => {
+            const v = shownValue(i, ci);
+            return v === null ? "NULL" : quoteLit(v);
+          })
           .join(", ")})`,
     );
     copyAndToast(
@@ -523,7 +536,7 @@ function ResultsGridImpl({
   };
 
   const copyCellAt = (ri: number, ci: number) =>
-    copyAndToast(result.rows[ri]?.[ci] ?? "", "Cell copied");
+    copyAndToast(shownValue(ri, ci) ?? "", "Cell copied");
 
   /** Header click: selects the whole column; shift extends a contiguous
    *  range from the anchor, ⌘/ctrl toggles individual columns. */
@@ -558,8 +571,8 @@ function ResultsGridImpl({
   /** TSV of the selected columns across all rows (single column = lines). */
   const copyColumns = () => {
     if (!selColList.length) return;
-    const lines = result.rows.map((r) =>
-      selColList.map((c) => r[c] ?? "").join("\t"),
+    const lines = result.rows.map((_, ri) =>
+      selColList.map((c) => shownValue(ri, c) ?? "").join("\t"),
     );
     copyAndToast(
       lines.join("\n"),
@@ -568,15 +581,15 @@ function ResultsGridImpl({
   };
 
   const copyColumnValues = (ci: number) => {
-    const text = result.rows.map((r) => r[ci] ?? "").join("\n");
+    const text = result.rows.map((_, ri) => shownValue(ri, ci) ?? "").join("\n");
     copyAndToast(text, `Copied ${result.rows.length} value(s)`);
   };
 
   /** Distinct non-NULL values as a quoted SQL IN list. */
   const copyColumnIn = (ci: number) => {
     const seen = new Set<string>();
-    for (const r of result.rows) {
-      const v = r[ci];
+    for (let ri = 0; ri < result.rows.length; ri++) {
+      const v = shownValue(ri, ci);
       if (v !== null) seen.add(v);
     }
     const list = [...seen].map(quoteLit).join(", ");
@@ -621,14 +634,12 @@ function ResultsGridImpl({
     if (!rect) return;
     const lines: string[] = [];
     for (let r = rect.r1; r <= rect.r2; r++) {
-      const row = result.rows[r];
-      if (!row) continue;
-      lines.push(
-        row
-          .slice(rect.c1, rect.c2 + 1)
-          .map((v) => v ?? "")
-          .join("\t"),
-      );
+      if (!result.rows[r]) continue;
+      const cells: string[] = [];
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        cells.push(shownValue(r, c) ?? "");
+      }
+      lines.push(cells.join("\t"));
     }
     copyAndToast(lines.join("\n"), `Copied ${rectCount} cell(s) as TSV`);
   };
@@ -636,7 +647,9 @@ function ResultsGridImpl({
   const copyAll = () => {
     const text = [
       result.columns.join("\t"),
-      ...result.rows.map((r) => r.map((v) => v ?? "").join("\t")),
+      ...result.rows.map((r, ri) =>
+        r.map((_, ci) => shownValue(ri, ci) ?? "").join("\t"),
+      ),
     ].join("\n");
     copyAndToast(text, `Copied ${result.rows.length} row(s) with header`);
   };
@@ -651,7 +664,7 @@ function ResultsGridImpl({
       .filter((i) => !hiddenCols.has(i));
     return {
       columns: visCols.map((i) => result.columns[i]),
-      rows: rowIdxs.map((ri) => visCols.map((ci) => result.rows[ri][ci])),
+      rows: rowIdxs.map((ri) => visCols.map((ci) => shownValue(ri, ci))),
     };
   };
 

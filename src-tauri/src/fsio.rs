@@ -10,9 +10,23 @@ use crate::error::AppError;
 pub fn config_path(file: &str) -> Result<PathBuf, AppError> {
     let dir = match std::env::var_os("SQL_KAI_CONFIG_DIR").filter(|v| !v.is_empty()) {
         Some(custom) => PathBuf::from(custom),
-        None => dirs::config_dir()
-            .ok_or_else(|| AppError::Msg("cannot resolve user config dir".into()))?
-            .join("sql-tauri"),
+        None => {
+            let base = dirs::config_dir()
+                .ok_or_else(|| AppError::Msg("cannot resolve user config dir".into()))?;
+            let new = base.join("sql-kai");
+            let old = base.join("sql-tauri");
+            // v1.0: каталог переехал под бренд sql-kai — старый переносим
+            // целиком (одноразовый атомарный rename); если rename не удался,
+            // продолжаем работать со старым, чтобы не потерять данные.
+            if !new.exists() && old.exists() {
+                let _ = fs::rename(&old, &new);
+            }
+            if old.exists() && !new.exists() {
+                old
+            } else {
+                new
+            }
+        }
     };
     fs::create_dir_all(&dir)?;
     Ok(dir.join(file))

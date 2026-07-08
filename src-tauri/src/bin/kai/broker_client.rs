@@ -4,8 +4,8 @@
 //! запуском. Любая транспортная проблема — тихий откат на автономный путь.
 
 use serde_json::{json, Value};
-use sql_tauri_lib::broker::{self, BrokerSessionInfo, HelloReply, WireColumnTypes};
-use sql_tauri_lib::db::ExecResult;
+use sql_kai_lib::broker::{self, BrokerSessionInfo, HelloReply, WireColumnTypes};
+use sql_kai_lib::db::ExecResult;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 

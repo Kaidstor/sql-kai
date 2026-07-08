@@ -3,15 +3,15 @@
 //! Заменяет кеш-дискавери старого prod-db: результат — обычный профиль,
 //! общий с GUI.
 
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use sql_tauri_lib::db;
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store::{self, Profile, SshConfig};
+use sql_kai_lib::db;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store::{self, Profile, SshConfig};
 
-use crate::remote::{remote_command, ssh_base, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_DETECT};
 use crate::{sec, session, DiscoverArgs};
 
 /// Хвост поверх [`CONTAINER_DETECT`]: тянет POSTGRES_PASSWORD и решает, куда
@@ -38,10 +38,7 @@ struct Discovered {
 
 fn discover_host(alias: &str) -> Result<Discovered, AppError> {
     let script = format!("{CONTAINER_DETECT}{DISCOVER_TAIL}");
-    let out = ssh_base(alias)
-        .arg(remote_command(&script, &[]))
-        .stdin(Stdio::null())
-        .output()
+    let out = remote::output_via_stdin(alias, &remote::stdin_payload(&script, &[]))
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     for line in String::from_utf8_lossy(&out.stderr).lines() {

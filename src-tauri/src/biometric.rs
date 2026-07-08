@@ -33,7 +33,10 @@ mod imp {
 
     use super::BioError;
 
-    const SERVICE: &str = "com.kaidstor.sql-tauri.vault";
+    const SERVICE: &str = "com.kaidstor.sql-kai.vault";
+    /// Имя сервиса до ребрендинга v1.0 — читается как fallback и переносится
+    /// под новое имя при первом обращении.
+    const SERVICE_LEGACY: &str = "com.kaidstor.sql-tauri.vault";
     const ACCOUNT: &str = "dek";
     /// DEK copy for the `kai` CLI: same login keychain, but read without a
     /// biometry gate — the keychain's per-app ACL is the only guard, so short
@@ -90,21 +93,38 @@ mod imp {
             .map_err(|e| BioError::Other(format!("keychain error: {e}")))
     }
 
+    /// Reads `account`, transparently migrating an item stored under the
+    /// pre-1.0 service name to the current one.
+    fn get_with_migration(account: &str) -> Result<Vec<u8>, BioError> {
+        match passwords::get_generic_password(SERVICE, account) {
+            Ok(v) => Ok(v),
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => {
+                let v = passwords::get_generic_password(SERVICE_LEGACY, account).map_err(|e| {
+                    if e.code() == ERR_SEC_ITEM_NOT_FOUND {
+                        BioError::Stale
+                    } else {
+                        BioError::Other(format!("keychain error: {e}"))
+                    }
+                })?;
+                if passwords::set_generic_password(SERVICE, account, &v).is_ok() {
+                    let _ = passwords::delete_generic_password(SERVICE_LEGACY, account);
+                }
+                Ok(v)
+            }
+            Err(e) => Err(BioError::Other(format!("keychain error: {e}"))),
+        }
+    }
+
     /// Touch ID gate, then the keychain read.
     pub fn read_dek() -> Result<Vec<u8>, BioError> {
         authenticate("unlock your saved database passwords")?;
-        passwords::get_generic_password(SERVICE, ACCOUNT).map_err(|e| {
-            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
-                BioError::Stale
-            } else {
-                BioError::Other(format!("keychain error: {e}"))
-            }
-        })
+        get_with_migration(ACCOUNT)
     }
 
     /// Best-effort removal of the stored DEK (both on disable and re-enroll).
     pub fn delete_dek() {
         let _ = passwords::delete_generic_password(SERVICE, ACCOUNT);
+        let _ = passwords::delete_generic_password(SERVICE_LEGACY, ACCOUNT);
     }
 
     pub fn store_dek_cli(dek: &[u8]) -> Result<(), BioError> {
@@ -114,17 +134,12 @@ mod imp {
 
     /// Keychain read without an app-level auth gate (see ACCOUNT_CLI).
     pub fn read_dek_cli() -> Result<Vec<u8>, BioError> {
-        passwords::get_generic_password(SERVICE, ACCOUNT_CLI).map_err(|e| {
-            if e.code() == ERR_SEC_ITEM_NOT_FOUND {
-                BioError::Stale
-            } else {
-                BioError::Other(format!("keychain error: {e}"))
-            }
-        })
+        get_with_migration(ACCOUNT_CLI)
     }
 
     pub fn delete_dek_cli() {
         let _ = passwords::delete_generic_password(SERVICE, ACCOUNT_CLI);
+        let _ = passwords::delete_generic_password(SERVICE_LEGACY, ACCOUNT_CLI);
     }
 }
 

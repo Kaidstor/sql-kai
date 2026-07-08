@@ -7,7 +7,7 @@
 //! — оператор/агент, которому нельзя видеть секрет, не должен иметь доступа к
 //! самой БД. Матчинг намеренно склоняется к over-masking (лучше скрыть не-секрет).
 
-use sql_tauri_lib::db::ExecResult;
+use sql_kai_lib::db::ExecResult;
 
 pub const REDACTED: &str = "[redacted]";
 
@@ -72,7 +72,7 @@ pub fn redact_exec(exec: &mut ExecResult) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sql_tauri_lib::db::{ExecResult, StatementResult};
+    use sql_kai_lib::db::{ExecResult, StatementResult};
 
     #[test]
     fn detects_sensitive_names() {

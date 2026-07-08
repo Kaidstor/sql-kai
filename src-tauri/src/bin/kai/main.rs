@@ -23,11 +23,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use sql_tauri_lib::db;
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store::{self, HistoryEntry, Profile};
-use sql_tauri_lib::tunnel;
-use sql_tauri_lib::vault;
+use sql_kai_lib::db;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store::{self, HistoryEntry, Profile};
+use sql_kai_lib::tunnel;
+use sql_kai_lib::vault;
 
 use output::Format;
 
@@ -455,7 +455,7 @@ fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(Str
 /// (имя, oid) с провода → типы для print_exec_json; незнакомый oid (кастомный
 /// enum и т.п.) выводится как text — так же он выглядит и в автономном пути.
 fn wire_types(
-    wire: sql_tauri_lib::broker::WireColumnTypes,
+    wire: sql_kai_lib::broker::WireColumnTypes,
 ) -> Vec<Option<Vec<(String, db::Type)>>> {
     wire.into_iter()
         .map(|cols| {
@@ -518,7 +518,26 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             }
             Ok(Some(ExitCode::FAILURE))
         }
+        Err(broker_client::BrokerError::VaultLocked) => {
+            // Брокер отверг запрос ДО выполнения — автономный путь безопасен.
+            if a.verbose {
+                eprintln!("… vault в GUI заперт — автономный режим");
+            }
+            Ok(None)
+        }
         Err(e) => {
+            // Транспорт мог оборваться уже ПОСЛЕ отправки запроса (GUI закрыли
+            // во время выполнения) — стейтмент мог успеть примениться. Повторять
+            // write-SQL автономным путём нельзя: риск двойного применения.
+            if a.write {
+                record(false);
+                eprintln!("kai: связь с брокером оборвалась во время запроса ({e})");
+                eprintln!(
+                    "hint: запрос мог успеть выполниться — проверь состояние данных; \
+                     выполнить мимо брокера: kai q --local …"
+                );
+                return Ok(Some(ExitCode::FAILURE));
+            }
             if a.verbose {
                 eprintln!("… брокер недоступен ({e}) — автономный режим");
             }
@@ -782,8 +801,19 @@ fn cmd_history(a: HistoryArgs) -> Result<ExitCode, AppError> {
     }
     let mut entries = store::load_history()?;
     if let Some(alias) = &a.alias {
+        // Как в `kai q`: alias матчит id, имя и группу; плюс имя из самой
+        // записи — чтобы история удалённых профилей оставалась доступной.
+        let ids: std::collections::HashSet<String> =
+            session::filter_profiles(&store::load_profiles().unwrap_or_default(), alias)
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
         let al = alias.to_lowercase();
-        entries.retain(|h| h.profile_name.to_lowercase() == al || h.profile_id == *alias);
+        entries.retain(|h| {
+            ids.contains(&h.profile_id)
+                || h.profile_name.to_lowercase() == al
+                || h.profile_id == *alias
+        });
     }
     entries.truncate(a.limit);
     if a.json {
@@ -811,7 +841,7 @@ fn cmd_history(a: HistoryArgs) -> Result<ExitCode, AppError> {
 /// литералы мог поймать sec).
 fn history_scan() -> Result<ExitCode, AppError> {
     sec::available()?;
-    let path = sql_tauri_lib::fsio::config_path("history.json")?;
+    let path = sql_kai_lib::fsio::config_path("history.json")?;
     if !path.exists() {
         println!("history.json пуст — сканировать нечего");
         return Ok(ExitCode::SUCCESS);

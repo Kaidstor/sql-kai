@@ -3,10 +3,10 @@
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
-use sql_tauri_lib::db;
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store::{self, Profile};
-use sql_tauri_lib::vault;
+use sql_kai_lib::db;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store::{self, Profile};
+use sql_kai_lib::vault;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -40,6 +40,31 @@ pub fn collect_sql(commands: &[String], files: &[PathBuf]) -> Result<String, App
         ));
     }
     Ok(sql)
+}
+
+/// Все профили, подходящие под alias: точный id, иначе имя, иначе группа
+/// (имя/группа — без учёта регистра). Мульти-матч для history/doctor — та же
+/// логика, что в [`resolve_profile`], но без ошибок неоднозначности.
+pub fn filter_profiles(all: &[Profile], alias: &str) -> Vec<Profile> {
+    if let Some(p) = all.iter().find(|p| p.id == alias) {
+        return vec![p.clone()];
+    }
+    let by_name: Vec<Profile> = all
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case(alias))
+        .cloned()
+        .collect();
+    if !by_name.is_empty() {
+        return by_name;
+    }
+    all.iter()
+        .filter(|p| {
+            p.group
+                .as_deref()
+                .is_some_and(|g| g.eq_ignore_ascii_case(alias))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Алиас = id, имя или группа профиля (имя/группа — без учёта регистра).

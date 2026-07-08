@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    sql_tauri_lib::run()
+    sql_kai_lib::run()
 }

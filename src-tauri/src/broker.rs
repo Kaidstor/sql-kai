@@ -53,7 +53,9 @@ pub fn bind() -> Result<UnixListener, AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        // Не сумели ужать права — сокет не поднимаем: через него выполняется
+        // SQL под разлоченным vault.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(listener)
 }
@@ -179,22 +181,36 @@ impl BrokerState {
     }
 
     /// Закрывает все cli-сессии (lock vault, выход). true = что-то закрыли.
+    /// Teardown сессий (kill ssh-туннеля) — вне лока, чтобы не держать
+    /// остальных на syscall'ах.
     pub fn clear(&self) -> bool {
-        let mut map = self.cli.lock().unwrap();
-        let had = !map.is_empty();
-        map.clear();
+        let drained: Vec<Arc<CliEntry>> = {
+            let mut map = self.cli.lock().unwrap();
+            map.drain().map(|(_, e)| e).collect()
+        };
+        let had = !drained.is_empty();
+        drop(drained);
         had
     }
 
     /// Убирает мёртвые и простоявшие дольше TTL сессии. true = что-то убрали.
     fn sweep(&self) -> bool {
-        let mut map = self.cli.lock().unwrap();
-        let before = map.len();
-        map.retain(|_, e| {
-            !e.session.client.is_closed()
-                && e.last_used.lock().unwrap().elapsed().as_secs() < CLI_IDLE_TTL_SEC
-        });
-        map.len() != before
+        let mut dead: Vec<Arc<CliEntry>> = Vec::new();
+        let removed = {
+            let mut map = self.cli.lock().unwrap();
+            let before = map.len();
+            map.retain(|_, e| {
+                let live = !e.session.client.is_closed()
+                    && e.last_used.lock().unwrap().elapsed().as_secs() < CLI_IDLE_TTL_SEC;
+                if !live {
+                    dead.push(e.clone());
+                }
+                live
+            });
+            map.len() != before
+        };
+        drop(dead); // последние Arc-рефы гаснут вне лока
+        removed
     }
 
     fn get_live(&self, profile_id: &str) -> Option<Arc<CliEntry>> {

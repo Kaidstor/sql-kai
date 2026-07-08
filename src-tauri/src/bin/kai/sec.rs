@@ -8,8 +8,8 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store::Profile;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store::Profile;
 
 fn sec_bin() -> String {
     std::env::var("KAI_SEC_BIN")
@@ -26,7 +26,10 @@ pub fn default_key(profile: &Profile) -> String {
 }
 
 fn base() -> Command {
-    Command::new(sec_bin())
+    let mut cmd = Command::new(sec_bin());
+    // мастер-пароль vault не должен наследоваться дочерними процессами
+    cmd.env_remove("KAI_VAULT_PASSWORD");
+    cmd
 }
 
 /// Проверка, что sec доступен и достаточно свежий (есть `scan`).

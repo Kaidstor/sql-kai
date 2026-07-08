@@ -4,9 +4,9 @@
 
 use std::process::ExitCode;
 
-use sql_tauri_lib::db;
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store::{self, Profile};
+use sql_kai_lib::db;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store::{self, Profile};
 
 use crate::{sec, session, DoctorArgs};
 
@@ -36,8 +36,8 @@ async fn can_connect(profile: &Profile, password: Option<String>) -> Result<(), 
 pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
     let mut profiles = store::load_profiles()?;
     if let Some(alias) = &a.alias {
-        let al = alias.to_lowercase();
-        profiles.retain(|p| p.name.to_lowercase() == al || p.id == *alias);
+        // Единый резолв с `kai q`: id, имя или группа.
+        profiles = session::filter_profiles(&profiles, alias);
         if profiles.is_empty() {
             return Err(AppError::Msg(format!("профиль '{alias}' не найден")));
         }

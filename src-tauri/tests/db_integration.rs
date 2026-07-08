@@ -3,8 +3,8 @@
 //!   -e POSTGRES_DB=demo -p 54329:5432 postgres:16-alpine
 //! Run with: cargo test --test db_integration -- --ignored
 
-use sql_tauri_lib::db;
-use sql_tauri_lib::store::Profile;
+use sql_kai_lib::db;
+use sql_kai_lib::store::Profile;
 
 fn test_profile() -> Profile {
     Profile {

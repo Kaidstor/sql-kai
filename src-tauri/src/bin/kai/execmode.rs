@@ -4,14 +4,14 @@
 //! ходит по trust/peer). Вывод — сырой текст psql.
 
 use std::path::PathBuf;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use clap::Args;
-use sql_tauri_lib::error::AppError;
+use sql_kai_lib::error::AppError;
 
-use crate::remote::{remote_command, ssh_base, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_DETECT};
 use crate::session;
 
 #[derive(Args)]
@@ -68,18 +68,19 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         ("KAI_VERBOSE", if a.verbose { "1" } else { "" }.to_string()),
     ];
     let script = format!("{CONTAINER_DETECT}{EXEC_TAIL}");
-    let remote = remote_command(&script, &env);
+    let payload = remote::stdin_payload(&script, &env);
 
     if a.dry_run {
-        println!("ssh -T -o BatchMode=yes -o ConnectTimeout=15 {} \\\n  {remote}", a.alias);
-        println!("\n# скрипт на хосте:\n{script}");
+        println!(
+            "ssh -T -o BatchMode=yes -o ConnectTimeout=15 -- {} bash -s <<'KAI_EOF'",
+            a.alias
+        );
+        print!("{payload}");
+        println!("KAI_EOF");
         return Ok(ExitCode::SUCCESS);
     }
 
-    let status = ssh_base(&a.alias)
-        .arg(remote)
-        .stdin(Stdio::null())
-        .status()
+    let status = remote::run_via_stdin(&a.alias, &payload)
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;
     Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
 }

@@ -266,7 +266,7 @@ CLI-процесс живёт доли секунды — «держать в п
 <ol>
   <li>Разлочивает vault (спросит мастер-пароль — единственный интерактивный шаг).</li>
   <li>Кладёт <em>копию DEK</em> в login keychain macOS обычной записью
-      (service <code>com.kaidstor.sql-tauri.vault</code>, account <code>dek-cli</code>).</li>
+      (service <code>com.kaidstor.sql-kai.vault</code>, account <code>dek-cli</code>).</li>
   <li>Дальше каждый запуск <code>kai</code> молча читает эту запись: macOS разрешает читать
       keychain-запись без подтверждения тому бинарю, который её создал (ACL по подписи кода).
       Любому другому приложению система покажет диалог.</li>
@@ -301,7 +301,7 @@ env-переменной, vault не трогается вовсе.</p>
 <tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>)</td></tr>
 <tr><td><code>KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
-<tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-tauri</code>) — изолированные окружения и тесты</td></tr>
+<tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-kai</code>) — изолированные окружения и тесты</td></tr>
 </table>
 
 <h2 id="exit">Коды выхода</h2>

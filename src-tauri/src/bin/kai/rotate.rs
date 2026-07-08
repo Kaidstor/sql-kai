@@ -12,9 +12,9 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use rand::Rng;
-use sql_tauri_lib::db;
-use sql_tauri_lib::error::AppError;
-use sql_tauri_lib::store;
+use sql_kai_lib::db;
+use sql_kai_lib::error::AppError;
+use sql_kai_lib::store;
 
 use crate::{sec, session, RotateArgs};
 
@@ -75,11 +75,14 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
     );
     eprintln!("новый пароль сохранён в sec: {key}");
 
-    // 2) ALTER ROLE.
+    // 2) ALTER ROLE. На сервер уходит SCRAM-verifier, а не сам пароль —
+    // иначе plaintext оседает в server log (log_statement=ddl/all) и
+    // pg_stat_activity, а без ssh-туннеля ещё и в проводе (NoTls).
+    let verifier = postgres_protocol::password::scram_sha_256(new_pw.as_bytes());
     let alter = format!(
         "ALTER ROLE {} WITH PASSWORD {}",
         db::quote_ident(&role),
-        db::quote_literal(&new_pw)
+        db::quote_literal(&verifier)
     );
     if let Err(e) = db::execute(&connected.session.client, &alter, 1).await {
         eprintln!("kai: ALTER ROLE не прошёл: {e}");

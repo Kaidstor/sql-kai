@@ -66,7 +66,9 @@ fn client_and_tx(
     let client = session.client.clone();
     if client.is_closed() {
         let name = session.profile_name.clone();
-        sessions.remove(session_id);
+        let dead = sessions.remove(session_id);
+        drop(sessions); // teardown туннеля — вне лока
+        drop(dead);
         logging::log(
             "session",
             &format!("\"{name}\": dead client detected on API call — session dropped"),
@@ -148,7 +150,11 @@ pub fn vault_lock(
     state: State<'_, AppState>,
     broker: State<'_, std::sync::Arc<crate::broker::BrokerState>>,
 ) {
-    state.sessions.lock().unwrap().clear();
+    let drained: Vec<_> = {
+        let mut sessions = state.sessions.lock().unwrap();
+        sessions.drain().map(|(_, s)| s).collect()
+    };
+    drop(drained); // teardown ssh-туннелей — вне лока
     broker.clear();
     vault::lock();
 }
@@ -177,11 +183,16 @@ pub fn duplicate_profile(id: String) -> Result<Profile, AppError> {
 
 #[tauri::command]
 pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .retain(|_, s| s.profile_id != id);
+    let dropped: Vec<_> = {
+        let mut sessions = state.sessions.lock().unwrap();
+        let ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.profile_id == id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        ids.into_iter().filter_map(|k| sessions.remove(&k)).collect()
+    };
+    drop(dropped); // teardown ssh-туннелей — вне лока
     store::delete_profile(&id)
 }
 

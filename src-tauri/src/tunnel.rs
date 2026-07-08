@@ -9,11 +9,14 @@ use crate::error::AppError;
 use crate::logging;
 use crate::store::SshConfig;
 
-const ASKPASS_ENV: &str = "SQL_TAURI_SSH_PASSPHRASE";
+const ASKPASS_ENV: &str = "SQL_KAI_SSH_PASSPHRASE";
 
 /// Writes a helper that echoes the passphrase env var back to ssh.
 /// ssh refuses to read a passphrase from stdin without a TTY, but it will
 /// run SSH_ASKPASS — this keeps the secret out of argv (env only).
+///
+/// Lives in the per-user 0700 mux dir (not the shared temp dir) so another
+/// local user can't pre-create or swap the script ssh executes.
 ///
 /// Written once per process (fixed path, fixed content); re-verifies the file
 /// still exists so a cleared temp dir self-heals, but skips the write+chmod on
@@ -26,15 +29,38 @@ fn ensure_askpass_script() -> Result<PathBuf, AppError> {
             return Ok(p.clone());
         }
     }
-    let path = std::env::temp_dir().join("sql-tauri-askpass.sh");
+    let path = mux_dir()?.join("askpass.sh");
     fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_ENV}\"\n"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
     }
+    // остаток от версий < 1.0 в общем /tmp — убираем best-effort
+    let _ = fs::remove_file(std::env::temp_dir().join("sql-tauri-askpass.sh"));
     let _ = SCRIPT.set(path.clone());
     Ok(path)
+}
+
+/// Rejects values ssh would parse as an option (`-oProxyCommand=…` → command
+/// execution). The check lives on the tunnel boundary so every path goes
+/// through it — saved profiles, test connections and discover alike, not only
+/// `store::upsert_profile`.
+fn reject_optionlike(what: &str, v: &str) -> Result<(), AppError> {
+    if v.trim_start().starts_with('-') {
+        return Err(AppError::Msg(format!(
+            "{what} must not start with '-' (looks like an ssh option)"
+        )));
+    }
+    Ok(())
+}
+
+/// `ssh` command that never inherits the vault master password: ssh may run a
+/// ProxyCommand from ~/.ssh/config — an arbitrary local process.
+fn ssh_cmd() -> Command {
+    let mut cmd = Command::new("ssh");
+    cmd.env_remove("KAI_VAULT_PASSWORD");
+    cmd
 }
 
 /// A local port forwarded to the database through a supervised `ssh -N -L` child.
@@ -147,7 +173,9 @@ fn mux_dir() -> Result<PathBuf, AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        // Ошибка chmod = каталог не наш (создан другим пользователем) —
+        // работать через чужие control-сокеты нельзя, это угон ssh-сессий.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
     }
     Ok(dir)
 }
@@ -199,7 +227,7 @@ fn ensure_master(ssh: &SshConfig, passphrase: Option<&str>, ttl: u32, ctl: &Path
     if master_alive(ctl, &target) {
         return;
     }
-    let mut cmd = Command::new("ssh");
+    let mut cmd = ssh_cmd();
     cmd.arg("-M")
         .arg("-S")
         .arg(ctl)
@@ -288,6 +316,15 @@ pub async fn open_tunnel(
     passphrase: Option<&str>,
     mux_ttl: Option<u32>,
 ) -> Result<Tunnel, AppError> {
+    reject_optionlike("ssh host", &ssh.host)?;
+    if let Some(u) = ssh.user.as_deref().filter(|u| !u.trim().is_empty()) {
+        reject_optionlike("ssh user", u)?;
+    }
+    if let Some(k) = ssh.key_path.as_deref().filter(|k| !k.trim().is_empty()) {
+        reject_optionlike("ssh key path", k)?;
+    }
+    reject_optionlike("db host", db_host)?;
+
     let local_port = free_port()?;
     let target = ssh_target(ssh);
     logging::log(
@@ -318,7 +355,7 @@ pub async fn open_tunnel(
         None => None,
     };
 
-    let mut cmd = Command::new("ssh");
+    let mut cmd = ssh_cmd();
     cmd.arg("-N");
     apply_auth(&mut cmd, passphrase)?;
     cmd.args(["-o", "ExitOnForwardFailure=yes"])

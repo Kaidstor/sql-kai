@@ -1,7 +1,7 @@
 //! Рендеры результатов: pretty-таблица, JSON (строки/типизированный), CSV,
 //! tuples-only.
 
-use sql_tauri_lib::db::{ExecResult, StatementResult, Type};
+use sql_kai_lib::db::{ExecResult, StatementResult, Type};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -221,7 +221,7 @@ fn csv_field(s: &str) -> String {
 mod tests {
     use super::typed_value;
     use serde_json::{json, Value};
-    use sql_tauri_lib::db::Type;
+    use sql_kai_lib::db::Type;
 
     #[test]
     fn typed_value_converts_by_column_type() {

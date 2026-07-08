@@ -443,7 +443,9 @@ function patchState<S extends Tab["state"]>(
 }
 
 export const columnsKey = (profileId: string, schema: string, table: string) =>
-  `${profileId}|${schema}.${table}`;
+  // разделитель `|` и между schema/table — `a`+`b.c` и `a.b`+`c` не должны
+  // коллидировать в одном ключе кэша
+  `${profileId}|${schema}|${table}`;
 
 /** Immutable single-key removal — replaces the `{ ...map }; delete map[id]`
  *  boilerplate that recurred ~15× (session/metadata teardown). */
@@ -591,7 +593,13 @@ export const useApp = create<AppStore>((set, get) => {
   /** Ensures an isolated query tab has a live dedicated connection, opening one
    *  if missing/stale. Returns the session, or null if it couldn't be opened
    *  (e.g. the profile isn't connected). */
-  const ensureIsolatedSession = async (
+  /** Монотонные номера загрузок по табам: устаревший ответ (медленная
+   *  страница, обогнанная следующим запросом) молча отбрасывается. */
+  const loadSeq: Record<string, number> = {};
+  const nextLoadSeq = (tabId: string) => (loadSeq[tabId] = (loadSeq[tabId] ?? 0) + 1);
+  const staleLoad = (tabId: string, seq: number) => loadSeq[tabId] !== seq;
+
+  const openIsolatedSession = async (
     tabId: string,
   ): Promise<SessionInfo | null> => {
     const tab = tabOf(tabId, "query");
@@ -615,6 +623,20 @@ export const useApp = create<AppStore>((set, get) => {
       get().showToast(errText(e));
       return null;
     }
+  };
+
+  /** In-flight открытия изолированных сессий по табам: параллельные вызовы
+   *  (Isolate + сразу ⌘Enter) ждут один промис, а не открывают вторую
+   *  сессию — вторая утекала бы навсегда (открытый pid на сервере). */
+  const isolatedOpens = new Map<string, Promise<SessionInfo | null>>();
+  const ensureIsolatedSession = (tabId: string): Promise<SessionInfo | null> => {
+    const inFlight = isolatedOpens.get(tabId);
+    if (inFlight) return inFlight;
+    const p = openIsolatedSession(tabId).finally(() => {
+      isolatedOpens.delete(tabId);
+    });
+    isolatedOpens.set(tabId, p);
+    return p;
   };
 
   /** Disconnects every isolated session of a profile and detaches it from its
@@ -650,7 +672,12 @@ export const useApp = create<AppStore>((set, get) => {
       await api.executeSql(session.sessionId, verb, 1, false);
       get().showToast(verb === "COMMIT" ? "Committed" : "Rolled back", "success");
     } catch (e) {
-      get().showToast(errText(e));
+      const message = errText(e);
+      // Смерть соединения на COMMIT/ROLLBACK — та же маршрутизация, что у
+      // runQuery: изолированная сессия дропается, общая флипает профиль в
+      // "connection lost" (иначе Reconnect не предлагается).
+      onRunError(tab, Boolean(tab.state.sessionId), message);
+      get().showToast(message);
     }
     void refreshTxStatus(session);
   };
@@ -1158,6 +1185,9 @@ export const useApp = create<AppStore>((set, get) => {
   },
 
   connect: async (profileId) => {
+    // повторный вход (двойной Enter в палитре/лаунчере) — открыл бы вторую
+    // сессию и ssh-туннель, а первая повисла бы навсегда
+    if (get().connecting[profileId]) return;
     // a fresh attempt clears the last failure
     set((s) => ({
       connecting: { ...s.connecting, [profileId]: true },
@@ -1427,6 +1457,7 @@ export const useApp = create<AppStore>((set, get) => {
     if (!tab) return;
     const session = sessionFor(tab.profileId);
     if (!session) return;
+    const seq = nextLoadSeq(tabId);
     const { schema, table, section } = tab.state;
     const fetch: Record<
       StructureSection,
@@ -1447,15 +1478,13 @@ export const useApp = create<AppStore>((set, get) => {
     };
     patchTab<StructureTabState>(tabId, { loading: true, error: undefined });
     try {
-      patchTab<StructureTabState>(tabId, {
-        loading: false,
-        ...(await fetch[section]()),
-      });
+      const loaded = await fetch[section]();
+      if (staleLoad(tabId, seq)) return; // уже запрошена другая секция
+      patchTab<StructureTabState>(tabId, { loading: false, ...loaded });
     } catch (e) {
-      patchTab<StructureTabState>(tabId, {
-        loading: false,
-        error: handleSqlError(tab.profileId, e),
-      });
+      const message = handleSqlError(tab.profileId, e);
+      if (staleLoad(tabId, seq)) return;
+      patchTab<StructureTabState>(tabId, { loading: false, error: message });
     }
   },
 
@@ -1911,6 +1940,7 @@ export const useApp = create<AppStore>((set, get) => {
     ) {
       return;
     }
+    const seq = nextLoadSeq(tabId);
     const next = { ...tab.state, ...patch };
     patchTab<TableTabState>(tabId, { ...patch, loading: true, error: undefined });
     try {
@@ -1923,6 +1953,9 @@ export const useApp = create<AppStore>((set, get) => {
         next.sorts,
         next.filter,
       );
+      // Медленный старый ответ не должен перетирать данные более нового
+      // запроса (быстрое листание страниц / смена сортировки).
+      if (staleLoad(tabId, seq)) return;
       // Pending inserts survive a reload (not tied to row indices).
       patchTab<TableTabState>(tabId, {
         data,
@@ -1933,8 +1966,10 @@ export const useApp = create<AppStore>((set, get) => {
         applyError: undefined,
       });
     } catch (e) {
+      const message = handleSqlError(tab.profileId, e);
+      if (staleLoad(tabId, seq)) return;
       patchTab<TableTabState>(tabId, {
-        error: handleSqlError(tab.profileId, e),
+        error: message,
         loading: false,
       });
     }
