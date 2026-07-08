@@ -112,7 +112,8 @@ impl Broker {
     }
 
     pub async fn sessions(&mut self) -> Result<Vec<BrokerSessionInfo>, BrokerError> {
-        let v = self.request("sessions", json!({})).await?;
+        // unit-вариант метода: params должен быть null, не {}
+        let v = self.request("sessions", Value::Null).await?;
         serde_json::from_value(v).map_err(|e| BrokerError::Transport(e.to_string()))
     }
 

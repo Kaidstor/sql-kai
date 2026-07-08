@@ -366,7 +366,7 @@ enum VaultCmd {
 fn preprocess_args() -> Vec<OsString> {
     const KNOWN: &[&str] = &[
         "q", "query", "exec", "discover", "profiles", "tables", "columns", "ddl", "indexes",
-        "history", "saved", "rotate", "doctor", "tunnel", "vault", "help",
+        "history", "saved", "rotate", "doctor", "sessions", "tunnel", "vault", "help",
     ];
     let mut args: Vec<OsString> = std::env::args_os().collect();
     if let Some(first) = args.get(1) {

@@ -474,6 +474,50 @@ mod tests {
         }
     }
 
+    /// Живой round-trip через настоящий unix-сокет: hello и sessions (пустое
+    /// состояние, без БД). Также фиксирует, что params: null и отсутствующий
+    /// params валидны для unit-вариантов.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hello_and_sessions_over_socket() {
+        let path = std::env::temp_dir()
+            .join(format!("kai-broker-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let state = Arc::new(BrokerState::default());
+        let hooks = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+        });
+        tokio::spawn(serve(listener, state, hooks));
+
+        let stream = UnixStream::connect(&path).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut lines = BufReader::new(r).lines();
+
+        w.write_all(b"{\"id\":1,\"method\":\"hello\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        let v: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["result"]["protocol"], PROTOCOL_VERSION);
+
+        for req in [
+            "{\"id\":2,\"method\":\"sessions\"}\n".as_bytes(),
+            b"{\"id\":3,\"method\":\"sessions\",\"params\":null}\n",
+        ] {
+            w.write_all(req).await.unwrap();
+            let v: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert!(
+                v["result"].as_array().is_some_and(|a| a.is_empty()),
+                "unexpected reply: {v}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn hello_roundtrip() {
         let hello = HelloReply {
