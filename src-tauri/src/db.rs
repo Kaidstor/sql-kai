@@ -207,7 +207,7 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
     })
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, serde::Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementResult {
     pub columns: Vec<String>,
@@ -226,7 +226,7 @@ impl StatementResult {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecResult {
     pub results: Vec<StatementResult>,

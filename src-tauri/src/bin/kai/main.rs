@@ -6,6 +6,7 @@
 //! запись — только с явным `--write`. Чувствительные колонки (password/
 //! secret/*_token/*_key) в выводе маскируются; отключение — `--no-redact`.
 
+mod broker_client;
 mod discover;
 mod doctor;
 mod execmode;
@@ -81,6 +82,8 @@ enum Cmd {
     Rotate(RotateArgs),
     /// Здоровье соединений: сохранённые пароли ещё аутентифицируются?
     Doctor(DoctorArgs),
+    /// Живые сессии запущенного GUI: его собственные и cli-сессии брокера
+    Sessions(SessionsArgs),
     /// Персистентные ssh-туннели (ControlMaster), переиспользуемые между вызовами
     Tunnel {
         #[command(subcommand)]
@@ -158,9 +161,19 @@ struct QueryArgs {
     /// Не переиспользовать ssh-туннель (без ControlMaster)
     #[arg(long)]
     no_mux: bool,
+    /// Не ходить через брокер запущенного GUI — всегда своя сессия
+    #[arg(long)]
+    local: bool,
     /// Показать, куда подключились
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Args)]
+struct SessionsArgs {
+    /// JSON-вывод
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -394,6 +407,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Saved { cmd } => cmd_saved(cmd).await,
         Cmd::Rotate(a) => rotate::run(a).await,
         Cmd::Doctor(a) => doctor::run(a).await,
+        Cmd::Sessions(a) => cmd_sessions(a).await,
         Cmd::Tunnel { cmd } => cmd_tunnel(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd_vault(cmd),
     }
@@ -401,8 +415,118 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
 
 // --- q ------------------------------------------------------------------------
 
+/// Общий рендер результата: маскирование, формат (+типизированный json),
+/// verbose-времена. `types` пустой, когда формат не json.
+fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(String, db::Type)>>]) {
+    if !a.no_redact {
+        let masked = redact::redact_exec(&mut exec);
+        if !masked.is_empty() {
+            eprintln!(
+                "⚠ kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
+                masked.join(", ")
+            );
+        }
+    }
+    let fmt = a.fmt.pick();
+    if fmt == Format::Json {
+        let untyped = output::print_exec_json(&exec, types);
+        if untyped > 0 {
+            eprintln!(
+                "⚠ kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
+            );
+        }
+    } else {
+        output::print_exec(&exec, fmt);
+    }
+    if a.verbose {
+        eprintln!("({} ms)", exec.duration_ms);
+    }
+}
+
+/// (имя, oid) с провода → типы для print_exec_json; незнакомый oid (кастомный
+/// enum и т.п.) выводится как text — так же он выглядит и в автономном пути.
+fn wire_types(
+    wire: sql_tauri_lib::broker::WireColumnTypes,
+) -> Vec<Option<Vec<(String, db::Type)>>> {
+    wire.into_iter()
+        .map(|cols| {
+            cols.map(|cols| {
+                cols.into_iter()
+                    .map(|(name, oid)| (name, db::Type::from_oid(oid).unwrap_or(db::Type::TEXT)))
+                    .collect()
+            })
+        })
+        .collect()
+}
+
+/// Пытается обслужить запрос брокером запущенного GUI. Some(exit) — запрос
+/// выполнен (или окончательно отвергнут) брокером; None — GUI недоступен или
+/// vault заперт, и нужно идти автономным путём.
+async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, AppError> {
+    let Some(mut b) = broker_client::connect().await else {
+        return Ok(None);
+    };
+    let profile = session::resolve_profile(&a.alias)?;
+    if a.verbose {
+        eprintln!("→ через брокер GUI {} (сессию держит приложение)", b.hello.server_version);
+    }
+    let with_types = a.fmt.pick() == Format::Json;
+    let outcome = tokio::select! {
+        r = b.query(&profile.id, sql, a.max_rows.max(1), a.write, with_types) => r,
+        _ = tokio::signal::ctrl_c() => {
+            // наш сокет занят ожиданием ответа — отмену шлём новым соединением
+            if let Some(mut c) = broker_client::connect().await {
+                let _ = c.cancel(&profile.id).await;
+            }
+            eprintln!("kai: отменено");
+            return Ok(Some(ExitCode::FAILURE));
+        }
+    };
+    let record = |ok: bool| {
+        if !a.no_history {
+            let _ = store::record_history(HistoryEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                profile_id: profile.id.clone(),
+                profile_name: profile.name.clone(),
+                sql: sql.to_string(),
+                at: session::now_ms(),
+                ok,
+            });
+        }
+    };
+    match outcome {
+        Ok(res) => {
+            record(true);
+            let types = res.column_types.map(wire_types).unwrap_or_default();
+            render_exec(a, res.exec, &types);
+            Ok(Some(ExitCode::SUCCESS))
+        }
+        Err(broker_client::BrokerError::Query(msg)) => {
+            record(false);
+            eprintln!("kai: {msg}");
+            if msg.contains("read-only") {
+                eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
+            }
+            Ok(Some(ExitCode::FAILURE))
+        }
+        Err(e) => {
+            if a.verbose {
+                eprintln!("… брокер недоступен ({e}) — автономный режим");
+            }
+            Ok(None)
+        }
+    }
+}
+
 async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
     let sql = session::collect_sql(&a.commands, &a.files)?;
+    // Живой GUI обслуживает запрос своей cli-сессией; кастомные источники
+    // пароля (--password-env/--from-sec) — всегда автономно.
+    if !a.local && a.password_env.is_none() && !a.from_sec && a.sec_key.is_none() {
+        if let Some(code) = try_broker_query(&a, &sql).await? {
+            return Ok(code);
+        }
+    }
     let (profile, connected) = session::open_for(
         &a.alias,
         session::PwSource {
@@ -428,32 +552,13 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
         });
     }
     match outcome {
-        Ok(mut exec) => {
-            if !a.no_redact {
-                let masked = redact::redact_exec(&mut exec);
-                if !masked.is_empty() {
-                    eprintln!(
-                        "⚠ kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
-                        masked.join(", ")
-                    );
-                }
-            }
-            let fmt = a.fmt.pick();
-            if fmt == Format::Json {
-                let types =
-                    db::statement_column_types(&connected.session.client, &sql).await;
-                let untyped = output::print_exec_json(&exec, &types);
-                if untyped > 0 {
-                    eprintln!(
-                        "⚠ kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
-                    );
-                }
+        Ok(exec) => {
+            let types = if a.fmt.pick() == Format::Json {
+                db::statement_column_types(&connected.session.client, &sql).await
             } else {
-                output::print_exec(&exec, fmt);
-            }
-            if a.verbose {
-                eprintln!("({} ms)", exec.duration_ms);
-            }
+                Vec::new()
+            };
+            render_exec(&a, exec, &types);
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
@@ -464,6 +569,48 @@ async fn cmd_query(a: QueryArgs) -> Result<ExitCode, AppError> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+// --- sessions -------------------------------------------------------------------
+
+/// Живые сессии запущенного GUI: собственные (origin=gui) и cli-сессии
+/// брокера (origin=cli, с простоем).
+async fn cmd_sessions(a: SessionsArgs) -> Result<ExitCode, AppError> {
+    let Some(mut b) = broker_client::connect().await else {
+        eprintln!("GUI не запущен — брокер недоступен (kai работает автономно)");
+        return Ok(ExitCode::FAILURE);
+    };
+    let list = b
+        .sessions()
+        .await
+        .map_err(|e| AppError::Msg(e.to_string()))?;
+    if a.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into())
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if list.is_empty() {
+        println!("живых сессий нет (gui {})", b.hello.server_version);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("{:<7} {:<28} {:<7} {:<8} {}", "ORIGIN", "PROFILE", "TX", "TUNNEL", "IDLE");
+    for s in list {
+        println!(
+            "{:<7} {:<28} {:<7} {:<8} {}",
+            s.origin,
+            s.profile_name,
+            s.tx,
+            s.tunnel_port
+                .map(|p| format!(":{p}"))
+                .unwrap_or_else(|| "-".into()),
+            s.idle_sec
+                .map(|i| format!("{i}s"))
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 // --- introspection --------------------------------------------------------------
@@ -760,6 +907,7 @@ async fn cmd_saved(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 no_history: false,
                 no_redact,
                 no_mux,
+                local: false,
                 verbose,
             })
             .await
