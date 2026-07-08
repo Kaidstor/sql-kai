@@ -1,6 +1,6 @@
 [package]
 name = "sql-tauri"
-version = "0.1.9"
+version = "0.1.10"
 description = "Postgres client with SSH tunnels"
 authors = ["kaidstor"]
 edition = "2021"
