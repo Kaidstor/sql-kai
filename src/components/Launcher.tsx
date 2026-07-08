@@ -11,7 +11,7 @@ import {
   Unplug,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
@@ -94,11 +94,10 @@ function ProfileCard({ profile }: { profile: Profile }) {
         <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">
           {profile.name}
         </span>
-        {profile.production && <ProdBadge />}
-        {profile.group?.trim() && (
-          <span className="flex shrink-0 items-center gap-1 rounded border border-zinc-700/80 bg-zinc-800/80 px-1.5 py-px text-[10px] text-zinc-400">
-            <GitFork size={9} className="text-amber-500/80" />
-            {profile.group.trim()}
+        {/* fades out on hover so the action buttons don't overlap it */}
+        {profile.production && (
+          <span className="shrink-0 transition-opacity group-hover:opacity-0">
+            <ProdBadge />
           </span>
         )}
       </div>
@@ -229,6 +228,22 @@ export function Launcher() {
     [profiles, needle],
   );
 
+  // Cluster connections by group so same-group cards sit together: named groups
+  // (alphabetical) first, ungrouped last.
+  const grouped = useMemo(() => {
+    const map = new Map<string, Profile[]>();
+    for (const p of visible) {
+      const g = p.group?.trim() ?? "";
+      const arr = map.get(g);
+      if (arr) arr.push(p);
+      else map.set(g, [p]);
+    }
+    const named = [...map.entries()]
+      .filter(([g]) => g !== "")
+      .sort(([a], [b]) => a.localeCompare(b));
+    return { named, ungrouped: map.get("") ?? [] };
+  }, [visible]);
+
   return (
     <div className="flex flex-1 min-w-0 flex-col">
       <div
@@ -276,9 +291,30 @@ export function Launcher() {
                 </button>
               </div>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5">
-                {visible.map((p) => (
-                  <ProfileCard key={p.id} profile={p} />
+                {grouped.named.map(([group, ps]) => (
+                  <Fragment key={group}>
+                    <div className="col-span-full flex items-center gap-1.5 pt-3 text-[11px] font-medium text-zinc-400 first:pt-0">
+                      <GitFork size={11} className="text-amber-500/70" />
+                      {group}
+                      <span className="text-zinc-600">· {ps.length}</span>
+                    </div>
+                    {ps.map((p) => (
+                      <ProfileCard key={p.id} profile={p} />
+                    ))}
+                  </Fragment>
                 ))}
+                {grouped.ungrouped.length > 0 && (
+                  <Fragment>
+                    {grouped.named.length > 0 && (
+                      <div className="col-span-full pt-3 text-[11px] font-medium text-zinc-500">
+                        Ungrouped
+                      </div>
+                    )}
+                    {grouped.ungrouped.map((p) => (
+                      <ProfileCard key={p.id} profile={p} />
+                    ))}
+                  </Fragment>
+                )}
               </div>
               {visible.length === 0 && (
                 <div className="py-8 text-center text-[12px] text-zinc-600">
