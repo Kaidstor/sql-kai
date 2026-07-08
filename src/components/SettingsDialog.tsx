@@ -50,7 +50,8 @@ function ThemeCard({
 }
 
 export function SettingsDialog() {
-  const { settingsOpen, setSettingsOpen, settings, setTheme } = useApp();
+  const { settingsOpen, setSettingsOpen, setLogViewerOpen, settings, setTheme } =
+    useApp();
   const [path, setPath] = useState<string | null>(null);
   const [logPath, setLogPath] = useState<string | null>(null);
 
@@ -108,7 +109,18 @@ export function SettingsDialog() {
           Connection diagnostics (why a session dropped) are logged to{" "}
           <span className="selectable font-mono text-zinc-400">
             {logPath ?? "sql-kai.log"}
-          </span>
+          </span>{" "}
+          —{" "}
+          <button
+            type="button"
+            className="text-sky-400 hover:underline"
+            onClick={() => {
+              setSettingsOpen(false);
+              setLogViewerOpen(true);
+            }}
+          >
+            view
+          </button>
           .
         </div>
       </div>

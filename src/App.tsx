@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
+import { LogViewer } from "./components/LogViewer";
 import { AppPalette } from "./components/Palette";
 import { QueryTab } from "./components/QueryTab";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -175,6 +176,9 @@ function App() {
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
       listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
+      listen("menu://log-viewer", () =>
+        useApp.getState().setLogViewerOpen(true),
+      ),
       listen("menu://check-updates", () =>
         void useUpdater.getState().checkForUpdates(true),
       ),
@@ -234,6 +238,7 @@ function App() {
       <UpdateToast />
       <ConnectionDialog />
       <SettingsDialog />
+      <LogViewer />
       <AppPalette />
       <ShortcutsOverlay
         open={showShortcuts}

@@ -224,6 +224,8 @@ interface AppStore {
   settings: AppSettings;
   /** Settings dialog (⌘,). */
   settingsOpen: boolean;
+  /** Diagnostics-log viewer (menu → Diagnostics Log). */
+  logViewerOpen: boolean;
   /** Sidebar visibility (⌘B). */
   sidebarHidden: boolean;
   /** Launcher explicitly opened over a live workspace ("All connections").
@@ -247,6 +249,7 @@ interface AppStore {
   /** Fetches the profile's functions once (symbols palette data). */
   loadSchemaFunctions: (profileId: string) => Promise<void>;
   setSettingsOpen: (open: boolean) => void;
+  setLogViewerOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setLauncherOpen: (open: boolean) => void;
   /** Applies the theme immediately and persists it to settings.json. */
@@ -799,6 +802,7 @@ export const useApp = create<AppStore>((set, get) => {
   saveDialogFor: null,
   settings: {},
   settingsOpen: false,
+  logViewerOpen: false,
   sidebarHidden: false,
   launcherOpen: false,
   vault: null,
@@ -832,6 +836,8 @@ export const useApp = create<AppStore>((set, get) => {
   },
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+
+  setLogViewerOpen: (logViewerOpen) => set({ logViewerOpen }),
 
   toggleSidebar: () => set((s) => ({ sidebarHidden: !s.sidebarHidden })),
 
@@ -1575,6 +1581,10 @@ export const useApp = create<AppStore>((set, get) => {
   closeActiveTab: () => {
     const s = get();
     // ⌘W dismisses whatever overlay is on top before touching tabs
+    if (s.logViewerOpen) {
+      set({ logViewerOpen: false });
+      return;
+    }
     if (s.settingsOpen) {
       set({ settingsOpen: false });
       return;

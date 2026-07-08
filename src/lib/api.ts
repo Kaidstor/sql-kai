@@ -64,6 +64,9 @@ export const api = {
   /** Appends a UI-observed event to the backend diagnostics log. */
   logEvent: (message: string) => invoke<void>("log_event", { message }),
 
+  /** Tail of the diagnostics log for the in-app viewer. */
+  readLog: () => invoke<string>("read_log"),
+
   listHistory: () => invoke<HistoryEntry[]>("list_history"),
 
   recordHistory: (entry: HistoryEntry) =>

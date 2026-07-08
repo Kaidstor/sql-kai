@@ -25,11 +25,14 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(handle)?;
+    let log_viewer =
+        MenuItemBuilder::with_id("log-viewer", "Diagnostics Log…").build(handle)?;
     let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
         .item(&check_updates)
         .separator()
         .item(&settings)
+        .item(&log_viewer)
         .separator()
         .services()
         .separator()
@@ -76,7 +79,12 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
         let id = event.id().as_ref();
         if matches!(
             id,
-            "new-query-tab" | "close-tab" | "reopen-tab" | "settings" | "check-updates"
+            "new-query-tab"
+                | "close-tab"
+                | "reopen-tab"
+                | "settings"
+                | "check-updates"
+                | "log-viewer"
         ) {
             let _ = app.emit(&format!("menu://{id}"), ());
         }
@@ -121,6 +129,7 @@ pub fn run() {
             commands::settings_path,
             commands::log_path,
             commands::log_event,
+            commands::read_log,
             commands::list_history,
             commands::record_history,
             commands::delete_history_entry,

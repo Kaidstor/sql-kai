@@ -349,6 +349,12 @@ pub fn log_event(message: String) {
     logging::log("ui", &message);
 }
 
+/// Tail of the diagnostics log for the in-app viewer (menu → Diagnostics Log).
+#[tauri::command]
+pub fn read_log() -> Result<String, AppError> {
+    logging::read_tail(256 * 1024)
+}
+
 /// Connects with the given (possibly unsaved) profile, checks the DB responds, tears down.
 #[tauri::command]
 pub async fn test_profile(

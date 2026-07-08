@@ -4,7 +4,7 @@
 //! ssh stderr and the pg termination reason land here with timestamps.
 //! Writes are best-effort — logging must never break a query path.
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -45,6 +45,29 @@ pub fn log(scope: &str, message: &str) {
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = f.write_all(line.as_bytes());
     }
+}
+
+/// Tail of the log for the in-app viewer: the last `max` bytes, cut at a
+/// line boundary. The file rotates at [`MAX_LEN`], so this stays cheap.
+pub fn read_tail(max: usize) -> Result<String, AppError> {
+    let path = log_path()?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    let raw = fs::read(&path)?;
+    let slice = if raw.len() > max {
+        let start = raw.len() - max;
+        // skip the (probably torn) first line of the window
+        let from = raw[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| start + i + 1)
+            .unwrap_or(start);
+        &raw[from..]
+    } else {
+        &raw[..]
+    };
+    Ok(String::from_utf8_lossy(slice).into_owned())
 }
 
 /// Epoch seconds → UTC wall clock, without a chrono dependency
