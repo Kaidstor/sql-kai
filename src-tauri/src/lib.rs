@@ -1,4 +1,5 @@
 pub mod biometric;
+pub mod broker;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -92,8 +93,54 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Поднимает брокер-сокет для kai: GUI-процесс выполняет его запросы своими
+/// сессиями/vault'ом. Ошибка бинда не мешает приложению — kai просто пойдёт
+/// автономным путём.
+#[cfg(unix)]
+fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
+    use std::sync::atomic::Ordering;
+
+    use tauri::Emitter;
+
+    let listener = match broker::bind() {
+        Ok(l) => l,
+        Err(e) => {
+            logging::log("broker", &format!("socket bind failed: {e}"));
+            return;
+        }
+    };
+    let gui = app.handle().clone();
+    let notify = app.handle().clone();
+    let hooks = std::sync::Arc::new(broker::BrokerHooks {
+        gui_sessions: Box::new(move || {
+            let state = gui.state::<AppState>();
+            let sessions = state.sessions.lock().unwrap();
+            sessions
+                .values()
+                .filter(|s| !s.isolated)
+                .map(|s| broker::BrokerSessionInfo {
+                    profile_id: s.profile_id.clone(),
+                    profile_name: s.profile_name.clone(),
+                    origin: "gui".into(),
+                    server_version: s.server_version.clone(),
+                    tunnel_port: s.tunnel_port,
+                    tx: db::TxStatus::from_u8(s.tx.load(Ordering::Relaxed))
+                        .as_str()
+                        .into(),
+                    idle_sec: None,
+                })
+                .collect()
+        }),
+        changed: Box::new(move || {
+            let _ = notify.emit("broker://changed", ());
+        }),
+    });
+    tauri::async_runtime::spawn(broker::serve(listener, state.clone(), hooks));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let broker_state = std::sync::Arc::new(broker::BrokerState::default());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -102,11 +149,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
-        .setup(|app| {
+        .manage(broker_state.clone())
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             set_app_menu(app)?;
-            #[cfg(not(target_os = "macos"))]
-            let _ = app;
+            #[cfg(unix)]
+            start_broker(app, &broker_state);
+            let _ = &app;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -153,14 +202,23 @@ pub fn run() {
             commands::get_table_page,
             commands::save_text_file,
             commands::copy_text_concealed,
+            commands::list_cli_sessions,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // Make sure ssh tunnel children die with the app.
+            // Make sure ssh tunnel children (incl. the broker's) die with the app.
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     state.sessions.lock().unwrap().clear();
+                }
+                if let Some(broker) =
+                    app_handle.try_state::<std::sync::Arc<broker::BrokerState>>()
+                {
+                    broker.clear();
+                }
+                if let Ok(path) = broker::socket_path() {
+                    let _ = std::fs::remove_file(path);
                 }
             }
         });

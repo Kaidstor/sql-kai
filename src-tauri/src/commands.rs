@@ -132,10 +132,23 @@ pub fn vault_disable_biometric() -> Result<(), AppError> {
 }
 
 /// Drop the in-memory DEK and all live sessions (secrets become unreadable).
+/// Broker cli-sessions close too — lock means "nothing stays connected".
 #[tauri::command]
-pub fn vault_lock(state: State<'_, AppState>) {
+pub fn vault_lock(
+    state: State<'_, AppState>,
+    broker: State<'_, std::sync::Arc<crate::broker::BrokerState>>,
+) {
     state.sessions.lock().unwrap().clear();
+    broker.clear();
     vault::lock();
+}
+
+/// Live cli-brokered sessions — drives the "cli" badges in the frontend.
+#[tauri::command]
+pub fn list_cli_sessions(
+    broker: State<'_, std::sync::Arc<crate::broker::BrokerState>>,
+) -> Vec<crate::broker::BrokerSessionInfo> {
+    broker.cli_sessions()
 }
 
 #[tauri::command]
