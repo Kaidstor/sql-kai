@@ -47,6 +47,16 @@ export interface QueryTabState {
   editorPct?: number;
   /** Saved query this tab was opened from / saved as — ⌘S overwrites it. */
   savedQueryId?: string;
+  /** Runs on its own dedicated connection (own pid & transaction) instead of
+   *  the profile's shared session. Persisted intent; the connection itself is
+   *  opened lazily. */
+  isolated?: boolean;
+  /** Dedicated backend session id when isolated & open (ephemeral, keyed into
+   *  `isolatedSessions`); absent = not yet opened / needs (re)opening. */
+  sessionId?: string;
+  /** "manual" holds a transaction open across runs (BEGIN auto-inserted) with
+   *  explicit Commit/Rollback; implies isolation. Default "auto". */
+  commitMode?: "auto" | "manual";
 }
 
 /** Pending INSERT row; values are aligned with result.columns; undefined =
@@ -186,6 +196,9 @@ export interface FunctionInfo {
 interface AppStore {
   profiles: Profile[];
   sessions: Record<string, SessionInfo>; // keyed by profileId
+  /** Per-tab isolated connections, keyed by their sessionId. Separate from
+   *  `sessions` (which holds one primary per profile). */
+  isolatedSessions: Record<string, SessionInfo>;
   connecting: Record<string, boolean>;
   /** Profiles whose session died underneath us (server/tunnel drop) —
    *  drives the red dot and the Reconnect affordances. */
@@ -350,6 +363,17 @@ interface AppStore {
   /** Back from the plan view to the last results. */
   clearExplain: (tabId: string) => void;
   cancelQuery: (tabId: string) => Promise<void>;
+  /** Gives the query tab its own dedicated connection (own pid & transaction),
+   *  opening it now. No-op if already isolated. */
+  isolateTab: (tabId: string) => Promise<void>;
+  /** Drops the tab's isolated connection (rolling back any open tx) and moves
+   *  it back onto the profile's shared session; forces commit mode to auto. */
+  mergeTab: (tabId: string) => Promise<void>;
+  /** Auto/Manual commit for an (isolated) query tab; "manual" isolates first. */
+  setCommitMode: (tabId: string, mode: "auto" | "manual") => Promise<void>;
+  /** COMMIT / ROLLBACK the open transaction on the tab's connection. */
+  commitTx: (tabId: string) => Promise<void>;
+  rollbackTx: (tabId: string) => Promise<void>;
   loadTablePage: (
     tabId: string,
     patch?: Partial<
@@ -456,17 +480,24 @@ export const useApp = create<AppStore>((set, get) => {
       api.listQueries(),
       api.listSessions(),
     ]);
+    // Isolated sessions belong to specific tabs, not the profile map, and we
+    // don't re-adopt them across a reload — disconnect the orphans and let
+    // isolated tabs reopen lazily.
+    const primaries = sessionList.filter((s) => !s.isolated);
+    for (const s of sessionList) {
+      if (s.isolated) api.disconnect(s.sessionId).catch(() => {});
+    }
     const sessions: Record<string, SessionInfo> = {};
-    for (const s of sessionList) sessions[s.profileId] = s;
+    for (const s of primaries) sessions[s.profileId] = s;
     set((st) => ({
       profiles,
       queries,
       sessions,
-      activeProfileId: st.activeProfileId ?? sessionList[0]?.profileId ?? null,
+      activeProfileId: st.activeProfileId ?? primaries[0]?.profileId ?? null,
     }));
     // Re-adopt sessions that survived a webview reload: tables + saved tabs.
     await Promise.all(
-      sessionList.map(async (s) => {
+      primaries.map(async (s) => {
         await get().refreshTables(s.profileId);
         // guard: StrictMode double-runs init() in dev — restoring twice
         // would duplicate every tab (and persist the doubled set)
@@ -482,6 +513,121 @@ export const useApp = create<AppStore>((set, get) => {
     const session = get().sessions[profileId];
     if (!session) get().showToast("Not connected");
     return session ?? null;
+  };
+
+  /** The connection a query tab runs on: its own isolated session when
+   *  isolated & open, otherwise the profile's shared session. */
+  const effectiveSession = (tab: Tab): SessionInfo | null => {
+    if (tab.state.kind === "query" && tab.state.sessionId) {
+      return get().isolatedSessions[tab.state.sessionId] ?? null;
+    }
+    return get().sessions[tab.profileId] ?? null;
+  };
+
+  /** Refreshes a connection's heuristic transaction state (badge) after a run.
+   *  Updates whichever map holds it (isolated by sessionId, else shared by
+   *  profileId). Advisory — a failure just leaves the last value. */
+  const refreshTxStatus = async (session: SessionInfo) => {
+    try {
+      const tx = await api.sessionTxStatus(session.sessionId);
+      set((s) => {
+        if (s.isolatedSessions[session.sessionId]) {
+          return {
+            isolatedSessions: {
+              ...s.isolatedSessions,
+              [session.sessionId]: { ...s.isolatedSessions[session.sessionId], tx },
+            },
+          };
+        }
+        const cur = s.sessions[session.profileId];
+        if (!cur || cur.sessionId !== session.sessionId) return {};
+        return { sessions: { ...s.sessions, [session.profileId]: { ...cur, tx } } };
+      });
+    } catch {
+      // ignore — the badge just keeps its previous value
+    }
+  };
+
+  /** Drops a tab's isolated backend session (best-effort disconnect) and
+   *  detaches it from the tab, so the next run lazily reopens a fresh one. */
+  const dropIsolatedSession = (tabId: string) => {
+    const tab = tabOf(tabId, "query");
+    const sid = tab?.state.sessionId;
+    if (!sid) return;
+    api.disconnect(sid).catch(() => {});
+    set((s) => {
+      const isolatedSessions = { ...s.isolatedSessions };
+      delete isolatedSessions[sid];
+      return { isolatedSessions };
+    });
+    patchTab<QueryTabState>(tabId, { sessionId: undefined });
+  };
+
+  /** Ensures an isolated query tab has a live dedicated connection, opening one
+   *  if missing/stale. Returns the session, or null if it couldn't be opened
+   *  (e.g. the profile isn't connected). */
+  const ensureIsolatedSession = async (
+    tabId: string,
+  ): Promise<SessionInfo | null> => {
+    const tab = tabOf(tabId, "query");
+    if (!tab) return null;
+    const existing = tab.state.sessionId
+      ? get().isolatedSessions[tab.state.sessionId]
+      : undefined;
+    if (existing) return existing;
+    if (!get().sessions[tab.profileId]) {
+      get().showToast("Not connected");
+      return null;
+    }
+    try {
+      const info = await api.openIsolatedSession(tab.profileId);
+      set((s) => ({
+        isolatedSessions: { ...s.isolatedSessions, [info.sessionId]: info },
+      }));
+      patchTab<QueryTabState>(tabId, { sessionId: info.sessionId });
+      return info;
+    } catch (e) {
+      get().showToast(errText(e));
+      return null;
+    }
+  };
+
+  /** Disconnects every isolated session of a profile and detaches it from its
+   *  tab — used on profile disconnect/reconnect where the tunnel goes away. */
+  const dropProfileIsolatedSessions = (profileId: string) => {
+    const s = get();
+    const own = Object.values(s.isolatedSessions).filter(
+      (iso) => iso.profileId === profileId,
+    );
+    if (own.length === 0) return;
+    const ids = new Set(own.map((iso) => iso.sessionId));
+    for (const iso of own) api.disconnect(iso.sessionId).catch(() => {});
+    set((st) => ({
+      isolatedSessions: Object.fromEntries(
+        Object.entries(st.isolatedSessions).filter(([id]) => !ids.has(id)),
+      ),
+      tabs: st.tabs.map((t) =>
+        t.state.kind === "query" && t.state.sessionId && ids.has(t.state.sessionId)
+          ? { ...t, state: { ...t.state, sessionId: undefined } }
+          : t,
+      ),
+    }));
+  };
+
+  /** Runs a bare COMMIT/ROLLBACK on the tab's connection (Commit/Rollback
+   *  buttons), then refreshes the tx badge. */
+  const runTxVerb = async (tabId: string, verb: "COMMIT" | "ROLLBACK") => {
+    const tab = tabOf(tabId, "query");
+    if (!tab) return;
+    const session = effectiveSession(tab);
+    if (!session) return;
+    try {
+      await api.executeSql(session.sessionId, verb, 1, false);
+      get().showToast(verb === "COMMIT" ? "Committed" : "Rolled back", "success");
+    } catch (e) {
+      get().showToast(errText(e));
+    }
+    void refreshTxStatus(session);
   };
 
   /** A failed call whose error means the session died (not a bad query):
@@ -635,6 +781,7 @@ export const useApp = create<AppStore>((set, get) => {
   return {
   profiles: [],
   sessions: {},
+  isolatedSessions: {},
   connecting: {},
   lost: {},
   tables: {},
@@ -776,6 +923,7 @@ export const useApp = create<AppStore>((set, get) => {
         vault: st.vault ? { ...st.vault, unlocked: false } : st.vault,
         profiles: [],
         sessions: {},
+        isolatedSessions: {},
         tables: {},
         schemaColumns: {},
         schemaFunctions: {},
@@ -892,10 +1040,17 @@ export const useApp = create<AppStore>((set, get) => {
       delete sessions[id];
       const lost = { ...s.lost };
       delete lost[id];
+      // backend delete_profile already dropped its (isolated) sessions
+      const isolatedSessions = Object.fromEntries(
+        Object.entries(s.isolatedSessions).filter(
+          ([, iso]) => iso.profileId !== id,
+        ),
+      );
       const tabs = s.tabs.filter((t) => t.profileId !== id);
       return {
         profiles: s.profiles.filter((p) => p.id !== id),
         sessions,
+        isolatedSessions,
         lost,
         tabs,
         closedTabs: s.closedTabs.filter((c) => c.tab.profileId !== id),
@@ -970,6 +1125,7 @@ export const useApp = create<AppStore>((set, get) => {
 
   disconnect: async (profileId) => {
     persistWorkspace(get(), profileId); // snapshot before tabs are dropped
+    dropProfileIsolatedSessions(profileId); // tear down its isolated tabs' conns
     const session = get().sessions[profileId];
     if (session) {
       try {
@@ -1034,6 +1190,9 @@ export const useApp = create<AppStore>((set, get) => {
         // it may already be gone server-side
       }
     }
+    // isolated connections died with the tunnel; clear them so isolated tabs
+    // reopen lazily on the fresh connection
+    dropProfileIsolatedSessions(profileId);
     await get().connect(profileId);
   },
 
@@ -1354,8 +1513,25 @@ export const useApp = create<AppStore>((set, get) => {
 
   closeTabs: (ids) => {
     const idSet = new Set(ids);
-    const count = get().tabs.filter((t) => idSet.has(t.id)).length;
+    const closing = get().tabs.filter((t) => idSet.has(t.id));
+    const count = closing.length;
     if (count === 0) return;
+    // Tear down isolated connections owned by the closing tabs (disconnect
+    // rolls back any open transaction on them).
+    const isoIds = new Set<string>();
+    for (const t of closing) {
+      if (t.state.kind === "query" && t.state.sessionId) {
+        isoIds.add(t.state.sessionId);
+      }
+    }
+    if (isoIds.size > 0) {
+      for (const sid of isoIds) api.disconnect(sid).catch(() => {});
+      set((s) => ({
+        isolatedSessions: Object.fromEntries(
+          Object.entries(s.isolatedSessions).filter(([id]) => !isoIds.has(id)),
+        ),
+      }));
+    }
     set((s) => {
       const closedEntries = s.tabs
         .map((tab, index) => ({ tab, index }))
@@ -1364,7 +1540,7 @@ export const useApp = create<AppStore>((set, get) => {
           // snapshot with transient bits reset so ⌘⇧T restores a sane tab
           const state: Tab["state"] =
             tab.state.kind === "query"
-              ? { ...tab.state, running: false }
+              ? { ...tab.state, running: false, sessionId: undefined }
               : tab.state.kind === "table"
                 ? { ...tab.state, loading: false, ...noTableEdits() }
                 : tab.state.kind === "structure"
@@ -1478,11 +1654,23 @@ export const useApp = create<AppStore>((set, get) => {
   runQuery: async (tabId, sqlOverride) => {
     const tab = tabOf(tabId, "query");
     if (!tab || tab.state.running) return;
-    const session = sessionFor(tab.profileId);
-    if (!session) return;
     const sql = (sqlOverride ?? tab.state.sql).trim();
     if (!sql) return;
     if (!confirmProdRun(tab.profileId, sql)) return;
+    const isolated = Boolean(tab.state.isolated);
+    // Guard before the (possibly awaiting) isolated-session open so a second
+    // Run can't race in and open a duplicate connection.
+    patchTab<QueryTabState>(tabId, { running: true, error: undefined });
+    const session = isolated
+      ? await ensureIsolatedSession(tabId)
+      : sessionFor(tab.profileId);
+    if (!session) {
+      patchTab<QueryTabState>(tabId, { running: false });
+      return;
+    }
+    // manual commit only ever applies on an isolated connection — never let it
+    // open a transaction on the shared one
+    const autoBegin = isolated && tab.state.commitMode === "manual";
     const pushHistory = (ok: boolean) => {
       const profile = get().profiles.find((p) => p.id === tab.profileId);
       const entry: HistoryEntry = {
@@ -1502,7 +1690,6 @@ export const useApp = create<AppStore>((set, get) => {
           set((s) => ({ history: [entry, ...s.history] }));
         });
     };
-    patchTab<QueryTabState>(tabId, { running: true, error: undefined });
     const started = Date.now();
     // native ping when a long query lands while the app is in the background
     const notify = (ok: boolean) =>
@@ -1518,6 +1705,7 @@ export const useApp = create<AppStore>((set, get) => {
         session.sessionId,
         sql,
         tab.state.maxRows,
+        autoBegin,
       );
       pushHistory(true);
       notify(true);
@@ -1535,15 +1723,22 @@ export const useApp = create<AppStore>((set, get) => {
         result: undefined,
         running: false,
       });
-      noteSessionLost(tab.profileId, message);
+      // An isolated connection dying is a per-tab event (drop it, it reopens on
+      // next run); the shared one flips the whole profile to "connection lost".
+      if (isolated) {
+        if (isConnectionLost(message)) dropIsolatedSession(tabId);
+      } else {
+        noteSessionLost(tab.profileId, message);
+      }
     }
+    // BEGIN/COMMIT/ROLLBACK (or manual-commit's auto-BEGIN) may have changed
+    // the tx state — refresh the badge (runs on both the ok and error paths).
+    void refreshTxStatus(session);
   },
 
   runExplain: async (tabId, analyze, sqlOverride) => {
     const tab = tabOf(tabId, "query");
     if (!tab || tab.state.running) return;
-    const session = sessionFor(tab.profileId);
-    if (!session) return;
     const sql = (sqlOverride ?? tab.state.sql).trim().replace(/;\s*$/, "");
     if (!sql) return;
     if (countStatements(sql) > 1) {
@@ -1553,10 +1748,20 @@ export const useApp = create<AppStore>((set, get) => {
     // ANALYZE really executes the statement — the prod guard applies
     if (analyze && !confirmProdRun(tab.profileId, sql)) return;
     const explainSql = `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${sql}`;
+    const isolated = Boolean(tab.state.isolated);
     patchTab<QueryTabState>(tabId, { running: true, error: undefined });
+    const session = isolated
+      ? await ensureIsolatedSession(tabId)
+      : sessionFor(tab.profileId);
+    if (!session) {
+      patchTab<QueryTabState>(tabId, { running: false });
+      return;
+    }
+    // ANALYZE executes the query, so honor manual-commit; plain EXPLAIN doesn't.
+    const autoBegin = analyze && isolated && tab.state.commitMode === "manual";
     const started = Date.now();
     try {
-      const exec = await api.executeSql(session.sessionId, explainSql, 10);
+      const exec = await api.executeSql(session.sessionId, explainSql, 10, autoBegin);
       const raw = exec.results[0]?.rows[0]?.[0];
       const parsed: unknown = raw ? JSON.parse(raw) : null;
       const root = Array.isArray(parsed)
@@ -1581,8 +1786,13 @@ export const useApp = create<AppStore>((set, get) => {
         explain: undefined,
         running: false,
       });
-      noteSessionLost(tab.profileId, message);
+      if (isolated) {
+        if (isConnectionLost(message)) dropIsolatedSession(tabId);
+      } else {
+        noteSessionLost(tab.profileId, message);
+      }
     }
+    if (analyze) void refreshTxStatus(session);
   },
 
   clearExplain: (tabId) =>
@@ -1591,7 +1801,7 @@ export const useApp = create<AppStore>((set, get) => {
   cancelQuery: async (tabId) => {
     const tab = get().tabs.find((t) => t.id === tabId);
     if (!tab) return;
-    const session = get().sessions[tab.profileId];
+    const session = effectiveSession(tab);
     if (!session) return;
     try {
       await api.cancelQuery(session.sessionId);
@@ -1599,6 +1809,52 @@ export const useApp = create<AppStore>((set, get) => {
       get().showToast(errText(e));
     }
   },
+
+  isolateTab: async (tabId) => {
+    const tab = tabOf(tabId, "query");
+    if (!tab || tab.state.isolated) return;
+    patchTab<QueryTabState>(tabId, { isolated: true });
+    const session = await ensureIsolatedSession(tabId);
+    if (!session) {
+      patchTab<QueryTabState>(tabId, { isolated: false }); // open failed — revert
+      return;
+    }
+    get().showToast(
+      session.pid ? `Isolated on pid ${session.pid}` : "Isolated connection",
+      "success",
+    );
+  },
+
+  mergeTab: async (tabId) => {
+    const tab = tabOf(tabId, "query");
+    if (!tab || !tab.state.isolated) return;
+    dropIsolatedSession(tabId); // disconnect rolls back any open transaction
+    patchTab<QueryTabState>(tabId, { isolated: false, commitMode: "auto" });
+  },
+
+  setCommitMode: async (tabId, mode) => {
+    const tab = tabOf(tabId, "query");
+    if (!tab) return;
+    if (mode === "manual") {
+      // manual holds a transaction open — it must run on its own connection
+      if (!tab.state.isolated) {
+        await get().isolateTab(tabId);
+        if (!tabOf(tabId, "query")?.state.isolated) return; // isolate failed
+      }
+      patchTab<QueryTabState>(tabId, { commitMode: "manual" });
+    } else {
+      const cur = tabOf(tabId, "query");
+      const session = cur ? effectiveSession(cur) : null;
+      if (session?.tx && session.tx !== "idle") {
+        get().showToast("Commit or roll back the open transaction first");
+        return;
+      }
+      patchTab<QueryTabState>(tabId, { commitMode: "auto" });
+    }
+  },
+
+  commitTx: (tabId) => runTxVerb(tabId, "COMMIT"),
+  rollbackTx: (tabId) => runTxVerb(tabId, "ROLLBACK"),
 
   loadTablePage: async (tabId, patch) => {
     const tab = tabOf(tabId, "table");

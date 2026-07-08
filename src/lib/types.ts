@@ -61,11 +61,20 @@ export interface SavedQuery {
   scope?: string | null;
 }
 
+/** Heuristic transaction state of a connection (advisory, status-bar badge). */
+export type TxStatus = "idle" | "active" | "failed";
+
 export interface SessionInfo {
   sessionId: string;
   profileId: string;
   serverVersion: string;
   tunnelPort?: number | null;
+  /** Transaction state of the connection; refreshed after each query run. */
+  tx?: TxStatus;
+  /** True for a per-tab isolated connection (own pid / transaction). */
+  isolated?: boolean;
+  /** Backend pid — set for isolated sessions so the tab can display it. */
+  pid?: number | null;
 }
 
 export interface StatementResult {

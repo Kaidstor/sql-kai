@@ -180,6 +180,24 @@ export function StatusBar() {
               ssh tunnel :{session.tunnelPort}
             </span>
           )}
+          {(session.tx === "active" || session.tx === "failed") && (
+            <span
+              data-nocopy
+              className={cn(
+                "rounded border px-1.5 py-px text-[10px] font-medium",
+                session.tx === "failed"
+                  ? "border-red-500/40 bg-red-500/15 text-red-400"
+                  : "border-amber-500/40 bg-amber-500/15 text-amber-400",
+              )}
+              title={
+                session.tx === "failed"
+                  ? "Transaction aborted — run ROLLBACK to recover"
+                  : "Open transaction — COMMIT or ROLLBACK to close it"
+              }
+            >
+              {session.tx === "failed" ? "tx aborted" : "in tx"}
+            </span>
+          )}
         </>
       )}
       {toast && (

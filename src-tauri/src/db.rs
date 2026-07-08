@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,9 +21,46 @@ pub struct Session {
     pub tunnel_port: Option<u16>,
     pub client: Arc<Client>,
     pub cancel: tokio_postgres::CancelToken,
+    /// Heuristic transaction state (a [`TxStatus`] as u8), advanced after every
+    /// `execute` on this connection. Arc so `execute_sql` can update it after
+    /// the await without re-locking the session map.
+    pub tx: Arc<AtomicU8>,
+    /// A per-tab secondary connection (own backend pid / transaction) that
+    /// reuses the profile's tunnel — not the profile's primary session.
+    pub isolated: bool,
     // Held so the ssh child stays alive; killed on Drop.
     pub _tunnel: Option<Tunnel>,
     conn_task: tokio::task::JoinHandle<()>,
+}
+
+/// Connection-level transaction state. Tracked heuristically from the SQL we
+/// run: tokio-postgres discards the protocol's ReadyForQuery status byte, so we
+/// can't read it authoritatively. Advisory — drives the status-bar badge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TxStatus {
+    /// Not in a transaction block (autocommit).
+    Idle = 0,
+    /// Inside an open transaction — BEGIN with no COMMIT/ROLLBACK yet.
+    Active = 1,
+    /// Transaction aborted by an error — every statement errors until ROLLBACK.
+    Failed = 2,
+}
+
+impl TxStatus {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => TxStatus::Active,
+            2 => TxStatus::Failed,
+            _ => TxStatus::Idle,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TxStatus::Idle => "idle",
+            TxStatus::Active => "active",
+            TxStatus::Failed => "failed",
+        }
+    }
 }
 
 impl Drop for Session {
@@ -48,35 +86,47 @@ pub struct ConnectOptions {
     /// Some(ttl) → reuse ssh auth via a persistent ControlMaster that lingers
     /// `ttl` seconds idle (CLI). None → standalone tunnel (GUI).
     pub ssh_mux_ttl: Option<u32>,
+    /// Some((host, port)) → connect straight to this endpoint and open NO tunnel
+    /// of our own (a secondary/isolated connection reusing the primary session's
+    /// tunnel). None → normal behavior.
+    pub endpoint_override: Option<(String, u16)>,
 }
 
 pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connected, AppError> {
-    let tunnel = match &profile.ssh {
-        Some(ssh) if !ssh.host.trim().is_empty() => {
-            let passphrase = opts
-                .ssh_passphrase_override
-                .or_else(|| store::get_ssh_passphrase(profile));
-            let tunnel = tunnel::open_tunnel(
-                ssh,
-                &profile.host,
-                profile.port,
-                passphrase.as_deref(),
-                opts.ssh_mux_ttl,
-            )
-            .await
-            .inspect_err(|e| {
-                logging::log(
-                    "connect",
-                    &format!("\"{}\": ssh tunnel failed: {e}", profile.name),
-                );
-            })?;
-            Some(tunnel)
-        }
-        _ => None,
-    };
-    let (host, port) = match &tunnel {
-        Some(t) => ("127.0.0.1".to_string(), t.local_port),
-        None => (profile.host.clone(), profile.port),
+    // A secondary (isolated) connection reuses an existing tunnel's local
+    // endpoint instead of opening its own ssh child.
+    let isolated = opts.endpoint_override.is_some();
+    let (host, port, tunnel) = if let Some((host, port)) = opts.endpoint_override {
+        (host, port, None)
+    } else {
+        let tunnel = match &profile.ssh {
+            Some(ssh) if !ssh.host.trim().is_empty() => {
+                let passphrase = opts
+                    .ssh_passphrase_override
+                    .or_else(|| store::get_ssh_passphrase(profile));
+                let tunnel = tunnel::open_tunnel(
+                    ssh,
+                    &profile.host,
+                    profile.port,
+                    passphrase.as_deref(),
+                    opts.ssh_mux_ttl,
+                )
+                .await
+                .inspect_err(|e| {
+                    logging::log(
+                        "connect",
+                        &format!("\"{}\": ssh tunnel failed: {e}", profile.name),
+                    );
+                })?;
+                Some(tunnel)
+            }
+            _ => None,
+        };
+        let (host, port) = match &tunnel {
+            Some(t) => ("127.0.0.1".to_string(), t.local_port),
+            None => (profile.host.clone(), profile.port),
+        };
+        (host, port, tunnel)
     };
 
     let mut cfg = tokio_postgres::Config::new();
@@ -147,6 +197,8 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             tunnel_port,
             client,
             cancel,
+            tx: Arc::new(AtomicU8::new(TxStatus::Idle as u8)),
+            isolated,
             _tunnel: tunnel,
             conn_task,
         },
@@ -362,6 +414,76 @@ pub fn split_statements(sql: &str) -> Vec<String> {
         out.push(sql[start..].trim().to_string());
     }
     out
+}
+
+/// Skips leading whitespace and SQL comments so keyword sniffing sees the
+/// actual command (`-- note\nBEGIN` -> `BEGIN`).
+fn strip_leading_noise(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest.split_once('\n').map_or("", |(_, r)| r);
+        } else if s.starts_with("/*") {
+            match s.find("*/") {
+                Some(i) => s = &s[i + 2..],
+                None => return "",
+            }
+        } else {
+            return s;
+        }
+    }
+}
+
+/// The first two SQL keywords of a statement, uppercased (command + qualifier).
+fn head_keywords(stmt: &str) -> (String, String) {
+    let mut it = strip_leading_noise(stmt)
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_uppercase());
+    (it.next().unwrap_or_default(), it.next().unwrap_or_default())
+}
+
+/// Advances the tracked transaction status after running `sql` (which produced
+/// `ok`). On success the outcome is exact — the whole batch ran (simple_query
+/// returns Ok only then), so we fold the transaction verbs over its statements.
+/// On failure we can't tell which statement broke, so we err toward "aborted"
+/// (the safe nudge to ROLLBACK). Heuristic: exotic cases (COMMIT inside a
+/// procedure, a partial multi-transaction batch) may mis-track.
+pub fn advance_tx(cur: TxStatus, sql: &str, ok: bool) -> TxStatus {
+    if !ok {
+        let opens_tx = || {
+            split_statements(sql)
+                .iter()
+                .any(|s| matches!(head_keywords(s).0.as_str(), "BEGIN" | "START"))
+        };
+        return match cur {
+            // an implicit tx rolls back to idle; an explicit BEGIN that failed
+            // partway leaves the connection in an aborted, still-open tx
+            TxStatus::Idle if opens_tx() => TxStatus::Failed,
+            TxStatus::Idle => TxStatus::Idle,
+            _ => TxStatus::Failed,
+        };
+    }
+    let mut s = cur;
+    for stmt in split_statements(sql) {
+        let (w0, w1) = head_keywords(&stmt);
+        s = match w0.as_str() {
+            "BEGIN" | "START" => TxStatus::Active,
+            "COMMIT" | "END" | "ABORT" => TxStatus::Idle,
+            // ROLLBACK TO [SAVEPOINT] keeps the tx open (and un-aborts it);
+            // plain ROLLBACK ends it
+            "ROLLBACK" if w1 == "TO" => {
+                if s == TxStatus::Failed {
+                    TxStatus::Active
+                } else {
+                    s
+                }
+            }
+            "ROLLBACK" => TxStatus::Idle,
+            _ => s,
+        };
+    }
+    s
 }
 
 /// Column (name, type) per statement, obtained by preparing each one (Parse
@@ -699,5 +821,36 @@ mod tests {
             split_statements("SELECT $1; SELECT 2"),
             vec!["SELECT $1", "SELECT 2"]
         );
+    }
+
+    #[test]
+    fn tracks_transaction_status() {
+        use super::advance_tx;
+        use super::TxStatus::{Active, Failed, Idle};
+        // open, then close
+        assert_eq!(advance_tx(Idle, "BEGIN", true), Active);
+        assert_eq!(advance_tx(Active, "COMMIT", true), Idle);
+        assert_eq!(advance_tx(Active, "ROLLBACK", true), Idle);
+        // a whole cycle in one batch nets out to idle
+        assert_eq!(advance_tx(Idle, "BEGIN; UPDATE t SET x=1; COMMIT", true), Idle);
+        // BEGIN left open across runs stays active
+        assert_eq!(advance_tx(Idle, "BEGIN; SELECT 1", true), Active);
+        // an error inside an open tx aborts it; in autocommit it stays idle
+        assert_eq!(advance_tx(Active, "SELECT bad", false), Failed);
+        assert_eq!(advance_tx(Idle, "SELECT bad", false), Idle);
+        // BEGIN then an error -> aborted, tx still open
+        assert_eq!(advance_tx(Idle, "BEGIN; SELECT bad", false), Failed);
+        // recovery: ROLLBACK clears the aborted state; other stmts keep failing
+        assert_eq!(advance_tx(Failed, "ROLLBACK", true), Idle);
+        assert_eq!(advance_tx(Failed, "SELECT 1", false), Failed);
+        // ROLLBACK TO SAVEPOINT un-aborts but keeps the tx open
+        assert_eq!(advance_tx(Failed, "ROLLBACK TO SAVEPOINT sp", true), Active);
+        // synonyms and a leading comment
+        assert_eq!(advance_tx(Active, "END", true), Idle);
+        assert_eq!(advance_tx(Idle, "START TRANSACTION", true), Active);
+        assert_eq!(advance_tx(Active, "ABORT", true), Idle);
+        assert_eq!(advance_tx(Idle, "-- go\nBEGIN", true), Active);
+        // a DO block's inner BEGIN/END is dollar-quoted, not a transaction verb
+        assert_eq!(advance_tx(Idle, "DO $$ BEGIN PERFORM 1; END $$", true), Idle);
     }
 }

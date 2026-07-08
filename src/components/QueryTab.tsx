@@ -2,7 +2,7 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { CircleStop, Play, Route } from "lucide-react";
+import { CircleStop, Play, Route, Split, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes, themeById } from "../lib/themes";
@@ -12,7 +12,7 @@ import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
 import { TabError } from "./TabError";
-import { Button, MenuBtn, Popover, Select } from "./ui";
+import { Button, cn, MenuBtn, Popover, Select } from "./ui";
 
 /** Sorts fetched rows locally — the query is NOT re-run, so only what was
  *  fetched is ordered. Columns where every non-null value parses as a number
@@ -111,10 +111,21 @@ export function QueryTab({ tab }: { tab: Tab }) {
     setTabSql,
     setTabMaxRows,
     setTabEditorPct,
+    isolateTab,
+    mergeTab,
+    setCommitMode,
+    commitTx,
+    rollbackTx,
     sessions,
   } = useApp();
   const [explainOpen, setExplainOpen] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
+  // The isolated connection backing this tab (if any) — drives the pid/tx chip.
+  const isoSession = useApp((s) =>
+    state.sessionId ? s.isolatedSessions[state.sessionId] : undefined,
+  );
+  const commitMode = state.commitMode ?? "auto";
+  const txOpen = isoSession?.tx === "active" || isoSession?.tx === "failed";
   const schemaColumns = useApp((s) => s.schemaColumns[tab.profileId]);
   const lightTheme = useApp((s) => Boolean(themeById(s.settings.theme).light));
   const splitRef = useRef<HTMLDivElement>(null);
@@ -253,16 +264,98 @@ export function QueryTab({ tab }: { tab: Tab }) {
         <SavedQueriesMenu tab={tab} />
         <SaveQueryButton tab={tab} />
         <HistoryMenu tab={tab} />
-        <div className="ml-auto text-[11px] text-zinc-500">
-          {state.running
-            ? "running…"
-            : hasSelection
-              ? "⌘⏎ runs selection"
-              : state.result
-                ? `${state.result.durationMs} ms`
-                : connected
-                  ? "⌘⏎ to run"
-                  : "not connected"}
+
+        <div className="ml-auto flex items-center gap-1.5">
+          {state.isolated && commitMode === "manual" && txOpen && (
+            <>
+              <Button
+                variant="primary"
+                className="!px-2 !py-0.5 !bg-emerald-600 hover:!bg-emerald-500"
+                onClick={() => void commitTx(tab.id)}
+                title="COMMIT the open transaction"
+              >
+                Commit
+              </Button>
+              <Button
+                variant="danger"
+                className="!px-2 !py-0.5"
+                onClick={() => void rollbackTx(tab.id)}
+                title="ROLLBACK the open transaction"
+              >
+                Rollback
+              </Button>
+            </>
+          )}
+
+          {state.isolated ? (
+            <>
+              <div className="flex overflow-hidden rounded border border-zinc-700 text-[10px]">
+                {(["auto", "manual"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => void setCommitMode(tab.id, m)}
+                    className={cn(
+                      "px-1.5 py-0.5 capitalize transition-colors",
+                      commitMode === m
+                        ? "bg-zinc-700 text-zinc-100"
+                        : "text-zinc-500 hover:text-zinc-300",
+                    )}
+                    title={
+                      m === "manual"
+                        ? "Manual commit: hold one transaction open across runs; end it with Commit/Rollback"
+                        : "Auto commit: every run commits immediately"
+                    }
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <span
+                className={cn(
+                  "flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]",
+                  isoSession?.tx === "failed"
+                    ? "border-red-500/40 bg-red-500/10 text-red-400"
+                    : isoSession?.tx === "active"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                      : "border-violet-500/40 bg-violet-500/10 text-violet-300",
+                )}
+                title="This tab runs on its own connection — own backend pid and transaction"
+              >
+                <Split size={10} />
+                {isoSession?.pid ? `pid ${isoSession.pid}` : "isolated"}
+                {isoSession?.tx === "active" && " · in tx"}
+                {isoSession?.tx === "failed" && " · aborted"}
+                <button
+                  onClick={() => void mergeTab(tab.id)}
+                  title="Merge back onto the shared connection (rolls back any open transaction)"
+                  className="ml-0.5 hover:text-zinc-100"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            </>
+          ) : (
+            <button
+              onClick={() => void isolateTab(tab.id)}
+              disabled={!connected}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:pointer-events-none disabled:opacity-40"
+              title="Run this tab on its own connection (own pid & transaction), like a separate psql session"
+            >
+              <Split size={11} /> Isolate
+            </button>
+          )}
+
+          <span className="text-[11px] text-zinc-500">
+            {state.running
+              ? "running…"
+              : hasSelection
+                ? "⌘⏎ runs selection"
+                : state.result
+                  ? `${state.result.durationMs} ms`
+                  : connected
+                    ? "⌘⏎ to run"
+                    : "not connected"}
+          </span>
         </div>
       </div>
 

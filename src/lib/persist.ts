@@ -50,7 +50,10 @@ export function dropLegacyHistory() {
 const wsKey = (profileId: string) => `sqlt.workspace.${profileId}`;
 
 type PersistedTabState =
-  | Pick<QueryTabState, "kind" | "sql" | "maxRows" | "savedQueryId">
+  | Pick<
+      QueryTabState,
+      "kind" | "sql" | "maxRows" | "savedQueryId" | "isolated" | "commitMode"
+    >
   | (Pick<
       TableTabState,
       "kind" | "schema" | "table" | "page" | "pageSize" | "sorts"
@@ -82,6 +85,8 @@ function snapshotTab(tab: Tab): PersistedTab {
           sql: st.sql,
           maxRows: st.maxRows,
           savedQueryId: st.savedQueryId,
+          isolated: st.isolated,
+          commitMode: st.commitMode,
         }
       : st.kind === "table"
         ? {
@@ -141,6 +146,9 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
         running: false,
         maxRows: st.maxRows || 1000,
         savedQueryId: st.savedQueryId,
+        // isolation intent survives; the connection reopens lazily (no sessionId)
+        isolated: st.isolated,
+        commitMode: st.commitMode,
       },
     };
   }

@@ -14,6 +14,7 @@ import type {
   TableInfo,
   TablePage,
   TriggerInfo,
+  TxStatus,
   VaultStatus,
 } from "./types";
 
@@ -90,11 +91,21 @@ export const api = {
     sshPassphrase: string | null,
   ) => invoke<string>("test_profile", { profile, password, sshPassphrase }),
 
-  executeSql: (sessionId: string, sql: string, maxRows: number) =>
-    invoke<ExecResult>("execute_sql", { sessionId, sql, maxRows }),
+  executeSql: (
+    sessionId: string,
+    sql: string,
+    maxRows: number,
+    autoBegin = false,
+  ) => invoke<ExecResult>("execute_sql", { sessionId, sql, maxRows, autoBegin }),
+
+  openIsolatedSession: (profileId: string) =>
+    invoke<SessionInfo>("open_isolated_session", { profileId }),
 
   cancelQuery: (sessionId: string) =>
     invoke<void>("cancel_query", { sessionId }),
+
+  sessionTxStatus: (sessionId: string) =>
+    invoke<TxStatus>("session_tx_status", { sessionId }),
 
   getTables: (sessionId: string) =>
     invoke<TableInfo[]>("get_tables", { sessionId }),

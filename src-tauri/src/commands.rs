@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio_postgres::{Client, NoTls};
 
-use crate::db::{self, cell, cell_bool, ExecResult, Session, StatementResult};
+use crate::db::{self, cell, cell_bool, ExecResult, Session, StatementResult, TxStatus};
 use crate::error::AppError;
 use crate::logging;
 use crate::store::{self, HistoryEntry, Profile, SavedQuery};
@@ -23,6 +24,12 @@ pub struct SessionInfo {
     pub profile_id: String,
     pub server_version: String,
     pub tunnel_port: Option<u16>,
+    /// Heuristic transaction state: "idle" | "active" | "failed".
+    pub tx: String,
+    /// True for a per-tab secondary connection (own pid / transaction).
+    pub isolated: bool,
+    /// Backend pid — filled for isolated sessions so the tab can show it.
+    pub pid: Option<i32>,
 }
 
 /// Runs `f` on the live session, or errors if it was already disconnected.
@@ -169,6 +176,9 @@ pub fn list_sessions(state: State<'_, AppState>) -> Vec<SessionInfo> {
             profile_id: s.profile_id.clone(),
             server_version: s.server_version.clone(),
             tunnel_port: s.tunnel_port,
+            tx: TxStatus::from_u8(s.tx.load(Ordering::Relaxed)).as_str().into(),
+            isolated: s.isolated,
+            pid: None,
         })
         .collect()
 }
@@ -243,6 +253,71 @@ pub async fn connect_profile(
         profile_id,
         server_version: connected.server_version,
         tunnel_port: connected.tunnel_port,
+        tx: TxStatus::Idle.as_str().into(),
+        isolated: false,
+        pid: None,
+    };
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session_id, connected.session);
+    Ok(info)
+}
+
+/// Opens a second connection for the profile, reusing its primary session's ssh
+/// tunnel (no new tunnel) — a per-tab isolated session with its own backend pid
+/// and transaction. The profile must already be connected.
+#[tauri::command]
+pub async fn open_isolated_session(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<SessionInfo, AppError> {
+    let profile = store::find_profile(&profile_id)?;
+    // Reuse the primary session's endpoint: 127.0.0.1:<tunnel_port> when
+    // tunneled, else the profile's own host:port (direct connection).
+    let endpoint = {
+        let sessions = state.sessions.lock().unwrap();
+        let primary = sessions
+            .values()
+            .find(|s| s.profile_id == profile_id && !s.isolated)
+            .ok_or_else(|| AppError::Msg("connect the profile first".into()))?;
+        match primary.tunnel_port {
+            Some(port) => ("127.0.0.1".to_string(), port),
+            None => (profile.host.clone(), profile.port),
+        }
+    };
+    let connected = db::connect(
+        &profile,
+        db::ConnectOptions {
+            endpoint_override: Some(endpoint),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // Best-effort backend pid for display; not fatal if it fails.
+    let pid = db::query_scalar(&connected.session.client, "SELECT pg_backend_pid()")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i32>().ok());
+    let session_id = uuid::Uuid::new_v4().to_string();
+    logging::log(
+        "session",
+        &format!(
+            "\"{}\": opened isolated session{}",
+            profile.name,
+            pid.map(|p| format!(" (pid {p})")).unwrap_or_default()
+        ),
+    );
+    let info = SessionInfo {
+        session_id: session_id.clone(),
+        profile_id,
+        server_version: connected.server_version,
+        tunnel_port: connected.tunnel_port,
+        tx: TxStatus::Idle.as_str().into(),
+        isolated: true,
+        pid,
     };
     state
         .sessions
@@ -305,9 +380,33 @@ pub async fn execute_sql(
     session_id: String,
     sql: String,
     max_rows: Option<usize>,
+    auto_begin: Option<bool>,
 ) -> Result<ExecResult, AppError> {
     let client = client_of(&state, &session_id)?;
-    db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await
+    let tx = with_session(&state, &session_id, |s| s.tx.clone())?;
+    let before = TxStatus::from_u8(tx.load(Ordering::Relaxed));
+    // Manual-commit mode: hold a transaction open across runs by opening one
+    // when the connection is idle, so the user never has to type BEGIN.
+    let sql = if auto_begin.unwrap_or(false) && before == TxStatus::Idle {
+        format!("BEGIN;\n{sql}")
+    } else {
+        sql
+    };
+    let result = db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await;
+    // Track the transaction state whether the batch succeeded or failed — a
+    // failed statement inside a tx leaves it aborted, which the badge surfaces.
+    tx.store(db::advance_tx(before, &sql, result.is_ok()) as u8, Ordering::Relaxed);
+    result
+}
+
+/// Current heuristic transaction state of the session ("idle"/"active"/"failed").
+/// Read after a run to refresh the status-bar badge (covers the error path,
+/// where `execute_sql` returns Err and carries no result).
+#[tauri::command]
+pub fn session_tx_status(state: State<'_, AppState>, session_id: String) -> Result<String, AppError> {
+    with_session(&state, &session_id, |s| {
+        TxStatus::from_u8(s.tx.load(Ordering::Relaxed)).as_str().into()
+    })
 }
 
 #[tauri::command]
