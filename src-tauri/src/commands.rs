@@ -259,7 +259,16 @@ pub async fn connect_profile(
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
     let profile = store::find_profile(&profile_id)?;
-    let connected = db::connect(&profile, db::ConnectOptions::default()).await?;
+    // Same ControlMaster sockets as kai: whoever connects first pays for the
+    // ssh auth, later tunnels from either side attach to the live master.
+    let connected = db::connect(
+        &profile,
+        db::ConnectOptions {
+            ssh_mux_ttl: Some(crate::tunnel::DEFAULT_MUX_TTL),
+            ..Default::default()
+        },
+    )
+    .await?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let info = SessionInfo {
         session_id: session_id.clone(),

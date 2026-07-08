@@ -39,8 +39,6 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Как долго cli-сессия живёт без запросов, прежде чем брокер её закроет.
 const CLI_IDLE_TTL_SEC: u64 = 15 * 60;
-/// TTL ssh-мастера для туннелей cli-сессий (общий с kai механизм mux).
-const CLI_MUX_TTL: u32 = 300;
 
 pub fn socket_path() -> Result<PathBuf, AppError> {
     fsio::config_path("broker.sock")
@@ -413,7 +411,7 @@ async fn get_or_open(
     let connected = db::connect(
         &profile,
         db::ConnectOptions {
-            ssh_mux_ttl: Some(CLI_MUX_TTL),
+            ssh_mux_ttl: Some(crate::tunnel::DEFAULT_MUX_TTL),
             ..Default::default()
         },
     )

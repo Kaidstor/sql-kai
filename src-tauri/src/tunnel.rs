@@ -113,13 +113,18 @@ fn apply_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppErro
     Ok(())
 }
 
-// --- ControlMaster multiplexing (CLI: reuse ssh auth across kai runs) --------
+// --- ControlMaster multiplexing (reuse ssh auth across processes) ------------
 //
 // The slow part of a tunnel is the ssh handshake + auth, not the forward. With
 // a persistent ControlMaster the first run pays for auth and leaves a
 // background master alive (ControlPersist); later runs attach their `-L`
 // forward to it in ~1 RTT — no re-auth. The forward client is still held by the
-// process and dies on Drop; only the master persists.
+// process and dies on Drop; only the master persists. GUI and kai share the
+// same control sockets, so either side rides on a master the other opened.
+
+/// Default ControlPersist TTL used by the GUI and the broker (kai has its own
+/// env-tunable copy, same value).
+pub const DEFAULT_MUX_TTL: u32 = 300;
 
 /// Short dir for control sockets. Unix socket paths cap at ~104 bytes, so this
 /// deliberately avoids the long Application Support path. Per-user under /tmp, 0700.
