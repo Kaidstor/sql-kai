@@ -446,3 +446,44 @@ async fn get_or_open(
     (hooks.changed)();
     Ok(winner)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_query_request_line() {
+        let line = r#"{"id":7,"method":"query","params":{"profileId":"p1","sql":"SELECT 1","write":true}}"#;
+        let req: Request = serde_json::from_str(line).unwrap();
+        assert_eq!(req.id, 7);
+        match req.method {
+            Method::Query {
+                profile_id,
+                sql,
+                max_rows,
+                write,
+                with_types,
+            } => {
+                assert_eq!(profile_id, "p1");
+                assert_eq!(sql, "SELECT 1");
+                assert_eq!(max_rows, 1000); // default
+                assert!(write);
+                assert!(!with_types);
+            }
+            _ => panic!("wrong method"),
+        }
+    }
+
+    #[test]
+    fn hello_roundtrip() {
+        let hello = HelloReply {
+            protocol: PROTOCOL_VERSION,
+            server_version: "0.1.0".into(),
+            vault_unlocked: true,
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        let back: HelloReply = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol, PROTOCOL_VERSION);
+        assert!(back.vault_unlocked);
+    }
+}

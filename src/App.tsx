@@ -182,6 +182,10 @@ function App() {
       listen("menu://check-updates", () =>
         void useUpdater.getState().checkForUpdates(true),
       ),
+      // брокер: kai открыл/закрыл cli-сессию — обновить бейджи
+      listen("broker://changed", () =>
+        void useApp.getState().refreshCliSessions(),
+      ),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());

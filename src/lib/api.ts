@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  CliSessionInfo,
   ColumnInfo,
   ExecResult,
   HistoryEntry,
@@ -87,6 +88,8 @@ export const api = {
     invoke<void>("disconnect_session", { sessionId }),
 
   listSessions: () => invoke<SessionInfo[]>("list_sessions"),
+
+  listCliSessions: () => invoke<CliSessionInfo[]>("list_cli_sessions"),
 
   testProfile: (
     profile: Profile,

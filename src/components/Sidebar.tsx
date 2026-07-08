@@ -26,7 +26,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./context-menu";
-import { cn, IconBtn, Input, ProdBadge } from "./ui";
+import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function shortType(t: string): string {
   return t
@@ -233,6 +233,7 @@ export function Sidebar() {
   const {
     profiles,
     sessions,
+    cliSessions,
     tables,
     lost,
     connecting,
@@ -244,6 +245,7 @@ export function Sidebar() {
     setLauncherOpen,
   } = useApp();
   const profile = profiles.find((p) => p.id === activeProfileId);
+  const cliSession = activeProfileId ? cliSessions[activeProfileId] : undefined;
   const activeSession = activeProfileId ? sessions[activeProfileId] : undefined;
   // A lost session keeps its cached schema on screen (with a Reconnect
   // banner) — the tree only disappears on an explicit disconnect.
@@ -280,6 +282,7 @@ export function Sidebar() {
             {profile?.name ?? "?"}
           </span>
           {profile?.production && <ProdBadge />}
+          {cliSession && <CliBadge idleSec={cliSession.idleSec} />}
         </div>
         <IconBtn
           title="All connections"

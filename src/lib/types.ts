@@ -77,6 +77,17 @@ export interface SessionInfo {
   pid?: number | null;
 }
 
+/** One broker-owned CLI (kai) session — drives the "cli" badges. */
+export interface CliSessionInfo {
+  profileId: string;
+  profileName: string;
+  origin: string;
+  serverVersion: string;
+  tunnelPort?: number | null;
+  tx: string;
+  idleSec?: number | null;
+}
+
 export interface StatementResult {
   columns: string[];
   rows: (string | null)[][];

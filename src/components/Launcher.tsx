@@ -23,11 +23,12 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./context-menu";
-import { cn, IconBtn, Input, ProdBadge } from "./ui";
+import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function ProfileCard({ profile }: { profile: Profile }) {
   const {
     sessions,
+    cliSessions,
     connecting,
     lost,
     connect,
@@ -38,6 +39,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
     deleteProfile,
     duplicateProfile,
   } = useApp();
+  const cli = cliSessions[profile.id];
   const connected = Boolean(sessions[profile.id]);
   const busy = Boolean(connecting[profile.id]);
   const lostConn = !connected && !busy && Boolean(lost[profile.id]);
@@ -95,9 +97,10 @@ function ProfileCard({ profile }: { profile: Profile }) {
           {profile.name}
         </span>
         {/* fades out on hover so the action buttons don't overlap it */}
-        {profile.production && (
-          <span className="shrink-0 transition-opacity group-hover:opacity-0">
-            <ProdBadge />
+        {(profile.production || cli) && (
+          <span className="flex shrink-0 items-center gap-1 transition-opacity group-hover:opacity-0">
+            {cli && <CliBadge idleSec={cli.idleSec} />}
+            {profile.production && <ProdBadge />}
           </span>
         )}
       </div>

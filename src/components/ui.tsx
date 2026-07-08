@@ -146,6 +146,23 @@ export function ProdBadge({ className }: { className?: string }) {
   );
 }
 
+/** Chip shown while kai holds a live broker session for the profile. */
+export function CliBadge({ idleSec }: { idleSec?: number | null }) {
+  return (
+    <span
+      title={`Live kai (CLI) session owned by the app${
+        idleSec != null ? ` — idle ${idleSec}s` : ""
+      }`}
+      className={cn(
+        "shrink-0 rounded border border-sky-500/40 bg-sky-500/10 px-1 py-px",
+        "font-mono text-[9px] font-semibold text-sky-400",
+      )}
+    >
+      cli
+    </span>
+  );
+}
+
 /** Connection accent dot; hollow when the profile has no color. */
 export function ColorDot({ color }: { color: string | null }) {
   return (

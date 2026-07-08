@@ -12,13 +12,14 @@ import { copyTextConcealed } from "../lib/clipboard";
 import { accentColor } from "../lib/colors";
 import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
-import { ColorDot, Popover, ProdBadge, cn } from "./ui";
+import { CliBadge, ColorDot, Popover, ProdBadge, cn } from "./ui";
 
 /** Beekeeper-style bottom-left switcher between active connections. */
 function ConnectionSwitcher() {
   const {
     profiles,
     sessions,
+    cliSessions,
     activeProfileId,
     selectProfile,
     setPalette,
@@ -79,6 +80,9 @@ function ConnectionSwitcher() {
               <div className="flex items-center gap-1.5 text-[12px] text-zinc-200">
                 <span className="truncate">{p.name}</span>
                 {p.production && <ProdBadge />}
+                {cliSessions[p.id] && (
+                  <CliBadge idleSec={cliSessions[p.id].idleSec} />
+                )}
                 {p.group?.trim() && (
                   <span className="shrink-0 rounded border border-zinc-700 bg-zinc-800 px-1 py-px text-[9px] text-zinc-400">
                     {p.group.trim()}

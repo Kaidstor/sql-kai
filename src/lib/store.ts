@@ -17,6 +17,7 @@ import { structureDdl, tableDml } from "./sqlgen";
 import { applyTheme } from "./themes";
 import type {
   AppSettings,
+  CliSessionInfo,
   ColumnInfo,
   ExecResult,
   ExplainResult,
@@ -228,6 +229,8 @@ interface AppStore {
   logViewerOpen: boolean;
   /** Sidebar visibility (⌘B). */
   sidebarHidden: boolean;
+  /** Broker-owned kai sessions by profileId — the "cli" badges. */
+  cliSessions: Record<string, CliSessionInfo>;
   /** Launcher explicitly opened over a live workspace ("All connections").
    *  With nothing connected the launcher shows regardless of this flag. */
   launcherOpen: boolean;
@@ -252,6 +255,8 @@ interface AppStore {
   setLogViewerOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setLauncherOpen: (open: boolean) => void;
+  /** Re-pulls broker cli-sessions (on load and broker://changed events). */
+  refreshCliSessions: () => Promise<void>;
   /** Applies the theme immediately and persists it to settings.json. */
   setTheme: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
@@ -498,6 +503,7 @@ export const useApp = create<AppStore>((set, get) => {
       sessions,
       activeProfileId: st.activeProfileId ?? primaries[0]?.profileId ?? null,
     }));
+    void get().refreshCliSessions();
     // Re-adopt sessions that survived a webview reload: tables + saved tabs.
     await Promise.all(
       primaries.map(async (s) => {
@@ -804,6 +810,7 @@ export const useApp = create<AppStore>((set, get) => {
   settingsOpen: false,
   logViewerOpen: false,
   sidebarHidden: false,
+  cliSessions: {},
   launcherOpen: false,
   vault: null,
   vaultError: null,
@@ -840,6 +847,17 @@ export const useApp = create<AppStore>((set, get) => {
   setLogViewerOpen: (logViewerOpen) => set({ logViewerOpen }),
 
   toggleSidebar: () => set((s) => ({ sidebarHidden: !s.sidebarHidden })),
+
+  refreshCliSessions: async () => {
+    try {
+      const list = await api.listCliSessions();
+      const cliSessions: Record<string, CliSessionInfo> = {};
+      for (const s of list) cliSessions[s.profileId] = s;
+      set({ cliSessions });
+    } catch {
+      // брокера нет (не-unix сборка) — бейджи просто не показываются
+    }
+  },
 
   setLauncherOpen: (launcherOpen) => set({ launcherOpen }),
 
@@ -930,6 +948,7 @@ export const useApp = create<AppStore>((set, get) => {
         profiles: [],
         sessions: {},
         isolatedSessions: {},
+        cliSessions: {},
         tables: {},
         schemaColumns: {},
         schemaFunctions: {},
