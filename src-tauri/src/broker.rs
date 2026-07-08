@@ -119,6 +119,23 @@ pub struct BrokerSessionInfo {
     pub idle_sec: Option<u64>,
 }
 
+impl BrokerSessionInfo {
+    /// Проекция живой сессии в строку `sessions`. `origin` — "cli"/"gui",
+    /// `idle_sec` — только для cli. Единственное место маппинга Session→info
+    /// (раньше дублировалось в broker::cli_sessions и в GUI-хуке lib.rs).
+    pub fn from_session(s: &db::Session, origin: &str, idle_sec: Option<u64>) -> Self {
+        BrokerSessionInfo {
+            profile_id: s.profile_id.clone(),
+            profile_name: s.profile_name.clone(),
+            origin: origin.into(),
+            server_version: s.server_version.clone(),
+            tunnel_port: s.tunnel_port,
+            tx: TxStatus::label_from_u8(s.tx.load(Ordering::Relaxed)).into(),
+            idle_sec,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloReply {
@@ -154,16 +171,9 @@ impl BrokerState {
             .lock()
             .unwrap()
             .values()
-            .map(|e| BrokerSessionInfo {
-                profile_id: e.session.profile_id.clone(),
-                profile_name: e.session.profile_name.clone(),
-                origin: "cli".into(),
-                server_version: e.session.server_version.clone(),
-                tunnel_port: e.session.tunnel_port,
-                tx: TxStatus::from_u8(e.session.tx.load(Ordering::Relaxed))
-                    .as_str()
-                    .into(),
-                idle_sec: Some(e.last_used.lock().unwrap().elapsed().as_secs()),
+            .map(|e| {
+                let idle = e.last_used.lock().unwrap().elapsed().as_secs();
+                BrokerSessionInfo::from_session(&e.session, "cli", Some(idle))
             })
             .collect()
     }

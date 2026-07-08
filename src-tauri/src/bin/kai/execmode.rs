@@ -11,7 +11,7 @@ use base64::Engine;
 use clap::Args;
 use sql_tauri_lib::error::AppError;
 
-use crate::remote::{remote_command, ssh_base};
+use crate::remote::{remote_command, ssh_base, CONTAINER_DETECT};
 use crate::session;
 
 #[derive(Args)]
@@ -41,17 +41,9 @@ pub struct ExecArgs {
     dry_run: bool,
 }
 
-const REMOTE_SCRIPT: &str = r#"set -u
-D=docker
-docker ps >/dev/null 2>&1 || D="sudo docker"
-C=$($D ps --format '{{.Names}}' 2>/dev/null | grep -iE '(^|[-_])db([-_]|$)|postgres' | head -1)
-[ -n "$C" ] || { echo 'kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
-U=$($D exec "$C" printenv POSTGRES_USER 2>/dev/null)
-[ -n "$U" ] || U=postgres
-DB=$($D exec "$C" printenv POSTGRES_DB 2>/dev/null)
-[ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') ORDER BY datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
-[ -n "$DB" ] || { echo 'kai: не удалось определить имя базы' >&2; exit 5; }
-if [ -n "${KAI_VERBOSE:-}" ]; then echo "[container=$C user=$U db=$DB]" >&2; fi
+/// Хвост поверх [`CONTAINER_DETECT`]: заливает переданный SQL (base64 в env) во
+/// временный файл и прогоняет его через `docker exec psql` внутри контейнера.
+const EXEC_TAIL: &str = r#"if [ -n "${KAI_VERBOSE:-}" ]; then echo "[container=$C user=$U db=$DB]" >&2; fi
 SQLF=$(mktemp)
 trap 'rm -f "$SQLF"' EXIT
 printf '%s' "${KAI_SQL_B64:-}" | base64 -d > "$SQLF"
@@ -75,11 +67,12 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         ("KAI_PSQL_OPTS", psql_opts.join(" ")),
         ("KAI_VERBOSE", if a.verbose { "1" } else { "" }.to_string()),
     ];
-    let remote = remote_command(REMOTE_SCRIPT, &env);
+    let script = format!("{CONTAINER_DETECT}{EXEC_TAIL}");
+    let remote = remote_command(&script, &env);
 
     if a.dry_run {
         println!("ssh -T -o BatchMode=yes -o ConnectTimeout=15 {} \\\n  {remote}", a.alias);
-        println!("\n# скрипт на хосте:\n{REMOTE_SCRIPT}");
+        println!("\n# скрипт на хосте:\n{script}");
         return Ok(ExitCode::SUCCESS);
     }
 

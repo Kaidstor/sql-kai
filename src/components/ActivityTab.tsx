@@ -1,6 +1,7 @@
 import { CircleStop, Loader2, OctagonX } from "lucide-react";
 import { useEffect } from "react";
 import { api, errText } from "../lib/api";
+import { fmtDuration } from "../lib/format";
 import {
   useApp,
   type ActivityRow,
@@ -9,13 +10,6 @@ import {
 } from "../lib/store";
 import { TabError } from "./TabError";
 import { IconBtn, RefreshBtn, Select, cn } from "./ui";
-
-function fmtDuration(sec: number | null): string {
-  if (sec === null || sec < 0) return "";
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
-}
 
 function stateColor(state: string): string {
   if (state === "active") return "text-emerald-400";

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { accentColor } from "../lib/colors";
+import { isMac } from "../lib/platform";
 import { profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
 import type { Profile } from "../lib/types";
@@ -31,6 +32,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
     cliSessions,
     connecting,
     lost,
+    connectError,
     connect,
     disconnect,
     reconnect,
@@ -42,13 +44,26 @@ function ProfileCard({ profile }: { profile: Profile }) {
   const cli = cliSessions[profile.id];
   const connected = Boolean(sessions[profile.id]);
   const busy = Boolean(connecting[profile.id]);
-  const lostConn = !connected && !busy && Boolean(lost[profile.id]);
+  const err = !connected && !busy ? connectError[profile.id] : undefined;
+  const lostConn = !connected && !busy && !err && Boolean(lost[profile.id]);
+  // single source of truth for how the card looks
+  const state: "connected" | "connecting" | "lost" | "refused" | "idle" = busy
+    ? "connecting"
+    : connected
+      ? "connected"
+      : err
+        ? "refused"
+        : lostConn
+          ? "lost"
+          : "idle";
+  const retry = state === "lost" || state === "refused";
   const color = accentColor(profile.color);
 
   const open = () => {
     if (busy) return;
-    // selectProfile also leaves the launcher (store-side)
-    if (connected || lostConn) selectProfile(profile.id);
+    // selectProfile also leaves the launcher (store-side); a live or lost
+    // profile has a workspace to return to, refused/idle just (re)connects
+    if (connected || state === "lost") selectProfile(profile.id);
     else void connect(profile.id);
   };
 
@@ -63,10 +78,12 @@ function ProfileCard({ profile }: { profile: Profile }) {
     <ContextMenuTrigger className="block min-w-0">
     <div
       className={cn(
-        "group relative flex cursor-pointer flex-col gap-1 rounded-lg border bg-zinc-925 px-3 py-2.5",
-        lostConn
-          ? "border-red-900/70 hover:border-red-800"
-          : "border-zinc-800 hover:border-zinc-600 hover:bg-zinc-900",
+        "group relative flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2.5 transition-colors",
+        state === "connected"
+          ? "border-emerald-500/40 bg-emerald-950/40 hover:border-emerald-500/60"
+          : retry
+            ? "border-red-900/70 bg-zinc-925 hover:border-red-800 hover:bg-zinc-900"
+            : "border-zinc-800 bg-zinc-925 hover:border-zinc-600 hover:bg-zinc-900",
       )}
       style={color ? { boxShadow: `inset 3px 0 0 ${color}` } : undefined}
       onClick={open}
@@ -75,20 +92,22 @@ function ProfileCard({ profile }: { profile: Profile }) {
           ? "Connecting…"
           : connected
             ? "Open workspace"
-            : lostConn
+            : state === "lost"
               ? "Connection lost — open workspace to reconnect"
-              : "Connect"
+              : state === "refused"
+                ? `Connection failed — click to retry\n${err}`
+                : "Connect"
       }
     >
       <div className="flex items-center gap-2 min-w-0">
         <span
           className={cn(
             "size-2 rounded-full shrink-0",
-            connected
-              ? "bg-emerald-500"
-              : busy
+            state === "connected"
+              ? "bg-emerald-500 shadow-[0_0_6px_0] shadow-emerald-500/70"
+              : state === "connecting"
                 ? "bg-amber-400"
-                : lostConn
+                : retry
                   ? "bg-red-500"
                   : "bg-zinc-600",
           )}
@@ -108,14 +127,25 @@ function ProfileCard({ profile }: { profile: Profile }) {
         {profile.ssh?.host ? `${profile.ssh.host} ⇢ ` : ""}
         {profileAddr(profile)}
       </div>
-      <div className="pl-4 text-[10px] text-zinc-600">
+      <div
+        className={cn(
+          "pl-4 text-[10px]",
+          state === "connected"
+            ? "text-emerald-500/80"
+            : retry
+              ? "text-red-400/80"
+              : "text-zinc-600",
+        )}
+      >
         {busy
           ? "connecting…"
           : connected
             ? "connected"
             : lostConn
               ? "connection lost"
-              : " "}
+              : err
+                ? "connection failed"
+                : " "}
       </div>
 
       <div
@@ -130,10 +160,10 @@ function ProfileCard({ profile }: { profile: Profile }) {
           </IconBtn>
         ) : (
           <IconBtn
-            title={lostConn ? "Reconnect" : "Connect"}
+            title={retry ? "Reconnect" : "Connect"}
             onClick={() => void connect(profile.id)}
           >
-            {lostConn ? <RefreshCw size={13} /> : <Plug size={13} />}
+            {retry ? <RefreshCw size={13} /> : <Plug size={13} />}
           </IconBtn>
         )}
         <IconBtn title="Edit" onClick={() => openDialog(profile)}>
@@ -157,11 +187,11 @@ function ProfileCard({ profile }: { profile: Profile }) {
         </>
       ) : (
         <ContextMenuItem
-          icon={lostConn ? RefreshCw : Plug}
+          icon={retry ? RefreshCw : Plug}
           disabled={busy}
           onClick={() => void connect(profile.id)}
         >
-          {lostConn ? "Reconnect" : "Connect"}
+          {retry ? "Reconnect" : "Connect"}
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
@@ -195,7 +225,6 @@ export function Launcher() {
     useApp();
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
-  const isMac = navigator.userAgent.includes("Mac");
 
   // An explicitly opened launcher can be dismissed back to the workspace;
   // with nothing connected there is nowhere to go back to.

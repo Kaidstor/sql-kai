@@ -1,6 +1,6 @@
 // Staged edits → SQL statements. Pure functions, no store access: the store
 // stages changes, these turn them into the DDL/DML that Apply executes.
-import { quoteIdent, quoteLit } from "./sql";
+import { quoteIdent, quoteLit, relIdent } from "./sql";
 import type { StructureTabState, TableTabState } from "./store";
 import type { ColumnInfo, TablePage } from "./types";
 
@@ -10,7 +10,7 @@ const lit = (v: string | null) => (v === null ? "NULL" : quoteLit(v));
 /** Staged structure changes → DDL statements. Edits reference the ORIGINAL
  *  column name (renames run last), edits of dropped columns are skipped. */
 export function structureDdl(st: StructureTabState): string[] {
-  const rel = `${quoteIdent(st.schema)}.${quoteIdent(st.table)}`;
+  const rel = relIdent(st.schema, st.table);
   const alter = (rest: string) => `ALTER TABLE ${rel} ${rest}`;
   const drops = new Set(st.colDrops);
   const stmts: string[] = [];
@@ -66,7 +66,7 @@ export function tableDml(
   data: TablePage,
   cols: ColumnInfo[] | undefined,
 ): TableDml {
-  const rel = `${quoteIdent(st.schema)}.${quoteIdent(st.table)}`;
+  const rel = relIdent(st.schema, st.table);
   const stmts: string[] = [];
   let updates = 0;
   let deletes = 0;

@@ -11,24 +11,14 @@ use sql_tauri_lib::db;
 use sql_tauri_lib::error::AppError;
 use sql_tauri_lib::store::{self, Profile, SshConfig};
 
-use crate::remote::{remote_command, ssh_base};
+use crate::remote::{remote_command, ssh_base, CONTAINER_DETECT};
 use crate::{sec, session, DiscoverArgs};
 
-/// Ищет db-контейнер, тянет POSTGRES_USER/DB/PASSWORD и решает, куда
-/// туннелировать: опубликованный порт (docker port) или IP контейнера в
+/// Хвост поверх [`CONTAINER_DETECT`]: тянет POSTGRES_PASSWORD и решает, куда
+/// туннелировать — опубликованный порт (docker port) или IP контейнера в
 /// bridge-сети (с хоста маршрутизируется). Пароль — base64, чтобы спецсимволы
 /// не ломали парсинг метастроки.
-const REMOTE_SCRIPT: &str = r#"set -u
-D=docker
-docker ps >/dev/null 2>&1 || D="sudo docker"
-C=$($D ps --format '{{.Names}}' 2>/dev/null | grep -iE '(^|[-_])db([-_]|$)|postgres' | head -1)
-[ -n "$C" ] || { echo 'kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
-U=$($D exec "$C" printenv POSTGRES_USER 2>/dev/null)
-[ -n "$U" ] || U=postgres
-DB=$($D exec "$C" printenv POSTGRES_DB 2>/dev/null)
-[ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') ORDER BY datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
-[ -n "$DB" ] || { echo 'kai: не удалось определить имя базы' >&2; exit 5; }
-# $(...) strips printenv's trailing newline before base64 — иначе пароль
+const DISCOVER_TAIL: &str = r#"# $(...) strips printenv's trailing newline before base64 — иначе пароль
 # приедет с лишним \n и TCP-аутентификация не пройдёт.
 PWV=$($D exec "$C" printenv POSTGRES_PASSWORD 2>/dev/null)
 PW=$(printf '%s' "$PWV" | base64 | tr -d '\n')
@@ -47,8 +37,9 @@ struct Discovered {
 }
 
 fn discover_host(alias: &str) -> Result<Discovered, AppError> {
+    let script = format!("{CONTAINER_DETECT}{DISCOVER_TAIL}");
     let out = ssh_base(alias)
-        .arg(remote_command(REMOTE_SCRIPT, &[]))
+        .arg(remote_command(&script, &[]))
         .stdin(Stdio::null())
         .output()
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;

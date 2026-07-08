@@ -4,6 +4,10 @@ export const quoteIdent = (s: string) => `"${s.replaceAll('"', '""')}"`;
 /** Quote an SQL string literal: `it's` -> `'it''s'`. */
 export const quoteLit = (s: string) => `'${s.replaceAll("'", "''")}'`;
 
+/** Schema-qualified, quoted relation: `(public, users)` -> `"public"."users"`. */
+export const relIdent = (schema: string, table: string) =>
+  `${quoteIdent(schema)}.${quoteIdent(table)}`;
+
 /** One-line SQL preview for list rows. */
 export const sqlPreview = (sql: string, max = 90) =>
   sql.replace(/\s+/g, " ").slice(0, max);

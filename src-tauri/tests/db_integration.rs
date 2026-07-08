@@ -17,6 +17,7 @@ fn test_profile() -> Profile {
         ssh: None,
         group: None,
         color: None,
+        production: false,
         has_password: false,
         has_ssh_passphrase: false,
     }

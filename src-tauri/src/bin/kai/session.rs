@@ -154,7 +154,7 @@ pub fn read_new_password() -> Result<String, AppError> {
 }
 
 /// TTL персистентного ssh-мастера (сек): env KAI_SSH_MUX_TTL, иначе 5 минут.
-fn mux_ttl() -> u32 {
+pub fn mux_ttl() -> u32 {
     std::env::var("KAI_SSH_MUX_TTL")
         .ok()
         .and_then(|v| v.parse().ok())

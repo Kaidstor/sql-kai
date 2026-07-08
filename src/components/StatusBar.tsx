@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
-import { accentColor } from "../lib/colors";
+import { accentColor, PROD_RED, tint } from "../lib/colors";
 import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
 import { CliBadge, ColorDot, Popover, ProdBadge, cn } from "./ui";
@@ -138,7 +138,7 @@ export function StatusBar() {
   // production wins over the accent color — the red footer is the signal
   const color =
     profile && session && profile.production
-      ? "#ef4444"
+      ? PROD_RED
       : accentColor(profile && session ? profile.color : null);
 
   const statusText = [
@@ -166,8 +166,8 @@ export function StatusBar() {
       style={
         color
           ? {
-              background: `color-mix(in srgb, ${color} 16%, var(--color-zinc-925))`,
-              borderTopColor: `color-mix(in srgb, ${color} 45%, var(--color-zinc-800))`,
+              background: tint(color, 16, "var(--color-zinc-925)"),
+              borderTopColor: tint(color, 45, "var(--color-zinc-800)"),
             }
           : undefined
       }

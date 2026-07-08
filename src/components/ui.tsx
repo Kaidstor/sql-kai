@@ -11,17 +11,34 @@ import type {
 
 export const cn = clsx;
 
-/** Full-screen dimmed backdrop; a mousedown on it (not its content) closes. */
+/** Full-screen dimmed backdrop; a mousedown on it (not its content) closes.
+ *  Opt into `closeOnEsc` for dialogs that should also dismiss on Escape —
+ *  saves each consumer hand-rolling the same keydown listener. */
 export function Overlay({
   onClose,
   className,
+  closeOnEsc = false,
   children,
 }: {
   onClose: () => void;
   /** Vertical alignment + dim level, e.g. "items-center bg-black/60". */
   className?: string;
+  closeOnEsc?: boolean;
   children: ReactNode;
 }) {
+  useEffect(() => {
+    if (!closeOnEsc) return;
+    // Capture phase + stopPropagation so an open grid/editor underneath the
+    // dialog doesn't also react to the same Escape.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [closeOnEsc, onClose]);
   return (
     <div
       className={cn("fixed inset-0 z-50 flex justify-center", className)}

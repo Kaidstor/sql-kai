@@ -14,14 +14,13 @@ export function fuzzyScore(query: string, haystack: string): number | null {
   const hay = haystack.toLowerCase();
   let score = 0;
   for (const token of tokens) {
-    const idx = hay.indexOf(token);
-    if (idx >= 0) {
-      score += 100 - Math.min(idx, 50);
-      if (idx === 0 || /[\s\-_./(:]/.test(hay[idx - 1])) score += 40;
-    } else if (subsequenceIndices(token, hay)) {
-      score += 20;
+    const m = matchToken(token, hay);
+    if (!m) return null;
+    if (m.start >= 0) {
+      score += 100 - Math.min(m.start, 50);
+      if (m.start === 0 || /[\s\-_./(:]/.test(hay[m.start - 1])) score += 40;
     } else {
-      return null;
+      score += 20; // subsequence-only match
     }
   }
   return score;
@@ -42,13 +41,8 @@ export function highlightRuns(
   const hay = text.toLowerCase();
   const hits = new Set<number>();
   for (const token of tokens) {
-    const idx = hay.indexOf(token);
-    if (idx >= 0) {
-      for (let i = 0; i < token.length; i++) hits.add(idx + i);
-    } else {
-      const seq = subsequenceIndices(token, hay);
-      if (seq) for (const i of seq) hits.add(i);
-    }
+    const m = matchToken(token, hay);
+    if (m) for (const i of m.indices) hits.add(i);
   }
   if (hits.size === 0) return [{ text, hit: false }];
   const runs: { text: string; hit: boolean }[] = [];
@@ -65,6 +59,26 @@ export function highlightRuns(
   }
   if (cur) runs.push({ text: cur, hit: curHit });
   return runs;
+}
+
+/**
+ * How `token` matches `hay` (already lowercased), shared by scoring and
+ * highlighting so the two never diverge: a substring match reports its `start`
+ * and the contiguous run of indices; a subsequence match reports `start: -1`
+ * and the scattered indices; no match is null.
+ */
+function matchToken(
+  token: string,
+  hay: string,
+): { start: number; indices: number[] } | null {
+  const idx = hay.indexOf(token);
+  if (idx >= 0) {
+    const indices: number[] = [];
+    for (let i = 0; i < token.length; i++) indices.push(idx + i);
+    return { start: idx, indices };
+  }
+  const seq = subsequenceIndices(token, hay);
+  return seq ? { start: -1, indices: seq } : null;
 }
 
 function subsequenceIndices(needle: string, hay: string): number[] | null {

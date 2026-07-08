@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useMemo } from "react";
+import { fmtMs, fmtNum } from "../lib/format";
 import type { ExplainResult, PlanNode } from "../lib/types";
 import { IconBtn, cn } from "./ui";
 
@@ -49,15 +50,6 @@ function walk(
     walk(child, analyzed, depth + 1, out);
   }
 }
-
-const fmtNum = (n: number): string => {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${(n / 1000).toFixed(0)}k`;
-  return String(Math.round(n * 100) / 100);
-};
-
-const fmtMs = (ms: number): string =>
-  ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(2)} ms`;
 
 /** Node headline: "Index Scan using users_pkey on public.users u". */
 function nodeTitle(n: PlanNode): string {

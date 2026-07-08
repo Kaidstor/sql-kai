@@ -93,7 +93,7 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
         &profile,
         db::ConnectOptions {
             password_override: Some(new_pw.clone()),
-            ssh_mux_ttl: Some(300),
+            ssh_mux_ttl: Some(crate::session::mux_ttl()),
             ..Default::default()
         },
     )

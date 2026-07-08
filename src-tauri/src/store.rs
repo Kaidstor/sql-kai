@@ -127,6 +127,21 @@ pub fn upsert_profile(
     if profile.id.is_empty() {
         profile.id = uuid::Uuid::new_v4().to_string();
     }
+    // ssh treats a bare argv entry starting with '-' as an option
+    // (e.g. `-oProxyCommand=…` → command execution), so refuse such host/user
+    // before they ever reach `Command::arg`.
+    if let Some(ssh) = &profile.ssh {
+        if ssh.host.trim_start().starts_with('-') {
+            return Err(AppError::Msg("ssh host не может начинаться с '-'".into()));
+        }
+        if ssh
+            .user
+            .as_deref()
+            .is_some_and(|u| u.trim_start().starts_with('-'))
+        {
+            return Err(AppError::Msg("ssh user не может начинаться с '-'".into()));
+        }
+    }
     let existing = find_profile(&profile.id).ok();
     profile.has_password = apply_secret(
         &profile.id,
@@ -315,28 +330,32 @@ pub fn record_history(mut entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppE
     Ok(all)
 }
 
-/// Masks quoted literals that follow a credential keyword so history never
-/// stores a plaintext password: `... PASSWORD 'hunter2'` → `... PASSWORD '***'`.
-/// Covers `PASSWORD`, `IDENTIFIED BY` and their quoted argument (single or
-/// dollar-quoted); everything else passes through unchanged.
+/// Masks single-quoted literals that follow a credential keyword so history
+/// never stores a plaintext password: `... PASSWORD 'hunter2'` → `... PASSWORD
+/// '***'`. Covers `PASSWORD` and `IDENTIFIED BY` with their single-quoted
+/// argument; everything else passes through unchanged.
+///
+/// Keyword matching is ASCII case-insensitive over the original bytes — we
+/// never index a `to_lowercase()` copy, whose byte length can differ from the
+/// source (e.g. `İ` → `i̇`) and would slice at a non-char boundary and panic.
 pub fn redact_secrets(sql: &str) -> String {
     const KEYWORDS: [&str; 2] = ["password", "identified by"];
-    let lower = sql.to_lowercase();
     let bytes = sql.as_bytes();
     let mut out = String::with_capacity(sql.len());
     let mut i = 0;
-    while i < sql.len() {
+    while i < bytes.len() {
         // At a keyword boundary? (start-of-string or non-alnum before it)
         let boundary = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
         let kw = if boundary {
-            KEYWORDS
-                .iter()
-                .copied()
-                .find(|&k| lower[i..].starts_with(k))
+            KEYWORDS.iter().copied().find(|&k| {
+                bytes.len() - i >= k.len()
+                    && bytes[i..i + k.len()].eq_ignore_ascii_case(k.as_bytes())
+            })
         } else {
             None
         };
         let Some(kw) = kw else {
+            // `i` always lands on a char boundary of the original string.
             let ch = sql[i..].chars().next().unwrap();
             out.push(ch);
             i += ch.len_utf8();
@@ -345,17 +364,17 @@ pub fn redact_secrets(sql: &str) -> String {
         out.push_str(&sql[i..i + kw.len()]);
         i += kw.len();
         // copy whitespace up to the quoted literal
-        while i < sql.len() && bytes[i].is_ascii_whitespace() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             out.push(bytes[i] as char);
             i += 1;
         }
-        if i < sql.len() && bytes[i] == b'\'' {
+        if i < bytes.len() && bytes[i] == b'\'' {
             // single-quoted string, '' is an escaped quote
             out.push_str("'***'");
             i += 1;
-            while i < sql.len() {
+            while i < bytes.len() {
                 if bytes[i] == b'\'' {
-                    if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
                         i += 2;
                         continue;
                     }
@@ -437,5 +456,19 @@ mod tests {
         // a column literally named password_hash must not trigger on the column
         let sql2 = "SELECT password_hash FROM users";
         assert_eq!(redact_secrets(sql2), sql2);
+    }
+
+    #[test]
+    fn does_not_panic_on_length_changing_unicode() {
+        // `İ` (U+0130) lowercases to 3 bytes — indexing a to_lowercase() copy by
+        // the original byte offset used to slice at a non-char boundary → panic.
+        assert_eq!(redact_secrets("aİb"), "aİb");
+        assert_eq!(
+            redact_secrets("SELECT 'İ' PASSWORD 'x'"),
+            "SELECT 'İ' PASSWORD '***'"
+        );
+        // KELVIN SIGN also lowercases to a shorter/different byte form
+        let k = "\u{212A}password 'p'";
+        assert_eq!(redact_secrets(k), "\u{212A}password '***'");
     }
 }

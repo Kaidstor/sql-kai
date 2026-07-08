@@ -1,8 +1,7 @@
 import { X } from "lucide-react";
-import { useEffect } from "react";
+import { isMac } from "../lib/platform";
 import { cn, IconBtn, Overlay } from "./ui";
 
-const isMac = navigator.userAgent.includes("Mac");
 const MOD = isMac ? "⌘" : "Ctrl";
 const SHIFT = isMac ? "⇧" : "Shift";
 const ALT = isMac ? "⌥" : "Alt";
@@ -104,22 +103,9 @@ export function ShortcutsOverlay({
   open: boolean;
   onClose: () => void;
 }) {
-  // Capture-phase Esc so an open grid/editor underneath doesn't also react.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, onClose]);
-
   if (!open) return null;
   return (
-    <Overlay onClose={onClose} className="items-center bg-black/60">
+    <Overlay onClose={onClose} closeOnEsc className="items-center bg-black/60">
       <div className="max-h-[85vh] max-w-[92vw] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
         <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-2.5">
           <span className="text-[12px] font-medium text-zinc-200">

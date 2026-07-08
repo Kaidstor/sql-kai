@@ -1,5 +1,7 @@
 import { Activity, Plus, SquareTerminal, Table2, Wrench, X } from "lucide-react";
 import { useRef, useState, type PointerEvent } from "react";
+import { PROD_RED, tint } from "../lib/colors";
+import { isMac } from "../lib/platform";
 import { isQueryTabDirty, useApp } from "../lib/store";
 import {
   ContextMenu,
@@ -114,18 +116,14 @@ export function TabsBar() {
       className={cn(
         "flex h-10 items-stretch border-b border-zinc-800 bg-zinc-925 overflow-x-auto shrink-0",
         // sidebar hidden (⌘B) — clear the mac traffic lights (overlay titlebar)
-        sidebarHidden &&
-          navigator.userAgent.includes("Mac") &&
-          "pl-20",
+        sidebarHidden && isMac && "pl-20",
       )}
       // production connection — the whole bar shifts to red
       style={
         production
           ? {
-              background:
-                "color-mix(in srgb, #ef4444 7%, var(--color-zinc-925))",
-              borderBottomColor:
-                "color-mix(in srgb, #ef4444 35%, var(--color-zinc-800))",
+              background: tint(PROD_RED, 7, "var(--color-zinc-925)"),
+              borderBottomColor: tint(PROD_RED, 35, "var(--color-zinc-800)"),
             }
           : undefined
       }

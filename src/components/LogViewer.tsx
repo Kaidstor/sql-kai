@@ -34,16 +34,11 @@ export function LogViewer() {
       .logPath()
       .then((p) => !cancelled && setPath(p))
       .catch(() => {});
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLogViewerOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
     return () => {
       cancelled = true;
       clearInterval(timer);
-      window.removeEventListener("keydown", onKey);
     };
-  }, [logViewerOpen, setLogViewerOpen]);
+  }, [logViewerOpen]);
 
   // Each refresh keeps the view pinned to the tail (unless scrolled away).
   useEffect(() => {
@@ -56,6 +51,7 @@ export function LogViewer() {
   return (
     <Overlay
       onClose={() => setLogViewerOpen(false)}
+      closeOnEsc
       className="items-center bg-black/60"
     >
       <div className="flex h-[80vh] w-[85vw] max-w-4xl flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">

@@ -6,6 +6,22 @@ use std::process::Command;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 
+/// Общий пролог remote-скриптов discover/exec: находит postgres-контейнер и
+/// определяет POSTGRES_USER/DB (с фолбэком на живой psql-запрос). Каждая команда
+/// дописывает свой хвост — единственная копия этого блока (раньше он дублировался
+/// байт-в-байт в discover.rs и execmode.rs).
+pub const CONTAINER_DETECT: &str = r#"set -u
+D=docker
+docker ps >/dev/null 2>&1 || D="sudo docker"
+C=$($D ps --format '{{.Names}}' 2>/dev/null | grep -iE '(^|[-_])db([-_]|$)|postgres' | head -1)
+[ -n "$C" ] || { echo 'kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
+U=$($D exec "$C" printenv POSTGRES_USER 2>/dev/null)
+[ -n "$U" ] || U=postgres
+DB=$($D exec "$C" printenv POSTGRES_DB 2>/dev/null)
+[ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') ORDER BY datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+[ -n "$DB" ] || { echo 'kai: не удалось определить имя базы' >&2; exit 5; }
+"#;
+
 /// POSIX-shell single-quote.
 pub fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))

@@ -4,16 +4,15 @@ import {
   CircleAlert,
   FileCode2,
   Funnel,
-  Loader2,
-  RefreshCw,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { isConnectionLost } from "../lib/api";
-import { parseRegclass, quoteIdent, quoteLit } from "../lib/sql";
+import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
-import type { RelationInfo } from "../lib/types";
-import { ResultsGrid } from "./ResultsGrid";
+import type { ColumnInfo, RelationInfo, SortSpec } from "../lib/types";
+import { ReconnectButton } from "./ReconnectButton";
+import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
 import { cn, IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
 
@@ -27,7 +26,7 @@ function formatApprox(n: number): string {
 /** The SELECT behind this grid (see get_table_page). Columns hidden in the
  *  grid are dropped from the list; with none hidden it stays SELECT *. */
 function currentViewSql(state: TableTabState, visible: string[] | null): string {
-  const rel = `${quoteIdent(state.schema)}.${quoteIdent(state.table)}`;
+  const rel = relIdent(state.schema, state.table);
   const select = visible?.length ? visible.map(quoteIdent).join(", ") : "*";
   const where = state.filter.trim() ? `\nWHERE ${state.filter.trim()}` : "";
   const order = state.sorts.length
@@ -58,11 +57,8 @@ export function TableTab({ tab }: { tab: Tab }) {
     discardEdits,
     applyEdits,
     dismissApplyError,
-    reconnect,
-    connecting,
   } = useApp();
   const connected = Boolean(sessions[tab.profileId]);
-  const reconnecting = Boolean(connecting[tab.profileId]);
   // A drop mid-session must not blank rows the user was looking at: keep
   // the cached page under a Reconnect banner. Errors without cached data
   // (or unrelated to the connection) still take over the tab body.
@@ -130,23 +126,26 @@ export function TableTab({ tab }: { tab: Tab }) {
   }, [state.data, fkByCol]);
 
   /** Opens the referenced table filtered to the row the FK points at. */
-  const followFk = (ri: number, ci: number) => {
-    const res = state.data?.result;
-    if (!res) return;
-    const rel = fkByCol.get(res.columns[ci]);
-    if (!rel) return;
-    const from = rel.columns?.split(", ") ?? [];
-    const to = (rel.refColumns ?? rel.columns)?.split(", ") ?? [];
-    const target = parseRegclass(rel.refTable);
-    const parts = to.map((refCol, i) => {
-      const idx = res.columns.indexOf(from[i]);
-      const v = idx >= 0 ? (res.rows[ri]?.[idx] ?? null) : null;
-      return v === null
-        ? `${quoteIdent(refCol)} IS NULL`
-        : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
-    });
-    openTableTab(tab.profileId, target.schema, target.table, parts.join(" AND "));
-  };
+  const followFk = useCallback(
+    (ri: number, ci: number) => {
+      const res = state.data?.result;
+      if (!res) return;
+      const rel = fkByCol.get(res.columns[ci]);
+      if (!rel) return;
+      const from = rel.columns?.split(", ") ?? [];
+      const to = (rel.refColumns ?? rel.columns)?.split(", ") ?? [];
+      const target = parseRegclass(rel.refTable);
+      const parts = to.map((refCol, i) => {
+        const idx = res.columns.indexOf(from[i]);
+        const v = idx >= 0 ? (res.rows[ri]?.[idx] ?? null) : null;
+        return v === null
+          ? `${quoteIdent(refCol)} IS NULL`
+          : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
+      });
+      openTableTab(tab.profileId, target.schema, target.table, parts.join(" AND "));
+    },
+    [state.data, fkByCol, openTableTab, tab.profileId],
+  );
   const hasPk = (cols ?? []).some((c) => c.isPk);
   // Views (and matviews) are read-only: no INSERT/UPDATE/DELETE through the grid.
   const relKind = (tables[tab.profileId] ?? []).find(
@@ -167,15 +166,69 @@ export function TableTab({ tab }: { tab: Tab }) {
   );
   const dirty = editCount + state.deletes.length + state.inserts.length;
 
-
   const rows = state.data?.result.rows.length ?? 0;
   const lastPage = rows < state.pageSize;
 
-  const columnTypes = state.data?.result.columns.map(
-    (name) => cols?.find((c) => c.name === name)?.dataType,
+  // O(1) column lookup by name, shared by the type/nullable projections below
+  // (was an O(cols·rows) `cols.find` per result column on every render).
+  const colByName = useMemo(() => {
+    const m = new Map<string, ColumnInfo>();
+    for (const c of cols ?? []) m.set(c.name, c);
+    return m;
+  }, [cols]);
+  const columnTypes = useMemo(
+    () =>
+      state.data?.result.columns.map((name) => colByName.get(name)?.dataType),
+    [state.data, colByName],
   );
-  const columnNullable = state.data?.result.columns.map(
-    (name) => cols?.find((c) => c.name === name)?.nullable,
+  const columnNullable = useMemo(
+    () =>
+      state.data?.result.columns.map((name) => colByName.get(name)?.nullable),
+    [state.data, colByName],
+  );
+
+  // Stable props so React.memo(ResultsGrid) can skip re-renders driven by
+  // TableTab's own state (filter draft, page chrome) that don't touch the grid.
+  const insertTarget = useMemo(
+    () => ({ schema: state.schema, table: state.table }),
+    [state.schema, state.table],
+  );
+  const onSortsChange = useCallback(
+    (sorts: SortSpec[]) => void loadTablePage(tab.id, { sorts, page: 0 }),
+    [loadTablePage, tab.id],
+  );
+  const editing = useMemo<GridEditing>(
+    () => ({
+      edits: state.edits,
+      deletes: state.deletes,
+      inserts: state.inserts,
+      disabledReason,
+      applyFailed: state.applyFailed,
+      onEdit: (row, col, value) => stageCellEdit(tab.id, row, col, value),
+      onToggleDelete: (rowsToToggle, del) =>
+        toggleRowDeletes(tab.id, rowsToToggle, del),
+      onDuplicate: (rowsToCopy) => duplicateRows(tab.id, rowsToCopy),
+      onInsertEdit: (index, col, value) =>
+        stageInsertCell(tab.id, index, col, value),
+      onInsertRemove: (index) => removeInsertRow(tab.id, index),
+      onApply: () => void applyEdits(tab.id),
+      onDiscard: () => discardEdits(tab.id),
+    }),
+    [
+      state.edits,
+      state.deletes,
+      state.inserts,
+      disabledReason,
+      state.applyFailed,
+      tab.id,
+      stageCellEdit,
+      toggleRowDeletes,
+      duplicateRows,
+      stageInsertCell,
+      removeInsertRow,
+      applyEdits,
+      discardEdits,
+    ],
   );
 
   return (
@@ -350,18 +403,11 @@ export function TableTab({ tab }: { tab: Tab }) {
           <span className="truncate" title={state.error}>
             Connection lost — showing cached data
           </span>
-          <button
-            className="ml-auto flex shrink-0 items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
-            disabled={reconnecting}
-            onClick={() => void reconnect(tab.profileId)}
-          >
-            {reconnecting ? (
-              <Loader2 size={11} className="animate-spin" />
-            ) : (
-              <RefreshCw size={11} />
-            )}
-            Reconnect
-          </button>
+          <ReconnectButton
+            profileId={tab.profileId}
+            iconSize={11}
+            className="ml-auto shrink-0 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
+          />
         </div>
       )}
 
@@ -372,32 +418,14 @@ export function TableTab({ tab }: { tab: Tab }) {
           <ResultsGrid
             result={state.data.result}
             sorts={state.sorts}
-            onSortsChange={(sorts) =>
-              void loadTablePage(tab.id, { sorts, page: 0 })
-            }
+            onSortsChange={onSortsChange}
             onHiddenColsChange={setHiddenCols}
             columnTypes={columnTypes}
             columnNullable={columnNullable}
-            insertTarget={{ schema: state.schema, table: state.table }}
+            insertTarget={insertTarget}
             fkColumns={fkColumns}
             onFollowFk={followFk}
-            editing={{
-              edits: state.edits,
-              deletes: state.deletes,
-              inserts: state.inserts,
-              disabledReason,
-              applyFailed: state.applyFailed,
-              onEdit: (row, col, value) =>
-                stageCellEdit(tab.id, row, col, value),
-              onToggleDelete: (rowsToToggle, del) =>
-                toggleRowDeletes(tab.id, rowsToToggle, del),
-              onDuplicate: (rowsToCopy) => duplicateRows(tab.id, rowsToCopy),
-              onInsertEdit: (index, col, value) =>
-                stageInsertCell(tab.id, index, col, value),
-              onInsertRemove: (index) => removeInsertRow(tab.id, index),
-              onApply: () => void applyEdits(tab.id),
-              onDiscard: () => discardEdits(tab.id),
-            }}
+            editing={editing}
           />
         ) : (
           <div className="h-full flex items-center justify-center text-zinc-600 text-[12px]">

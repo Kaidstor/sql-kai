@@ -65,18 +65,13 @@ export function SettingsDialog() {
       .logPath()
       .then(setLogPath)
       .catch(() => setLogPath(null));
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSettingsOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, setSettingsOpen]);
+  }, [settingsOpen]);
 
   if (!settingsOpen) return null;
   const current = themeById(settings.theme);
 
   return (
-    <Overlay onClose={() => setSettingsOpen(false)} className="items-center bg-black/60">
+    <Overlay onClose={() => setSettingsOpen(false)} closeOnEsc className="items-center bg-black/60">
       <div className="w-130 max-h-[90vh] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div className="text-[13px] font-semibold text-zinc-100">Settings</div>

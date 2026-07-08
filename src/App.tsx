@@ -1,4 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { message } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
 import { ConnectionDialog } from "./components/ConnectionDialog";
@@ -15,6 +17,7 @@ import { TableTab } from "./components/TableTab";
 import { TabsBar } from "./components/TabsBar";
 import { UpdateToast } from "./components/UpdateToast";
 import { VaultGate } from "./components/VaultGate";
+import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
 import { initUpdater, useUpdater } from "./lib/updater";
@@ -57,7 +60,6 @@ function App() {
   useEffect(() => {
     // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
     // accelerator consumes the keypress before the webview sees it.
-    const isMac = navigator.userAgent.includes("Mac");
     const onKey = (e: KeyboardEvent) => {
       const s = useApp.getState();
       const mod = e.metaKey || e.ctrlKey;
@@ -182,6 +184,22 @@ function App() {
       listen("menu://check-updates", () =>
         void useUpdater.getState().checkForUpdates(true),
       ),
+      listen("menu://install-cli", async () => {
+        try {
+          const path = await invoke<string>("install_cli");
+          await message(
+            `kai установлен: ${path}\n\nОткройте новый терминал и проверьте: kai -V`,
+            { title: "Install CLI", kind: "info" },
+          );
+        } catch (e) {
+          const msg = String(e);
+          if (msg.includes("cancelled")) return; // отменил диалог пароля
+          await message(`Не удалось установить CLI:\n${msg}`, {
+            title: "Install CLI",
+            kind: "error",
+          });
+        }
+      }),
       // брокер: kai открыл/закрыл cli-сессию — обновить бейджи
       listen("broker://changed", () =>
         void useApp.getState().refreshCliSessions(),

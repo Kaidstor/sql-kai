@@ -28,12 +28,15 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
         .build(handle)?;
     let log_viewer =
         MenuItemBuilder::with_id("log-viewer", "Diagnostics Log…").build(handle)?;
+    let install_cli =
+        MenuItemBuilder::with_id("install-cli", "Install CLI…").build(handle)?;
     let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
         .item(&check_updates)
         .separator()
         .item(&settings)
         .item(&log_viewer)
+        .item(&install_cli)
         .separator()
         .services()
         .separator()
@@ -86,6 +89,7 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
                 | "settings"
                 | "check-updates"
                 | "log-viewer"
+                | "install-cli"
         ) {
             let _ = app.emit(&format!("menu://{id}"), ());
         }
@@ -98,11 +102,12 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
 /// автономным путём.
 #[cfg(unix)]
 fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
-    use std::sync::atomic::Ordering;
-
     use tauri::Emitter;
 
-    let listener = match broker::bind() {
+    // tokio's UnixListener::bind needs a runtime context, but setup() runs
+    // outside it (on the ObjC did_finish_launching callback) — bind inside the
+    // Tauri async runtime so it doesn't panic-and-abort at launch.
+    let listener = match tauri::async_runtime::block_on(async { broker::bind() }) {
         Ok(l) => l,
         Err(e) => {
             logging::log("broker", &format!("socket bind failed: {e}"));
@@ -118,17 +123,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
             sessions
                 .values()
                 .filter(|s| !s.isolated)
-                .map(|s| broker::BrokerSessionInfo {
-                    profile_id: s.profile_id.clone(),
-                    profile_name: s.profile_name.clone(),
-                    origin: "gui".into(),
-                    server_version: s.server_version.clone(),
-                    tunnel_port: s.tunnel_port,
-                    tx: db::TxStatus::from_u8(s.tx.load(Ordering::Relaxed))
-                        .as_str()
-                        .into(),
-                    idle_sec: None,
-                })
+                .map(|s| broker::BrokerSessionInfo::from_session(s, "gui", None))
                 .collect()
         }),
         changed: Box::new(move || {
@@ -203,6 +198,7 @@ pub fn run() {
             commands::save_text_file,
             commands::copy_text_concealed,
             commands::list_cli_sessions,
+            commands::install_cli,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

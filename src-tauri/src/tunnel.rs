@@ -14,7 +14,18 @@ const ASKPASS_ENV: &str = "SQL_TAURI_SSH_PASSPHRASE";
 /// Writes a helper that echoes the passphrase env var back to ssh.
 /// ssh refuses to read a passphrase from stdin without a TTY, but it will
 /// run SSH_ASKPASS — this keeps the secret out of argv (env only).
+///
+/// Written once per process (fixed path, fixed content); re-verifies the file
+/// still exists so a cleared temp dir self-heals, but skips the write+chmod on
+/// the common path — it used to run on every tunnel open.
 fn ensure_askpass_script() -> Result<PathBuf, AppError> {
+    use std::sync::OnceLock;
+    static SCRIPT: OnceLock<PathBuf> = OnceLock::new();
+    if let Some(p) = SCRIPT.get() {
+        if p.exists() {
+            return Ok(p.clone());
+        }
+    }
     let path = std::env::temp_dir().join("sql-tauri-askpass.sh");
     fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_ENV}\"\n"))?;
     #[cfg(unix)]
@@ -22,6 +33,7 @@ fn ensure_askpass_script() -> Result<PathBuf, AppError> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
     }
+    let _ = SCRIPT.set(path.clone());
     Ok(path)
 }
 
@@ -289,7 +301,16 @@ pub async fn open_tunnel(
     let ctl = match mux_ttl {
         Some(ttl) => match control_path(ssh) {
             Ok(p) => {
-                ensure_master(ssh, passphrase, ttl, &p);
+                // ensure_master shells out to ssh and blocks up to ConnectTimeout
+                // (10s) authenticating — run it off the async worker so it never
+                // stalls a tokio thread during connect.
+                let ssh_owned = ssh.clone();
+                let pass_owned = passphrase.map(str::to_string);
+                let ctl_path = p.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    ensure_master(&ssh_owned, pass_owned.as_deref(), ttl, &ctl_path);
+                })
+                .await;
                 Some(p)
             }
             Err(_) => None,

@@ -364,14 +364,23 @@ enum VaultCmd {
 /// `kai <alias> -c ...` — шорткат для `kai q <alias> -c ...`: если первый
 /// аргумент не подкоманда и не флаг, считаем его алиасом профиля.
 fn preprocess_args() -> Vec<OsString> {
-    const KNOWN: &[&str] = &[
-        "q", "query", "exec", "discover", "profiles", "tables", "columns", "ddl", "indexes",
-        "history", "saved", "rotate", "doctor", "sessions", "tunnel", "vault", "help",
-    ];
+    use clap::CommandFactory;
+    // Single source of truth: derive the subcommand names (+ aliases) straight
+    // from the clap definition, so a new `Cmd` variant can never be silently
+    // misread as a profile alias.
+    let cmd = Cli::command();
+    let known: Vec<String> = cmd
+        .get_subcommands()
+        .flat_map(|c| {
+            std::iter::once(c.get_name().to_string())
+                .chain(c.get_all_aliases().map(str::to_string))
+        })
+        .chain(std::iter::once("help".to_string()))
+        .collect();
     let mut args: Vec<OsString> = std::env::args_os().collect();
     if let Some(first) = args.get(1) {
         let s = first.to_string_lossy();
-        if !s.starts_with('-') && !KNOWN.contains(&s.as_ref()) {
+        if !s.starts_with('-') && !known.iter().any(|k| k == s.as_ref()) {
             args.insert(1, "q".into());
         }
     }
@@ -810,7 +819,7 @@ fn history_scan() -> Result<ExitCode, AppError> {
     let (found, report) = sec::scan(&path.to_string_lossy())?;
     if found {
         println!("{report}");
-        println!("⚠ в истории найдены значения секретов из sec — почисти: kai history clear-соответствующие или sec forget");
+        println!("⚠ в истории найдены значения секретов из sec — почисти: `sec forget <ключ>` и удали затронутые записи в history.json");
         Ok(ExitCode::FAILURE)
     } else {
         println!("чисто: секретов sec в history.json не найдено");

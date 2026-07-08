@@ -7,7 +7,7 @@ import {
   type StructureTabState,
   type Tab,
 } from "../lib/store";
-import { quoteIdent as qi } from "../lib/sql";
+import { relIdent } from "../lib/sql";
 import { TabError } from "./TabError";
 import {
   Button,
@@ -501,7 +501,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
                       disabled={idx.primary}
                       onClick={() => {
                         if (confirm(`Drop index "${idx.name}"?`)) {
-                          ddl(`DROP INDEX ${qi(state.schema)}.${qi(idx.name)}`);
+                          ddl(`DROP INDEX ${relIdent(state.schema, idx.name)}`);
                         }
                       }}
                     >

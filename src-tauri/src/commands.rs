@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,16 @@ fn with_session<T>(
 /// here (tearing the tunnel down with it) and every command reports the same
 /// "connection lost" error the frontend recognises to offer a reconnect.
 fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client>, AppError> {
+    Ok(client_and_tx(state, session_id)?.0)
+}
+
+/// Live client + its tx-state handle under a single lock, with the same
+/// dead-client teardown as [`client_of`]. `execute_sql` needs both and would
+/// otherwise lock the session map twice.
+fn client_and_tx(
+    state: &State<'_, AppState>,
+    session_id: &str,
+) -> Result<(Arc<Client>, Arc<AtomicU8>), AppError> {
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions
         .get(session_id)
@@ -65,7 +75,7 @@ fn client_of(state: &State<'_, AppState>, session_id: &str) -> Result<Arc<Client
             "connection lost (tunnel or server dropped) — reconnect the profile".into(),
         ));
     }
-    Ok(client)
+    Ok((client, session.tx.clone()))
 }
 
 #[tauri::command]
@@ -189,7 +199,7 @@ pub fn list_sessions(state: State<'_, AppState>) -> Vec<SessionInfo> {
             profile_id: s.profile_id.clone(),
             server_version: s.server_version.clone(),
             tunnel_port: s.tunnel_port,
-            tx: TxStatus::from_u8(s.tx.load(Ordering::Relaxed)).as_str().into(),
+            tx: TxStatus::label_from_u8(s.tx.load(Ordering::Relaxed)).into(),
             isolated: s.isolated,
             pid: None,
         })
@@ -410,8 +420,7 @@ pub async fn execute_sql(
     max_rows: Option<usize>,
     auto_begin: Option<bool>,
 ) -> Result<ExecResult, AppError> {
-    let client = client_of(&state, &session_id)?;
-    let tx = with_session(&state, &session_id, |s| s.tx.clone())?;
+    let (client, tx) = client_and_tx(&state, &session_id)?;
     let before = TxStatus::from_u8(tx.load(Ordering::Relaxed));
     // Manual-commit mode: hold a transaction open across runs by opening one
     // when the connection is idle, so the user never has to type BEGIN.
@@ -433,7 +442,7 @@ pub async fn execute_sql(
 #[tauri::command]
 pub fn session_tx_status(state: State<'_, AppState>, session_id: String) -> Result<String, AppError> {
     with_session(&state, &session_id, |s| {
-        TxStatus::from_u8(s.tx.load(Ordering::Relaxed)).as_str().into()
+        TxStatus::label_from_u8(s.tx.load(Ordering::Relaxed)).into()
     })
 }
 
@@ -753,16 +762,12 @@ pub async fn get_table_page(
             "SELECT reltuples::bigint FROM pg_class WHERE oid = {}::regclass",
             db::quote_literal(&qualified)
         );
-        match db::execute(&client, &approx_sql, 1).await {
-            Ok(r) => r
-                .results
-                .first()
-                .and_then(|res| res.rows.first())
-                .and_then(|row| row[0].as_deref())
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(-1),
-            Err(_) => -1,
-        }
+        db::query_scalar(&client, &approx_sql)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(-1)
     };
 
     Ok(TablePage {
@@ -789,5 +794,74 @@ pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     let set = arboard::SetExtApple::exclude_from_history(set);
     set.text(text).map_err(|e| AppError::Msg(e.to_string()))
+}
+
+/// Installs the `kai` CLI into the system PATH, "big-company" style
+/// (Zed / VS Code): symlinks the `kai` sidecar bundled next to the running
+/// app into `/usr/local/bin` — which is always on PATH via `/etc/paths`. The
+/// symlink points into the .app, so future app updates carry the CLI along.
+/// Tries a direct symlink first (writable Homebrew setups) and falls back to
+/// an admin prompt (password / Touch ID) when the dir is root-owned. Returns
+/// the created path; the sentinel error `"cancelled"` means the user
+/// dismissed the auth dialog.
+#[tauri::command]
+pub fn install_cli() -> Result<String, AppError> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::symlink;
+        use std::path::Path;
+
+        let exe = std::env::current_exe()?;
+        let src = exe
+            .parent()
+            .map(|p| p.join("kai"))
+            .ok_or_else(|| AppError::Msg("не удалось определить путь к бандлу".into()))?;
+        if !src.exists() {
+            return Err(AppError::Msg(format!(
+                "CLI-бинарь не найден рядом с приложением: {}\n\
+                 Нужна версия sql-kai со встроенным kai (sidecar).",
+                src.display()
+            )));
+        }
+        let target = Path::new("/usr/local/bin/kai");
+
+        // Fast path: recreate the symlink directly when /usr/local/bin is
+        // writable (e.g. Homebrew) — no password prompt needed.
+        let _ = std::fs::remove_file(target); // ignore "not found" / "denied"
+        if symlink(&src, target).is_ok() {
+            return Ok(target.display().to_string());
+        }
+
+        // Slow path: the dir is root-owned. Escalate via the native auth
+        // dialog; `ln -sf` handles a pre-existing root-owned symlink.
+        let script = format!(
+            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
+             with administrator privileges",
+            src.display(),
+            target.display()
+        );
+        let out = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()?;
+        if out.status.success() {
+            return Ok(target.display().to_string());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // -128 == user dismissed the auth dialog.
+        if stderr.contains("-128") || stderr.contains("User canceled") {
+            return Err(AppError::Msg("cancelled".into()));
+        }
+        Err(AppError::Msg(format!(
+            "не удалось создать симлинк: {}",
+            stderr.trim()
+        )))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(AppError::Msg(
+            "Install CLI поддерживается только на macOS".into(),
+        ))
+    }
 }
 

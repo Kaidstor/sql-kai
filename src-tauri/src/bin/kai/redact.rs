@@ -1,18 +1,32 @@
 //! Авто-маскирование чувствительных колонок в результатах запроса: вывод CLI
 //! оседает в логах агентских сессий, поэтому креды (password/secret/token/…)
 //! по умолчанию заменяются на [redacted]. Отключение — флаг --no-redact.
+//!
+//! ВАЖНО: это guardrail от случайной утечки по имени колонки, а не граница
+//! безопасности. `SELECT password AS p` или `--no-redact` обходят маскирование
+//! — оператор/агент, которому нельзя видеть секрет, не должен иметь доступа к
+//! самой БД. Матчинг намеренно склоняется к over-masking (лучше скрыть не-секрет).
 
 use sql_tauri_lib::db::ExecResult;
 
 pub const REDACTED: &str = "[redacted]";
 
 /// Имя колонки похоже на креды? Сравнение без учёта регистра:
-/// вхождение password/passwd/secret/passphrase/credential,
-/// суффикс token/_key/apikey/_salt/_jwt, либо точное salt/jwt.
+/// вхождение password/passwd/pwd/secret/passphrase/credential/privatekey/
+/// authorization, суффикс token/_key/apikey/_salt/_jwt/_hash, либо точное salt/jwt.
 pub fn is_sensitive_column(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    const CONTAINS: &[&str] = &["password", "passwd", "secret", "passphrase", "credential"];
-    const SUFFIXES: &[&str] = &["token", "_key", "apikey", "_salt", "_jwt"];
+    const CONTAINS: &[&str] = &[
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "passphrase",
+        "credential",
+        "privatekey",
+        "authorization",
+    ];
+    const SUFFIXES: &[&str] = &["token", "_key", "apikey", "_salt", "_jwt", "_hash"];
     const EXACT: &[&str] = &["salt", "jwt"];
     CONTAINS.iter().any(|p| n.contains(p))
         || SUFFIXES.iter().any(|s| n.ends_with(s))
@@ -75,16 +89,22 @@ mod tests {
             "authtoken",
             "api_key",
             "private_key",
+            "privatekey",
             "apikey",
             "passphrase",
             "credentials",
             "salt",
             "pwd_salt",
+            "user_pwd",
+            "authorization",
+            "token_hash",
             "jwt",
         ] {
             assert!(is_sensitive_column(name), "{name} должен маскироваться");
         }
-        for name in ["id", "email", "name", "monkey", "token_count", "keyboard", "primary"] {
+        for name in [
+            "id", "email", "name", "monkey", "token_count", "keyboard", "primary", "author",
+        ] {
             assert!(!is_sensitive_column(name), "{name} не должен маскироваться");
         }
     }

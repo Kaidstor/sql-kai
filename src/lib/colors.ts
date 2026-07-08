@@ -11,6 +11,14 @@ export const ACCENT_VALUES: Record<string, string> = {
 
 export const ACCENTS = Object.keys(ACCENT_VALUES);
 
+/** The "this is production" red — the footer/tab-bar chrome signal. */
+export const PROD_RED = "#ef4444";
+
+/** Overlay `color` at `pct`% onto a base color token — the accent/prod chrome
+ *  tint used by the status bar and the tab bar. */
+export const tint = (color: string, pct: number, base: string) =>
+  `color-mix(in srgb, ${color} ${pct}%, ${base})`;
+
 /** Profiles saved before the palette change stored Tailwind color names. */
 const LEGACY: Record<string, string> = {
   sky: "blue",

@@ -26,6 +26,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./context-menu";
+import { ReconnectButton } from "./ReconnectButton";
 import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function shortType(t: string): string {
@@ -237,7 +238,6 @@ export function Sidebar() {
     tables,
     lost,
     connecting,
-    reconnect,
     activeProfileId,
     openQueryTab,
     openActivityTab,
@@ -318,18 +318,13 @@ export function Sidebar() {
         </div>
       </div>
       {activeLost && (
-        <button
-          className="mx-2 mb-1.5 flex shrink-0 items-center gap-1.5 rounded-md border border-red-900/60 bg-red-950/40 px-2 py-1.5 text-[11px] text-red-300 hover:bg-red-950/70 disabled:opacity-60"
-          disabled={reconnecting}
-          onClick={() => void reconnect(activeProfileId)}
-        >
-          {reconnecting ? (
-            <Loader2 size={11} className="shrink-0 animate-spin" />
-          ) : (
-            <RefreshCw size={11} className="shrink-0" />
-          )}
-          Connection lost — reconnect
-        </button>
+        <ReconnectButton
+          profileId={activeProfileId}
+          iconSize={11}
+          iconClassName="shrink-0"
+          label="Connection lost — reconnect"
+          className="mx-2 mb-1.5 shrink-0 rounded-md border border-red-900/60 bg-red-950/40 px-2 py-1.5 text-[11px] text-red-300 hover:bg-red-950/70 disabled:opacity-60"
+        />
       )}
       <SchemaTree
         profileId={activeProfileId}

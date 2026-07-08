@@ -24,7 +24,7 @@ async fn can_connect(profile: &Profile, password: Option<String>) -> Result<(), 
         profile,
         db::ConnectOptions {
             password_override: password,
-            ssh_mux_ttl: Some(300),
+            ssh_mux_ttl: Some(session::mux_ttl()),
             ..Default::default()
         },
     )

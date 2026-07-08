@@ -61,6 +61,11 @@ impl TxStatus {
             TxStatus::Failed => "failed",
         }
     }
+    /// Label of the tx state stored as a u8 (see [`Session::tx`]) — folds the
+    /// `from_u8(x).as_str()` chain repeated at every session-info projection.
+    pub fn label_from_u8(v: u8) -> &'static str {
+        Self::from_u8(v).as_str()
+    }
 }
 
 impl Drop for Session {

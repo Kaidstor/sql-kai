@@ -1,9 +1,4 @@
 import {
-  getCoreRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
-import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -28,6 +23,7 @@ import {
 } from "lucide-react";
 import {
   Fragment,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -40,7 +36,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../lib/api";
 import { copyText, readClipboardText } from "../lib/clipboard";
 import { toCsv, toJson, toMarkdown } from "../lib/export";
-import { quoteIdent, quoteLit } from "../lib/sql";
+import { quoteIdent, quoteLit, relIdent } from "../lib/sql";
 import { useApp, type InsertRow } from "../lib/store";
 import type { SortSpec, StatementResult } from "../lib/types";
 import {
@@ -53,7 +49,6 @@ import {
 } from "./context-menu";
 import { Button, IconBtn, Overlay, cn } from "./ui";
 
-type Row = (string | null)[];
 
 /** Inline cell editor. Blur stages the draft (clicking away mustn't lose the
  *  input); Enter stages and refocuses the grid; Esc cancels and refocuses.
@@ -168,7 +163,7 @@ interface Props {
   onFollowFk?: (row: number, col: number) => void;
 }
 
-export function ResultsGrid({
+function ResultsGridImpl({
   result,
   sorts,
   onSortsChange,
@@ -436,22 +431,6 @@ export function ResultsGrid({
     setDialog({ row: ri, col: ci, text, isJson });
   };
 
-  const columns = useMemo<ColumnDef<Row>[]>(
-    () =>
-      result.columns.map((name, i) => ({
-        id: String(i),
-        header: name,
-        accessorFn: (row: Row) => row[i],
-      })),
-    [result.columns],
-  );
-
-  const table = useReactTable({
-    data: result.rows,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
-
   if (result.columns.length === 0) {
     return null;
   }
@@ -500,11 +479,11 @@ export function ResultsGrid({
     .filter((i) => i < result.rows.length);
   const n = selRows.length;
 
-  const copied = (what: string) => showToast(what, "info");
+  const toastCopied = (what: string) => showToast(what, "info");
 
   /** Copies and reports success in the status bar. */
   const copyAndToast = (text: string, message: string) =>
-    void copyText(text).then((ok) => ok && copied(message));
+    void copyText(text).then((ok) => ok && toastCopied(message));
 
   const copyRows = (sep: string, suffix: string) => {
     if (!n) return;
@@ -529,7 +508,7 @@ export function ResultsGrid({
    *  literals for every value — Postgres coerces them to the column types. */
   const copyInsert = () => {
     if (!insertTarget || !n) return;
-    const rel = `${quoteIdent(insertTarget.schema)}.${quoteIdent(insertTarget.table)}`;
+    const rel = relIdent(insertTarget.schema, insertTarget.table);
     const cols = result.columns.map(quoteIdent).join(", ");
     const tuples = selRows.map(
       (i) =>
@@ -696,7 +675,7 @@ export function ResultsGrid({
       });
       if (!path) return;
       await api.saveTextFile(path, content);
-      copied(`Exported ${rows.length} row(s) → ${path.split("/").pop()}`);
+      toastCopied(`Exported ${rows.length} row(s) → ${path.split("/").pop()}`);
     } catch (e) {
       showToast(errText(e));
     }
@@ -815,7 +794,7 @@ export function ResultsGrid({
         pasted += 1;
       });
     });
-    if (pasted > 0) copied(`Pasted ${pasted} cell(s) — staged`);
+    if (pasted > 0) toastCopied(`Pasted ${pasted} cell(s) — staged`);
   };
 
   /** Fallback path for environments that do fire `paste` here (dev browser). */
@@ -1066,13 +1045,13 @@ export function ResultsGrid({
             </tr>
           </thead>
           <tbody>
-            {table.getRowModel().rows.map((row, ri) => {
+            {result.rows.map((row, ri) => {
               const isSelected = selected.has(ri);
               const isDeleted = deletedRows.has(ri);
               const dups = insertsAfter.get(ri);
               const tr = (
                 <tr
-                  key={row.id}
+                  key={ri}
                   onContextMenu={() => onCellContext(ri, -1)}
                   className={cn(
                     isDeleted
@@ -1128,9 +1107,9 @@ export function ResultsGrid({
                   >
                     {ri + 1}
                   </td>
-                  {row.getVisibleCells().map((cell, ci) => {
+                  {result.columns.map((_col, ci) => {
                     if (hiddenCols.has(ci)) return null;
-                    const value = cell.getValue() as string | null;
+                    const value = row[ci] ?? null;
                     const staged = editing
                       ? stagedOf(ri, ci)
                       : { has: false, value: null };
@@ -1149,7 +1128,7 @@ export function ResultsGrid({
                     );
                     return (
                       <td
-                        key={cell.id}
+                        key={ci}
                         title={
                           isFk
                             ? `${shown}\n⌘-click — open referenced row`
@@ -1283,7 +1262,7 @@ export function ResultsGrid({
                 </tr>
               );
               return dups ? (
-                <Fragment key={row.id}>
+                <Fragment key={ri}>
                   {tr}
                   {dups.map(renderInsert)}
                 </Fragment>
@@ -1637,3 +1616,7 @@ export function ResultsGrid({
     </>
   );
 }
+
+/** Memoized: the grid is expensive and TableTab re-renders on its own local
+ *  state (filter draft, pagination) — with stable props it can skip those. */
+export const ResultsGrid = memo(ResultsGridImpl);
