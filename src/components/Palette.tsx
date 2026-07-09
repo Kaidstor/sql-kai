@@ -152,24 +152,22 @@ function PaletteModal({
 /** ⌘⌥O — fuzzy connection switcher; ⌘P — saved queries; ⌘T — tables/columns/
  *  functions of the active database. */
 export function AppPalette() {
-  const {
-    palette,
-    setPalette,
-    profiles,
-    sessions,
-    lost,
-    queries,
-    connect,
-    selectProfile,
-    activeProfileId,
-    openSavedQuery,
-    tables,
-    schemaColumns,
-    schemaFunctions,
-    loadSchemaFunctions,
-    openTableTab,
-    openQueryTab,
-  } = useApp();
+  const palette = useApp((s) => s.palette);
+  const setPalette = useApp((s) => s.setPalette);
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const lost = useApp((s) => s.lost);
+  const queries = useApp((s) => s.queries);
+  const connect = useApp((s) => s.connect);
+  const selectProfile = useApp((s) => s.selectProfile);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const openSavedQuery = useApp((s) => s.openSavedQuery);
+  const tables = useApp((s) => s.tables);
+  const schemaColumns = useApp((s) => s.schemaColumns);
+  const schemaFunctions = useApp((s) => s.schemaFunctions);
+  const loadSchemaFunctions = useApp((s) => s.loadSchemaFunctions);
+  const openTableTab = useApp((s) => s.openTableTab);
+  const openQueryTab = useApp((s) => s.openQueryTab);
 
   // Functions are the only symbol source not already in memory — fetch once
   // per connection when the symbols palette first opens.

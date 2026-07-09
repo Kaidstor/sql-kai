@@ -9,14 +9,12 @@ import { Button, IconBtn, Input, MenuBtn, Popover } from "./ui";
 /** "Save query" button: name + target collection (group/database or global).
  *  Open state lives in the store so ⌘S on an unsaved query can pop it too. */
 export function SaveQueryButton({ tab }: { tab: Tab }) {
-  const {
-    profiles,
-    queries,
-    saveQuery,
-    linkQueryTab,
-    saveDialogFor,
-    setSaveDialogFor,
-  } = useApp();
+  const profiles = useApp((s) => s.profiles);
+  const queries = useApp((s) => s.queries);
+  const saveQuery = useApp((s) => s.saveQuery);
+  const linkQueryTab = useApp((s) => s.linkQueryTab);
+  const saveDialogFor = useApp((s) => s.saveDialogFor);
+  const setSaveDialogFor = useApp((s) => s.setSaveDialogFor);
   const state = tab.state as QueryTabState;
   const open = saveDialogFor === tab.id;
   const [name, setName] = useState("");
@@ -160,7 +158,10 @@ function QueryRow({
 
 /** Dropdown listing the profile's collection + the global one. */
 export function SavedQueriesMenu({ tab }: { tab: Tab }) {
-  const { profiles, queries, deleteQuery, openSavedQuery } = useApp();
+  const profiles = useApp((s) => s.profiles);
+  const queries = useApp((s) => s.queries);
+  const deleteQuery = useApp((s) => s.deleteQuery);
+  const openSavedQuery = useApp((s) => s.openSavedQuery);
   const [open, setOpen] = useState(false);
 
   const profile = profiles.find((p) => p.id === tab.profileId);

@@ -50,8 +50,11 @@ function ThemeCard({
 }
 
 export function SettingsDialog() {
-  const { settingsOpen, setSettingsOpen, setLogViewerOpen, settings, setTheme } =
-    useApp();
+  const settingsOpen = useApp((s) => s.settingsOpen);
+  const setSettingsOpen = useApp((s) => s.setSettingsOpen);
+  const setLogViewerOpen = useApp((s) => s.setLogViewerOpen);
+  const settings = useApp((s) => s.settings);
+  const setTheme = useApp((s) => s.setTheme);
   const [path, setPath] = useState<string | null>(null);
   const [logPath, setLogPath] = useState<string | null>(null);
 

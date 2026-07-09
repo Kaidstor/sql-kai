@@ -26,16 +26,14 @@ import { initUpdater, useUpdater } from "./lib/updater";
 const CHORD_MS = 5000;
 
 function App() {
-  const {
-    init,
-    tabs,
-    activeTabId,
-    activeProfileId,
-    sessions,
-    lost,
-    launcherOpen,
-    sidebarHidden,
-  } = useApp();
+  const init = useApp((s) => s.init);
+  const tabs = useApp((s) => s.tabs);
+  const activeTabId = useApp((s) => s.activeTabId);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const sessions = useApp((s) => s.sessions);
+  const lost = useApp((s) => s.lost);
+  const launcherOpen = useApp((s) => s.launcherOpen);
+  const sidebarHidden = useApp((s) => s.sidebarHidden);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.

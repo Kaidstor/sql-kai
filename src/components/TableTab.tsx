@@ -38,25 +38,23 @@ function currentViewSql(state: TableTabState, visible: string[] | null): string 
 
 export function TableTab({ tab }: { tab: Tab }) {
   const state = tab.state as TableTabState;
-  const {
-    sessions,
-    tables,
-    loadTablePage,
-    loadTableColumns,
-    tableColumns,
-    loadTableRelations,
-    tableRelations,
-    openQueryTab,
-    openTableTab,
-    stageCellEdit,
-    toggleRowDeletes,
-    duplicateRows,
-    stageInsertCell,
-    removeInsertRow,
-    discardEdits,
-    applyEdits,
-    dismissApplyError,
-  } = useApp();
+  const sessions = useApp((s) => s.sessions);
+  const tables = useApp((s) => s.tables);
+  const loadTablePage = useApp((s) => s.loadTablePage);
+  const loadTableColumns = useApp((s) => s.loadTableColumns);
+  const tableColumns = useApp((s) => s.tableColumns);
+  const loadTableRelations = useApp((s) => s.loadTableRelations);
+  const tableRelations = useApp((s) => s.tableRelations);
+  const openQueryTab = useApp((s) => s.openQueryTab);
+  const openTableTab = useApp((s) => s.openTableTab);
+  const stageCellEdit = useApp((s) => s.stageCellEdit);
+  const toggleRowDeletes = useApp((s) => s.toggleRowDeletes);
+  const duplicateRows = useApp((s) => s.duplicateRows);
+  const stageInsertCell = useApp((s) => s.stageInsertCell);
+  const removeInsertRow = useApp((s) => s.removeInsertRow);
+  const discardEdits = useApp((s) => s.discardEdits);
+  const applyEdits = useApp((s) => s.applyEdits);
+  const dismissApplyError = useApp((s) => s.dismissApplyError);
   const connected = Boolean(sessions[tab.profileId]);
   // A drop mid-session must not blank rows the user was looking at: keep
   // the cached page under a Reconnect banner. Errors without cached data

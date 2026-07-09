@@ -220,18 +220,16 @@ function AddColumnRow({
 
 export function StructureTab({ tab }: { tab: Tab }) {
   const state = tab.state as StructureTabState;
-  const {
-    sessions,
-    setStructureSection,
-    loadStructure,
-    runDdl,
-    stageColumnEdit,
-    toggleColumnDrop,
-    stageColumnAdd,
-    unstageColumnAdd,
-    discardStructureEdits,
-    applyStructureEdits,
-  } = useApp();
+  const sessions = useApp((s) => s.sessions);
+  const setStructureSection = useApp((s) => s.setStructureSection);
+  const loadStructure = useApp((s) => s.loadStructure);
+  const runDdl = useApp((s) => s.runDdl);
+  const stageColumnEdit = useApp((s) => s.stageColumnEdit);
+  const toggleColumnDrop = useApp((s) => s.toggleColumnDrop);
+  const stageColumnAdd = useApp((s) => s.stageColumnAdd);
+  const unstageColumnAdd = useApp((s) => s.unstageColumnAdd);
+  const discardStructureEdits = useApp((s) => s.discardStructureEdits);
+  const applyStructureEdits = useApp((s) => s.applyStructureEdits);
   const [adding, setAdding] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
 

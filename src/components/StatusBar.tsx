@@ -16,15 +16,13 @@ import { CliBadge, ColorDot, Popover, ProdBadge, cn } from "./ui";
 
 /** Beekeeper-style bottom-left switcher between active connections. */
 function ConnectionSwitcher() {
-  const {
-    profiles,
-    sessions,
-    cliSessions,
-    activeProfileId,
-    selectProfile,
-    setPalette,
-    setLauncherOpen,
-  } = useApp();
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const cliSessions = useApp((s) => s.cliSessions);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const selectProfile = useApp((s) => s.selectProfile);
+  const setPalette = useApp((s) => s.setPalette);
+  const setLauncherOpen = useApp((s) => s.setLauncherOpen);
   const [open, setOpen] = useState(false);
 
   const connected = connectedProfiles(profiles, sessions);
@@ -129,8 +127,12 @@ function ConnectionSwitcher() {
 }
 
 export function StatusBar() {
-  const { activeProfileId, profiles, sessions, toast, lockVault, setSettingsOpen } =
-    useApp();
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const toast = useApp((s) => s.toast);
+  const lockVault = useApp((s) => s.lockVault);
+  const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
   const profile = profiles.find((p) => p.id === activeProfileId);

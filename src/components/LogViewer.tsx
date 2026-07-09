@@ -11,7 +11,8 @@ const POLL_MS = 2000;
  *  Polls while open and stays pinned to the newest lines unless the user
  *  scrolled up to read something. */
 export function LogViewer() {
-  const { logViewerOpen, setLogViewerOpen } = useApp();
+  const logViewerOpen = useApp((s) => s.logViewerOpen);
+  const setLogViewerOpen = useApp((s) => s.setLogViewerOpen);
   const [text, setText] = useState("");
   const [path, setPath] = useState<string | null>(null);
   const scrollRef = useRef<HTMLPreElement>(null);

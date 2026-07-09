@@ -103,21 +103,19 @@ const MIN_PANE_PX = 100;
 
 export function QueryTab({ tab }: { tab: Tab }) {
   const state = tab.state as QueryTabState;
-  const {
-    runQuery,
-    runExplain,
-    clearExplain,
-    cancelQuery,
-    setTabSql,
-    setTabMaxRows,
-    setTabEditorPct,
-    isolateTab,
-    mergeTab,
-    setCommitMode,
-    commitTx,
-    rollbackTx,
-    sessions,
-  } = useApp();
+  const runQuery = useApp((s) => s.runQuery);
+  const runExplain = useApp((s) => s.runExplain);
+  const clearExplain = useApp((s) => s.clearExplain);
+  const cancelQuery = useApp((s) => s.cancelQuery);
+  const setTabSql = useApp((s) => s.setTabSql);
+  const setTabMaxRows = useApp((s) => s.setTabMaxRows);
+  const setTabEditorPct = useApp((s) => s.setTabEditorPct);
+  const isolateTab = useApp((s) => s.isolateTab);
+  const mergeTab = useApp((s) => s.mergeTab);
+  const setCommitMode = useApp((s) => s.setCommitMode);
+  const commitTx = useApp((s) => s.commitTx);
+  const rollbackTx = useApp((s) => s.rollbackTx);
+  const sessions = useApp((s) => s.sessions);
   const [explainOpen, setExplainOpen] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
   // The isolated connection backing this tab (if any) — drives the pid/tx chip.

@@ -27,7 +27,8 @@ function HistoryRow({
   entry: HistoryEntry;
   onOpen: () => void;
 }) {
-  const { deleteHistoryEntry, clearHistory } = useApp();
+  const deleteHistoryEntry = useApp((s) => s.deleteHistoryEntry);
+  const clearHistory = useApp((s) => s.clearHistory);
   return (
     <ContextMenu>
       <ContextMenuTrigger className="block">
@@ -72,7 +73,9 @@ function HistoryRow({
 /** Query history of the tab's connection; click re-opens the query,
  *  right-click cleans up. */
 export function HistoryMenu({ tab }: { tab: Tab }) {
-  const { history, setTabSql, openQueryTab } = useApp();
+  const history = useApp((s) => s.history);
+  const setTabSql = useApp((s) => s.setTabSql);
+  const openQueryTab = useApp((s) => s.openQueryTab);
   const state = tab.state as QueryTabState;
   const [open, setOpen] = useState(false);
   const entries = history.filter((h) => h.profileId === tab.profileId);

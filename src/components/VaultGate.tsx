@@ -37,7 +37,8 @@ let autoPrompted = false;
  *  password, later runs unlock with it (or Touch ID once enrolled). Nothing
  *  (profiles, sessions) loads until the vault is open. */
 export function VaultGate({ children }: { children: ReactNode }) {
-  const { vault, vaultError } = useApp();
+  const vault = useApp((s) => s.vault);
+  const vaultError = useApp((s) => s.vaultError);
 
   if (vaultError) return <ErrorScreen message={vaultError} />;
   // init() hasn't reported the vault state yet — avoid flashing a wrong screen.

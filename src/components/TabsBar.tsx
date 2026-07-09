@@ -17,20 +17,18 @@ import { cn } from "./ui";
 // dragDropEnabled (needed for native file drop) makes wry swallow drag
 // events in WKWebView, so draggable elements never receive dragover/drop.
 export function TabsBar() {
-  const {
-    tabs,
-    activeTabId,
-    setActiveTab,
-    closeTab,
-    closeTabs,
-    moveTab,
-    activeProfileId,
-    profiles,
-    sessions,
-    openQueryTab,
-    queries,
-    sidebarHidden,
-  } = useApp();
+  const tabs = useApp((s) => s.tabs);
+  const activeTabId = useApp((s) => s.activeTabId);
+  const setActiveTab = useApp((s) => s.setActiveTab);
+  const closeTab = useApp((s) => s.closeTab);
+  const closeTabs = useApp((s) => s.closeTabs);
+  const moveTab = useApp((s) => s.moveTab);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const openQueryTab = useApp((s) => s.openQueryTab);
+  const queries = useApp((s) => s.queries);
+  const sidebarHidden = useApp((s) => s.sidebarHidden);
   const production = Boolean(
     profiles.find((p) => p.id === activeProfileId)?.production,
   );

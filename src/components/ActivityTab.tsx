@@ -20,7 +20,10 @@ function stateColor(state: string): string {
 
 export function ActivityTab({ tab }: { tab: Tab }) {
   const state = tab.state as ActivityTabState;
-  const { sessions, loadActivity, setActivityOptions, showToast } = useApp();
+  const sessions = useApp((s) => s.sessions);
+  const loadActivity = useApp((s) => s.loadActivity);
+  const setActivityOptions = useApp((s) => s.setActivityOptions);
+  const showToast = useApp((s) => s.showToast);
   const session = sessions[tab.profileId];
   const connected = Boolean(session);
 

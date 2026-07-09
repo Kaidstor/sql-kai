@@ -50,14 +50,12 @@ function TableIcon({ kind }: { kind: string }) {
 }
 
 function TableNode({ profileId, table }: { profileId: string; table: TableInfo }) {
-  const {
-    openTableTab,
-    openStructureTab,
-    loadTableColumns,
-    tableColumns,
-    sessions,
-    showToast,
-  } = useApp();
+  const openTableTab = useApp((s) => s.openTableTab);
+  const openStructureTab = useApp((s) => s.openStructureTab);
+  const loadTableColumns = useApp((s) => s.loadTableColumns);
+  const tableColumns = useApp((s) => s.tableColumns);
+  const sessions = useApp((s) => s.sessions);
+  const showToast = useApp((s) => s.showToast);
   const [expanded, setExpanded] = useState(false);
   const cols = tableColumns[columnsKey(profileId, table.schema, table.name)];
 
@@ -231,19 +229,17 @@ function SchemaTree({ profileId, tables }: { profileId: string; tables: TableInf
 /** Workspace sidebar: the active connection's schema tree. The connection
  *  list itself lives on the Launcher ("All connections" in the header). */
 export function Sidebar() {
-  const {
-    profiles,
-    sessions,
-    cliSessions,
-    tables,
-    lost,
-    connecting,
-    activeProfileId,
-    openQueryTab,
-    openActivityTab,
-    refreshTables,
-    setLauncherOpen,
-  } = useApp();
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const cliSessions = useApp((s) => s.cliSessions);
+  const tables = useApp((s) => s.tables);
+  const lost = useApp((s) => s.lost);
+  const connecting = useApp((s) => s.connecting);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const openQueryTab = useApp((s) => s.openQueryTab);
+  const openActivityTab = useApp((s) => s.openActivityTab);
+  const refreshTables = useApp((s) => s.refreshTables);
+  const setLauncherOpen = useApp((s) => s.setLauncherOpen);
   const profile = profiles.find((p) => p.id === activeProfileId);
   const cliSession = activeProfileId ? cliSessions[activeProfileId] : undefined;
   const activeSession = activeProfileId ? sessions[activeProfileId] : undefined;

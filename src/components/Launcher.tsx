@@ -27,20 +27,18 @@ import {
 import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
 
 function ProfileCard({ profile }: { profile: Profile }) {
-  const {
-    sessions,
-    cliSessions,
-    connecting,
-    lost,
-    connectError,
-    connect,
-    disconnect,
-    reconnect,
-    selectProfile,
-    openDialog,
-    deleteProfile,
-    duplicateProfile,
-  } = useApp();
+  const sessions = useApp((s) => s.sessions);
+  const cliSessions = useApp((s) => s.cliSessions);
+  const connecting = useApp((s) => s.connecting);
+  const lost = useApp((s) => s.lost);
+  const connectError = useApp((s) => s.connectError);
+  const connect = useApp((s) => s.connect);
+  const disconnect = useApp((s) => s.disconnect);
+  const reconnect = useApp((s) => s.reconnect);
+  const selectProfile = useApp((s) => s.selectProfile);
+  const openDialog = useApp((s) => s.openDialog);
+  const deleteProfile = useApp((s) => s.deleteProfile);
+  const duplicateProfile = useApp((s) => s.duplicateProfile);
   const cli = cliSessions[profile.id];
   const connected = Boolean(sessions[profile.id]);
   const busy = Boolean(connecting[profile.id]);
@@ -221,8 +219,13 @@ function ProfileCard({ profile }: { profile: Profile }) {
 /** Full-window connection launcher: shown when nothing is connected, or on
  *  demand ("All connections") over a live workspace. */
 export function Launcher() {
-  const { profiles, sessions, lost, activeProfileId, launcherOpen, setLauncherOpen, openDialog } =
-    useApp();
+  const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
+  const lost = useApp((s) => s.lost);
+  const activeProfileId = useApp((s) => s.activeProfileId);
+  const launcherOpen = useApp((s) => s.launcherOpen);
+  const setLauncherOpen = useApp((s) => s.setLauncherOpen);
+  const openDialog = useApp((s) => s.openDialog);
   const [filter, setFilter] = useState("");
   const needle = filter.trim().toLowerCase();
 

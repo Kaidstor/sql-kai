@@ -152,7 +152,11 @@ function toProfile(form: FormState, existing?: Profile): Profile {
 }
 
 export function ConnectionDialog() {
-  const { dialog, closeDialog, saveProfile, showToast, profiles } = useApp();
+  const dialog = useApp((s) => s.dialog);
+  const closeDialog = useApp((s) => s.closeDialog);
+  const saveProfile = useApp((s) => s.saveProfile);
+  const showToast = useApp((s) => s.showToast);
+  const profiles = useApp((s) => s.profiles);
   const knownGroups = [
     ...new Set(profiles.map((p) => p.group?.trim()).filter(Boolean)),
   ] as string[];
