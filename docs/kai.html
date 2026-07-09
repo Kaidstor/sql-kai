@@ -187,7 +187,7 @@ vault остаётся для GUI, sec — канал для CLI/агента и
 <h3>Пароль БД в sec вместо vault (прод-политика)</h3>
 <p>Для прод-баз пароль можно вообще не хранить в kai, а держать только в sec —
 аудируемо и ротируемо:</p>
-<pre><code>kai discover gidcaf --to-sec --no-store    # пароль → sec (gidcaf/DB_PASSWORD), не в vault
+<pre><code>kai discover gidcaf --to-sec --no-vault    # пароль → sec (gidcaf/DB_PASSWORD), не в vault
 kai gidcaf -c "SELECT …" --from-sec        # берём пароль из sec на лету
 # эквивалент без флага: sec run gidcaf -- kai gidcaf -c "…" --password-env DB_PASSWORD</code></pre>
 <p><code>--to-sec</code> кладёт найденный пароль в sec и проставляет

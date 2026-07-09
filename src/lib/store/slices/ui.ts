@@ -19,7 +19,7 @@ export interface UiSlice {
   /** Diagnostics-log viewer (menu → Diagnostics Log). */
   logViewerOpen: boolean;
   /** Sidebar visibility (⌘B). */
-  sidebarHidden: boolean;
+  sidebarOpen: boolean;
   /** Launcher explicitly opened over a live workspace ("All connections").
    *  With nothing connected the launcher shows regardless of this flag. */
   launcherOpen: boolean;
@@ -48,7 +48,7 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
     settings: {},
     settingsOpen: false,
     logViewerOpen: false,
-    sidebarHidden: false,
+    sidebarOpen: true,
     launcherOpen: false,
 
     setPalette: (palette) => set({ palette }),
@@ -57,7 +57,7 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
 
     setLogViewerOpen: (logViewerOpen) => set({ logViewerOpen }),
 
-    toggleSidebar: () => set((s) => ({ sidebarHidden: !s.sidebarHidden })),
+    toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
 
     setLauncherOpen: (launcherOpen) => set({ launcherOpen }),
 

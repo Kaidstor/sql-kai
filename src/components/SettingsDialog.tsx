@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/store";
 import { THEMES, themeById, type Theme } from "../lib/themes";
-import { IconBtn, Overlay, cn } from "./ui";
+import { IconButton, Overlay, cn } from "./ui";
 
 function ThemeCard({
   theme,
@@ -78,9 +78,9 @@ export function SettingsDialog() {
       <div className="w-130 max-h-[90vh] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div className="text-[13px] font-semibold text-zinc-100">Settings</div>
-          <IconBtn onClick={() => setSettingsOpen(false)}>
+          <IconButton onClick={() => setSettingsOpen(false)}>
             <X size={15} />
-          </IconBtn>
+          </IconButton>
         </div>
 
         <div className="p-4">

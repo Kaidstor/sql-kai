@@ -7,7 +7,8 @@ use clap::Args;
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 
-use crate::{output, session};
+use crate::output::{self, FormatArgs};
+use crate::session;
 
 #[derive(Args)]
 pub struct TablesArgs {
@@ -16,8 +17,8 @@ pub struct TablesArgs {
     /// Примерное число строк (pg_class.reltuples; '?' = не анализировалась)
     #[arg(long)]
     counts: bool,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    fmt: FormatArgs,
     #[arg(long, value_name = "VAR")]
     password_env: Option<String>,
     #[arg(short, long)]
@@ -30,8 +31,8 @@ pub struct TableArgs {
     alias: String,
     /// Таблица: [schema.]table (по умолчанию схема public)
     table: String,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    fmt: FormatArgs,
     #[arg(long, value_name = "VAR")]
     password_env: Option<String>,
     #[arg(short, long)]
@@ -73,7 +74,7 @@ pub async fn tables(a: TablesArgs) -> Result<ExitCode, AppError> {
     } else {
         &["schema", "name", "kind"]
     };
-    output::print_rows(headers, &mapped, a.json);
+    output::print_rows(headers, &mapped, a.fmt.pick());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -115,7 +116,7 @@ pub async fn table_info(a: TableArgs, kind: TableInfoKind) -> Result<ExitCode, A
             output::print_rows(
                 &["name", "type", "nullable", "pk", "default", "comment"],
                 &rows,
-                a.json,
+                a.fmt.pick(),
             );
         }
         TableInfoKind::Indexes => {
@@ -124,7 +125,7 @@ pub async fn table_info(a: TableArgs, kind: TableInfoKind) -> Result<ExitCode, A
             output::print_rows(
                 &["name", "unique", "primary", "columns", "definition"],
                 &rows,
-                a.json,
+                a.fmt.pick(),
             );
         }
     }

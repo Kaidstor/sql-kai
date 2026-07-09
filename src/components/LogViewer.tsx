@@ -3,7 +3,7 @@ import { FolderOpen, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../lib/store";
-import { IconBtn, Overlay } from "./ui";
+import { IconButton, Overlay } from "./ui";
 
 const POLL_MS = 2000;
 
@@ -62,16 +62,16 @@ export function LogViewer() {
           </div>
           <div className="flex items-center gap-1">
             {path && (
-              <IconBtn
+              <IconButton
                 title="Reveal in Finder"
                 onClick={() => void revealItemInDir(path)}
               >
                 <FolderOpen size={14} />
-              </IconBtn>
+              </IconButton>
             )}
-            <IconBtn onClick={() => setLogViewerOpen(false)}>
+            <IconButton onClick={() => setLogViewerOpen(false)}>
               <X size={15} />
-            </IconBtn>
+            </IconButton>
           </div>
         </div>
 

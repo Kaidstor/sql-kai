@@ -10,37 +10,8 @@ use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, HistoryEntry};
 
-use crate::output::{self, Format};
+use crate::output::{self, Format, FormatArgs};
 use crate::{broker_client, redact, session};
-
-#[derive(Args)]
-pub struct FormatArgs {
-    /// JSON-вывод (columns/rows/rowsAffected/truncated); значения приведены
-    /// к типам колонок БД: числа/bool/null/json (точное строковое
-    /// представление — кастуй в ::text)
-    #[arg(long, group = "fmt")]
-    json: bool,
-    /// CSV-вывод
-    #[arg(long, group = "fmt")]
-    csv: bool,
-    /// tuples-only: значения через |, без заголовков
-    #[arg(short = 't', long, group = "fmt")]
-    tuples: bool,
-}
-
-impl FormatArgs {
-    fn pick(&self) -> Format {
-        if self.json {
-            Format::Json
-        } else if self.csv {
-            Format::Csv
-        } else if self.tuples {
-            Format::Tuples
-        } else {
-            Format::Table
-        }
-    }
-}
 
 #[derive(Args)]
 pub struct QueryArgs {

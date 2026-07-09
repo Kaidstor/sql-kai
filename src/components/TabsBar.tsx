@@ -10,7 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuTrigger,
-} from "./context-menu";
+} from "./ContextMenu";
 import { cn } from "./ui";
 
 // Pointer-based tab reorder. HTML5 DnD is not an option here: Tauri's
@@ -28,7 +28,7 @@ export function TabsBar() {
   const sessions = useApp((s) => s.sessions);
   const openQueryTab = useApp((s) => s.openQueryTab);
   const queries = useApp((s) => s.queries);
-  const sidebarHidden = useApp((s) => s.sidebarHidden);
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
   const production = Boolean(
     profiles.find((p) => p.id === activeProfileId)?.production,
   );
@@ -51,7 +51,7 @@ export function TabsBar() {
   const lastMove = useRef("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  const onPointerDown = (e: PointerEvent, tabId: string) => {
+  const handlePointerDown = (e: PointerEvent, tabId: string) => {
     if (e.button !== 0) return;
     if ((e.target as Element).closest("button")) return; // the close ✕
     justDragged.current = false;
@@ -59,7 +59,7 @@ export function TabsBar() {
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
-  const onPointerMove = (e: PointerEvent) => {
+  const handlePointerMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
     if (!d.active) {
@@ -114,7 +114,7 @@ export function TabsBar() {
       className={cn(
         "flex h-10 items-stretch border-b border-zinc-800 bg-zinc-925 overflow-x-auto shrink-0",
         // sidebar hidden (⌘B) — clear the mac traffic lights (overlay titlebar)
-        sidebarHidden && isMac && "pl-20",
+        !sidebarOpen && isMac && "pl-20",
       )}
       // production connection — the whole bar shifts to red
       style={
@@ -139,8 +139,8 @@ export function TabsBar() {
           }}
           onAuxClick={(e) => e.button === 1 && closeTab(tab.id)}
           onContextMenu={() => setMenuTabId(tab.id)}
-          onPointerDown={(e) => onPointerDown(e, tab.id)}
-          onPointerMove={onPointerMove}
+          onPointerDown={(e) => handlePointerDown(e, tab.id)}
+          onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
           className={cn(

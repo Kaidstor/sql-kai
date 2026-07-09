@@ -94,9 +94,9 @@ pub struct VaultStatus {
     /// The DEK is decrypted and held in memory for this session.
     pub unlocked: bool,
     /// This platform can offer Touch ID at all (macOS).
-    pub biometrics_supported: bool,
+    pub biometric_supported: bool,
     /// A DEK copy is enrolled in the biometric keychain for this vault.
-    pub biometrics_enrolled: bool,
+    pub biometric_enrolled: bool,
 }
 
 #[tauri::command]
@@ -104,8 +104,8 @@ pub fn vault_status() -> VaultStatus {
     VaultStatus {
         exists: vault::exists(),
         unlocked: vault::is_unlocked(),
-        biometrics_supported: vault::biometric_supported(),
-        biometrics_enrolled: vault::biometric_enrolled(),
+        biometric_supported: vault::biometric_supported(),
+        biometric_enrolled: vault::biometric_enrolled(),
     }
 }
 
@@ -277,7 +277,7 @@ pub async fn connect_profile(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
-    let profile = store::find_profile(&profile_id)?;
+    let profile = store::profile_by_id(&profile_id)?;
     // Same ControlMaster sockets as kai: whoever connects first pays for the
     // ssh auth, later tunnels from either side attach to the live master.
     let connected = db::connect(
@@ -314,7 +314,7 @@ pub async fn open_isolated_session(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
-    let profile = store::find_profile(&profile_id)?;
+    let profile = store::profile_by_id(&profile_id)?;
     // Reuse the primary session's endpoint: 127.0.0.1:<tunnel_port> when
     // tunneled, else the profile's own host:port (direct connection).
     let endpoint = {
@@ -471,7 +471,7 @@ pub struct TableInfo {
 }
 
 #[tauri::command]
-pub async fn get_tables(
+pub async fn list_tables(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<TableInfo>, AppError> {
@@ -517,7 +517,7 @@ WHERE c.relkind IN ('r','p','v','m','f')
 ORDER BY n.nspname, c.relname, a.attnum";
 
 #[tauri::command]
-pub async fn get_all_columns(
+pub async fn list_all_columns(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<TableColumns>, AppError> {
@@ -564,7 +564,7 @@ async fn introspect_rows(
 }
 
 #[tauri::command]
-pub async fn get_columns(
+pub async fn list_columns(
     state: State<'_, AppState>,
     session_id: String,
     schema: String,
@@ -608,7 +608,7 @@ pub struct IndexInfo {
 }
 
 #[tauri::command]
-pub async fn get_indexes(
+pub async fn list_indexes(
     state: State<'_, AppState>,
     session_id: String,
     schema: String,
@@ -640,7 +640,7 @@ pub struct RelationInfo {
 }
 
 #[tauri::command]
-pub async fn get_relations(
+pub async fn list_relations(
     state: State<'_, AppState>,
     session_id: String,
     schema: String,
@@ -671,7 +671,7 @@ pub struct TriggerInfo {
 }
 
 #[tauri::command]
-pub async fn get_triggers(
+pub async fn list_triggers(
     state: State<'_, AppState>,
     session_id: String,
     schema: String,

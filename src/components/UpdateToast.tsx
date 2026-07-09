@@ -60,7 +60,7 @@ export function UpdateToast() {
 
   if (!update || dismissed) return null;
 
-  const onAction = () => {
+  const handleAction = () => {
     if (ready) void restart();
     else if (!downloading) void install();
   };
@@ -86,7 +86,7 @@ export function UpdateToast() {
       )}
     >
       <button
-        onClick={onAction}
+        onClick={handleAction}
         disabled={downloading}
         title={
           error

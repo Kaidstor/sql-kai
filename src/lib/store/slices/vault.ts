@@ -41,7 +41,7 @@ export function createVaultSlice(set: Set, get: Get, ctx: StoreContext): VaultSl
     // isolated tabs reopen lazily.
     const primaries = sessionList.filter((s) => !s.isolated);
     for (const s of sessionList) {
-      if (s.isolated) api.disconnect(s.sessionId).catch(() => {});
+      if (s.isolated) api.disconnectSession(s.sessionId).catch(() => {});
     }
     const sessions: Record<string, SessionInfo> = {};
     for (const s of primaries) sessions[s.profileId] = s;

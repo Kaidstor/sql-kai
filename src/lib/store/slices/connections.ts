@@ -86,7 +86,7 @@ export function createConnectionsSlice(
     );
     if (own.length === 0) return;
     const ids = new Set(own.map((iso) => iso.sessionId));
-    for (const iso of own) api.disconnect(iso.sessionId).catch(() => {});
+    for (const iso of own) api.disconnectSession(iso.sessionId).catch(() => {});
     set((st) => ({
       isolatedSessions: Object.fromEntries(
         Object.entries(st.isolatedSessions).filter(([id]) => !ids.has(id)),
@@ -124,7 +124,7 @@ export function createConnectionsSlice(
         connectError: without(s.connectError, profileId),
       }));
       try {
-        const info = await api.connect(profileId);
+        const info = await api.connectProfile(profileId);
         set((s) => {
           return {
             sessions: { ...s.sessions, [profileId]: info },
@@ -196,7 +196,7 @@ export function createConnectionsSlice(
       const session = get().sessions[profileId];
       if (session) {
         try {
-          await api.disconnect(session.sessionId);
+          await api.disconnectSession(session.sessionId);
         } catch {
           // session may already be gone server-side
         }
@@ -230,7 +230,7 @@ export function createConnectionsSlice(
         // drop the old session but keep the tabs (unlike disconnect)
         set((s) => ({ sessions: without(s.sessions, profileId) }));
         try {
-          await api.disconnect(session.sessionId);
+          await api.disconnectSession(session.sessionId);
         } catch {
           // it may already be gone server-side
         }
@@ -261,8 +261,8 @@ export function createConnectionsSlice(
       // them concurrently (allSettled so the non-fatal columns fetch can fail on
       // its own without touching the tables error path).
       const [tablesR, colsR] = await Promise.allSettled([
-        api.getTables(session.sessionId),
-        api.getAllColumns(session.sessionId),
+        api.listTables(session.sessionId),
+        api.listAllColumns(session.sessionId),
       ]);
       if (tablesR.status === "fulfilled") {
         set((s) => ({ tables: { ...s.tables, [profileId]: tablesR.value } }));
@@ -376,7 +376,7 @@ export function createConnectionsSlice(
       const session = get().sessions[profileId];
       if (!session) return;
       try {
-        const cols = await api.getColumns(session.sessionId, schema, table);
+        const cols = await api.listColumns(session.sessionId, schema, table);
         set((s) => ({ tableColumns: { ...s.tableColumns, [key]: cols } }));
       } catch (e) {
         get().showToast(ctx.handleSqlError(profileId, e));
@@ -389,7 +389,7 @@ export function createConnectionsSlice(
       const session = get().sessions[profileId];
       if (!session) return;
       try {
-        const rels = await api.getRelations(session.sessionId, schema, table);
+        const rels = await api.listRelations(session.sessionId, schema, table);
         set((s) => ({ tableRelations: { ...s.tableRelations, [key]: rels } }));
       } catch {
         // non-fatal: FK navigation just stays off for this table

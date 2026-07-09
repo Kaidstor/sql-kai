@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { Button, IconBtn, Overlay } from "../ui";
+import { Button, IconButton, Overlay } from "../ui";
 
 /** Full-value cell viewer/editor state (json/jsonb arrives prettified). */
 export interface CellDialogState {
@@ -46,9 +46,9 @@ export function CellDialog({
             row {dialog.row + 1}
           </span>
           <div className="ml-auto">
-            <IconBtn onClick={onClose}>
+            <IconButton onClick={onClose}>
               <X size={14} />
-            </IconBtn>
+            </IconButton>
           </div>
         </div>
         <textarea

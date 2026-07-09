@@ -7,7 +7,7 @@ import { columnsKey, noTableEdits } from "../helpers";
 import type { InsertRow, TableTabState } from "../types";
 
 export interface TableSlice {
-  loadTablePage: (
+  refreshTablePage: (
     tabId: string,
     patch?: Partial<
       Pick<TableTabState, "page" | "pageSize" | "sorts" | "filter">
@@ -20,7 +20,7 @@ export interface TableSlice {
     col: number,
     value: string | null,
   ) => void;
-  toggleRowDeletes: (tabId: string, rows: number[], del: boolean) => void;
+  setRowsDeleted: (tabId: string, rows: number[], del: boolean) => void;
   /** Stages copies of the rows as pending INSERTs; generated keys are cut. */
   duplicateRows: (tabId: string, rows: number[]) => void;
   stageInsertCell: (
@@ -41,7 +41,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
   const { tabOf, patchTab } = ctx;
 
   return {
-    loadTablePage: async (tabId, patch) => {
+    refreshTablePage: async (tabId, patch) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       const session = ctx.sessionFor(tab.profileId);
@@ -109,7 +109,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       patchTab<TableTabState>(tabId, { edits });
     },
 
-    toggleRowDeletes: (tabId, rows, del) => {
+    setRowsDeleted: (tabId, rows, del) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       const next = new Set(tab.state.deletes);
@@ -250,7 +250,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       // only a reload can show them.
       if (st.inserts.length > 0) {
         patchTab<TableTabState>(tabId, noTableEdits());
-        await get().loadTablePage(tabId);
+        await get().refreshTablePage(tabId);
         return;
       }
       const deletedRows = new Set(st.deletes);

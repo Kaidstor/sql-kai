@@ -29,8 +29,8 @@ pub struct DiscoverArgs {
     #[arg(long, value_name = "PROJ/KEY")]
     sec_key: Option<String>,
     /// Не хранить пароль в vault (прод-политика: только sec / --password-env)
-    #[arg(long)]
-    no_store: bool,
+    #[arg(long, alias = "no-store")]
+    no_vault: bool,
     /// Только показать найденное, не сохранять профиль
     #[arg(long)]
     dry_run: bool,
@@ -190,9 +190,9 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
                 None => eprintln!("kai: --to-sec задан, но пароль в env контейнера не найден"),
             }
         }
-        // 2) пароль в vault (если не --no-store)
+        // 2) пароль в vault (если не --no-vault)
         // None = не трогать существующий секрет (пароль не нашли/не кладём).
-        let password_arg = match (&d.password, a.no_store) {
+        let password_arg = match (&d.password, a.no_vault) {
             (Some(pw), false) => match session::unlock_vault() {
                 Ok(()) => Some(pw.clone()),
                 Err(e) => {
@@ -208,7 +208,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         };
         profile = store::upsert_profile(profile, password_arg, None)?;
         println!("профиль '{}' сохранён (id {})", profile.name, profile.id);
-        if a.no_store && to_sec {
+        if a.no_vault && to_sec {
             println!(
                 "прод-режим: пароль только в sec — запускай `kai {} -c \"…\" --from-sec` \
                  или `sec run {} -- …`",

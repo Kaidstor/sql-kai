@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 import { useMemo } from "react";
 import { fmtMs, fmtNum } from "../lib/format";
 import type { ExplainResult, PlanNode } from "../lib/types";
-import { IconBtn, cn } from "./ui";
+import { IconButton, cn } from "./ui";
 
 /** One flattened row of the plan tree with derived metrics. */
 interface FlatNode {
@@ -123,9 +123,9 @@ export function ExplainView({
           {analyzed ? "bar = node time share" : "bar = node cost share"}
         </span>
         <div className="ml-auto">
-          <IconBtn title="Back to results" onClick={onClose}>
+          <IconButton title="Back to results" onClick={onClose}>
             <X size={13} />
-          </IconBtn>
+          </IconButton>
         </div>
       </div>
 

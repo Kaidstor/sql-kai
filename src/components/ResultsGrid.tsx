@@ -20,7 +20,7 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuTrigger,
-} from "./context-menu";
+} from "./ContextMenu";
 import { cn } from "./ui";
 import { CellDialog, type CellDialogState } from "./grid/CellDialog";
 import { CellInput } from "./grid/CellInput";
@@ -173,7 +173,7 @@ function ResultsGridImpl({
     return null;
   }
 
-  const onCellContext = (ri: number, ci: number) => {
+  const handleCellContext = (ri: number, ci: number) => {
     setMenuCell({ row: ri, col: ci });
     setMenuCol(null);
     if (!selected.has(ri)) {
@@ -231,7 +231,7 @@ function ResultsGridImpl({
 
   const canEdit = Boolean(editing) && !editing?.disabledReason;
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "c") {
       // column > cell selection > whole rows (via the row-number gutter)
       if (selColList.length > 0) {
@@ -331,7 +331,7 @@ function ResultsGridImpl({
   };
 
   /** Fallback path for environments that do fire `paste` here (dev browser). */
-  const onPaste = (e: ClipboardEvent) => {
+  const handlePaste = (e: ClipboardEvent) => {
     if (!editing || !canEdit) return;
     const target = e.target as HTMLElement;
     if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
@@ -408,8 +408,8 @@ function ResultsGridImpl({
       <ContextMenuTrigger
         ref={gridRef}
         tabIndex={0}
-        onKeyDown={onKeyDown}
-        onPaste={onPaste}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         onMouseDown={(e) => {
           // WebKit extends native text selection on shift+click even under
           // user-select: none; shift here means row/cell range selection
@@ -535,7 +535,7 @@ function ResultsGridImpl({
               const tr = (
                 <tr
                   key={ri}
-                  onContextMenu={() => onCellContext(ri, -1)}
+                  onContextMenu={() => handleCellContext(ri, -1)}
                   className={cn(
                     isDeleted
                       ? "bg-red-950/40"
@@ -671,7 +671,7 @@ function ResultsGridImpl({
                             );
                           }
                         }}
-                        onContextMenu={() => onCellContext(ri, ci)}
+                        onContextMenu={() => handleCellContext(ri, ci)}
                         onDoubleClick={
                           editing && !isDeleted
                             ? () => startEdit(ri, ci)

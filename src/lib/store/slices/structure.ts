@@ -13,7 +13,7 @@ import type {
 
 export interface StructureSlice {
   setStructureSection: (tabId: string, section: StructureSection) => void;
-  loadStructure: (tabId: string) => Promise<void>;
+  refreshStructure: (tabId: string) => Promise<void>;
   /** Runs DDL in the tab's session, refreshes the structure view. Returns success. */
   runDdl: (tabId: string, sql: string) => Promise<boolean>;
   /** Stage a column change; staging the original value reverts the field. */
@@ -46,10 +46,10 @@ export function createStructureSlice(
   return {
     setStructureSection: (tabId, section) => {
       patchTab<StructureTabState>(tabId, { section });
-      void get().loadStructure(tabId);
+      void get().refreshStructure(tabId);
     },
 
-    loadStructure: async (tabId) => {
+    refreshStructure: async (tabId) => {
       const tab = tabOf(tabId, "structure");
       if (!tab) return;
       const session = ctx.sessionFor(tab.profileId);
@@ -61,16 +61,16 @@ export function createStructureSlice(
         () => Promise<Partial<StructureTabState>>
       > = {
         columns: async () => ({
-          columns: await api.getColumns(session.sessionId, schema, table),
+          columns: await api.listColumns(session.sessionId, schema, table),
         }),
         indexes: async () => ({
-          indexes: await api.getIndexes(session.sessionId, schema, table),
+          indexes: await api.listIndexes(session.sessionId, schema, table),
         }),
         relations: async () => ({
-          relations: await api.getRelations(session.sessionId, schema, table),
+          relations: await api.listRelations(session.sessionId, schema, table),
         }),
         triggers: async () => ({
-          triggers: await api.getTriggers(session.sessionId, schema, table),
+          triggers: await api.listTriggers(session.sessionId, schema, table),
         }),
       };
       patchTab<StructureTabState>(tabId, {
@@ -109,7 +109,7 @@ export function createStructureSlice(
       // sidebar column cache is stale now
       invalidateColumns(tab.profileId, schema, table);
       get().showToast("Applied", "success");
-      await get().loadStructure(tabId);
+      await get().refreshStructure(tabId);
       return true;
     },
 
@@ -192,7 +192,7 @@ export function createStructureSlice(
       invalidateColumns(tab.profileId, tab.state.schema, tab.state.table);
       patchTab<StructureTabState>(tabId, noStructureEdits());
       get().showToast(`Applied ${stmts.length} change(s)`, "success");
-      await get().loadStructure(tabId);
+      await get().refreshStructure(tabId);
     },
   };
 }

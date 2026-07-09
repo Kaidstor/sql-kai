@@ -7,7 +7,8 @@ use clap::Args;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store;
 
-use crate::{output, sec, session};
+use crate::output::{self, Format, FormatArgs};
+use crate::{sec, session};
 
 #[derive(Args)]
 pub struct HistoryArgs {
@@ -16,8 +17,8 @@ pub struct HistoryArgs {
     /// Сколько записей показать
     #[arg(short = 'n', long, default_value_t = 20)]
     limit: usize,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    fmt: FormatArgs,
     /// Прогнать history.json через `sec scan` — не утёк ли секрет в открытом виде
     #[arg(long)]
     scan: bool,
@@ -44,7 +45,8 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
         });
     }
     entries.truncate(a.limit);
-    if a.json {
+    // --json отдаёт полные записи (id/at/ok), не табличную проекцию
+    if a.fmt.pick() == Format::Json {
         println!("{}", serde_json::to_string_pretty(&entries).unwrap());
         return Ok(ExitCode::SUCCESS);
     }
@@ -60,7 +62,7 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
             ]
         })
         .collect();
-    output::print_rows(&["when", "profile", "st", "sql"], &rows, false);
+    output::print_rows(&["when", "profile", "st", "sql"], &rows, a.fmt.pick());
     Ok(ExitCode::SUCCESS)
 }
 

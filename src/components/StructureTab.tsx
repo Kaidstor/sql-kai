@@ -11,10 +11,10 @@ import { relIdent } from "../lib/sql";
 import { TabError } from "./TabError";
 import {
   Button,
-  IconBtn,
+  IconButton,
   Input,
   PendingChangesBar,
-  RefreshBtn,
+  RefreshButton,
   cn,
 } from "./ui";
 
@@ -222,7 +222,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
   const state = tab.state as StructureTabState;
   const sessions = useApp((s) => s.sessions);
   const setStructureSection = useApp((s) => s.setStructureSection);
-  const loadStructure = useApp((s) => s.loadStructure);
+  const refreshStructure = useApp((s) => s.refreshStructure);
   const runDdl = useApp((s) => s.runDdl);
   const stageColumnEdit = useApp((s) => s.stageColumnEdit);
   const toggleColumnDrop = useApp((s) => s.toggleColumnDrop);
@@ -236,7 +236,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
   // Lazy load: restored/reopened tabs fetch when first shown, not in bulk at boot.
   useEffect(() => {
     if (connected && !state[state.section] && !state.loading && !state.error) {
-      void loadStructure(tab.id);
+      void refreshStructure(tab.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
@@ -278,13 +278,13 @@ export function StructureTab({ tab }: { tab: Tab }) {
         )}
         <div className="ml-auto flex items-center gap-0.5">
           {state.section === "columns" && (
-            <IconBtn title="Add column" onClick={() => setAdding(true)}>
+            <IconButton title="Add column" onClick={() => setAdding(true)}>
               <Plus size={14} />
-            </IconBtn>
+            </IconButton>
           )}
-          <RefreshBtn
-            loading={state.loading}
-            onClick={() => void loadStructure(tab.id)}
+          <RefreshButton
+            busy={state.loading}
+            onClick={() => void refreshStructure(tab.id)}
           />
         </div>
       </div>
@@ -336,12 +336,12 @@ export function StructureTab({ tab }: { tab: Tab }) {
                         <BoolMark value={col.isPk} />
                       </Td>
                       <Td>
-                        <IconBtn
+                        <IconButton
                           title="Restore column"
                           onClick={() => toggleColumnDrop(tab.id, col.name)}
                         >
                           <Undo2 size={13} />
-                        </IconBtn>
+                        </IconButton>
                       </Td>
                     </ZTr>
                   );
@@ -420,12 +420,12 @@ export function StructureTab({ tab }: { tab: Tab }) {
                       <BoolMark value={col.isPk} />
                     </Td>
                     <Td>
-                      <IconBtn
+                      <IconButton
                         title={`Drop column ${col.name} (staged)`}
                         onClick={() => toggleColumnDrop(tab.id, col.name)}
                       >
                         <X size={13} />
-                      </IconBtn>
+                      </IconButton>
                     </Td>
                   </ZTr>
                 );
@@ -448,12 +448,12 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   <Td className="italic text-zinc-600">new column</Td>
                   <Td />
                   <Td>
-                    <IconBtn
+                    <IconButton
                       title="Remove pending column"
                       onClick={() => unstageColumnAdd(tab.id, i)}
                     >
                       <X size={13} />
-                    </IconBtn>
+                    </IconButton>
                   </Td>
                 </tr>
               ))}
@@ -494,7 +494,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
                   </Td>
                   <Td className="text-zinc-400">{idx.columns ?? "(expression)"}</Td>
                   <Td>
-                    <IconBtn
+                    <IconButton
                       title={idx.primary ? "Primary key — drop via constraint" : `Drop index ${idx.name}`}
                       disabled={idx.primary}
                       onClick={() => {
@@ -504,7 +504,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
                       }}
                     >
                       <X size={13} />
-                    </IconBtn>
+                    </IconButton>
                   </Td>
                 </ZTr>
               ))}

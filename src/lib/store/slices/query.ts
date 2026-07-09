@@ -29,7 +29,7 @@ export interface QuerySlice {
   isolateTab: (tabId: string) => Promise<void>;
   /** Drops the tab's isolated connection (rolling back any open tx) and moves
    *  it back onto the profile's shared session; forces commit mode to auto. */
-  mergeTab: (tabId: string) => Promise<void>;
+  unisolateTab: (tabId: string) => Promise<void>;
   /** Auto/Manual commit for an (isolated) query tab; "manual" isolates first. */
   setCommitMode: (tabId: string, mode: "auto" | "manual") => Promise<void>;
   /** COMMIT / ROLLBACK the open transaction on the tab's connection. */
@@ -79,7 +79,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
     const tab = tabOf(tabId, "query");
     const sid = tab?.state.sessionId;
     if (!sid) return;
-    api.disconnect(sid).catch(() => {});
+    api.disconnectSession(sid).catch(() => {});
     set((s) => ({ isolatedSessions: without(s.isolatedSessions, sid) }));
     patchTab<QueryTabState>(tabId, { sessionId: undefined });
   };
@@ -171,7 +171,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
   /** Error routing shared by runQuery/runExplain: a dying isolated connection
    *  is a per-tab event (drop it, it reopens next run); the shared connection
    *  flips the whole profile to "connection lost". */
-  const onRunError = (tab: Tab, isolated: boolean, e: unknown) => {
+  const handleRunError = (tab: Tab, isolated: boolean, e: unknown) => {
     if (isolated) {
       if (isSessionLost(e)) dropIsolatedSession(tab.id);
     } else {
@@ -193,7 +193,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       // Смерть соединения на COMMIT/ROLLBACK — та же маршрутизация, что у
       // runQuery: изолированная сессия дропается, общая флипает профиль в
       // "connection lost" (иначе Reconnect не предлагается).
-      onRunError(tab, Boolean(tab.state.sessionId), e);
+      handleRunError(tab, Boolean(tab.state.sessionId), e);
       get().showToast(errText(e));
     }
     void refreshTxStatus(session);
@@ -254,7 +254,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           result: undefined,
           running: false,
         });
-        onRunError(tab, isolated, e);
+        handleRunError(tab, isolated, e);
       }
       // BEGIN/COMMIT/ROLLBACK (or manual-commit's auto-BEGIN) may have changed
       // the tx state — refresh the badge (runs on both the ok and error paths).
@@ -299,7 +299,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           explain: undefined,
           running: false,
         });
-        onRunError(tab, isolated, e);
+        handleRunError(tab, isolated, e);
       }
       if (analyze) void refreshTxStatus(session);
     },
@@ -334,7 +334,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       );
     },
 
-    mergeTab: async (tabId) => {
+    unisolateTab: async (tabId) => {
       const tab = tabOf(tabId, "query");
       if (!tab || !tab.state.isolated) return;
       dropIsolatedSession(tabId); // disconnect rolls back any open transaction

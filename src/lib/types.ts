@@ -39,9 +39,9 @@ export interface VaultStatus {
   /** The DEK is decrypted in memory for this session. */
   unlocked: boolean;
   /** This platform can offer Touch ID at all (macOS). */
-  biometricsSupported: boolean;
+  biometricSupported: boolean;
   /** A DEK copy is enrolled in the biometric keychain for this vault. */
-  biometricsEnrolled: boolean;
+  biometricEnrolled: boolean;
 }
 
 export interface HistoryEntry {
@@ -84,7 +84,7 @@ export interface CliSessionInfo {
   origin: string;
   serverVersion: string;
   tunnelPort?: number | null;
-  tx: string;
+  tx: TxStatus;
   idleSec?: number | null;
 }
 

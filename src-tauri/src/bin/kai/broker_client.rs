@@ -9,7 +9,7 @@ use sql_kai_lib::db::ExecResult;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-pub struct Broker {
+pub struct BrokerClient {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
     next_id: u64,
@@ -45,11 +45,11 @@ impl std::fmt::Display for BrokerError {
 }
 
 /// Живой брокер или None (GUI не запущен / несовместимый протокол).
-pub async fn connect() -> Option<Broker> {
+pub async fn connect() -> Option<BrokerClient> {
     let path = broker::socket_path().ok()?;
     let stream = UnixStream::connect(&path).await.ok()?;
     let (read, writer) = stream.into_split();
-    let mut b = Broker {
+    let mut b = BrokerClient {
         reader: BufReader::new(read),
         writer,
         next_id: 0,
@@ -75,7 +75,7 @@ pub async fn connect() -> Option<Broker> {
     Some(b)
 }
 
-impl Broker {
+impl BrokerClient {
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, BrokerError> {
         self.next_id += 1;
         let mut line = serde_json::to_vec(&json!({

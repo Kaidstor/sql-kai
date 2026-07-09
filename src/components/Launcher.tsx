@@ -23,8 +23,8 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "./context-menu";
-import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
+} from "./ContextMenu";
+import { CliBadge, cn, IconButton, Input, ProdBadge } from "./ui";
 
 function ProfileCard({ profile }: { profile: Profile }) {
   const sessions = useApp((s) => s.sessions);
@@ -153,23 +153,23 @@ function ProfileCard({ profile }: { profile: Profile }) {
         {busy ? (
           <Loader2 size={13} className="m-1 animate-spin text-amber-400" />
         ) : connected ? (
-          <IconBtn title="Disconnect" onClick={() => void disconnect(profile.id)}>
+          <IconButton title="Disconnect" onClick={() => void disconnect(profile.id)}>
             <Unplug size={13} />
-          </IconBtn>
+          </IconButton>
         ) : (
-          <IconBtn
+          <IconButton
             title={retry ? "Reconnect" : "Connect"}
             onClick={() => void connect(profile.id)}
           >
             {retry ? <RefreshCw size={13} /> : <Plug size={13} />}
-          </IconBtn>
+          </IconButton>
         )}
-        <IconBtn title="Edit" onClick={() => openDialog(profile)}>
+        <IconButton title="Edit" onClick={() => openDialog(profile)}>
           <Pencil size={13} />
-        </IconBtn>
-        <IconBtn title="Delete" onClick={confirmDelete}>
+        </IconButton>
+        <IconButton title="Delete" onClick={confirmDelete}>
           <Trash2 size={13} />
-        </IconBtn>
+        </IconButton>
       </div>
     </div>
     </ContextMenuTrigger>
@@ -239,15 +239,15 @@ export function Launcher() {
 
   useEffect(() => {
     if (!canClose) return;
-    const onKey = (e: KeyboardEvent) => {
+    const handleKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       const s = useApp.getState();
       // overlays on top of the launcher own their Esc
       if (s.palette || s.dialog.open || s.settingsOpen) return;
       setLauncherOpen(false);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
   }, [canClose, setLauncherOpen]);
 
   const visible = useMemo(
@@ -295,9 +295,9 @@ export function Launcher() {
           <Database size={12} /> CONNECTIONS
         </div>
         {canClose && (
-          <IconBtn title="Back to workspace (Esc)" onClick={() => setLauncherOpen(false)}>
+          <IconButton title="Back to workspace (Esc)" onClick={() => setLauncherOpen(false)}>
             <X size={15} />
-          </IconBtn>
+          </IconButton>
         )}
       </div>
 

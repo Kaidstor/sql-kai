@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { isMac } from "../lib/platform";
-import { cn, IconBtn, Overlay } from "./ui";
+import { cn, IconButton, Overlay } from "./ui";
 
 const MOD = isMac ? "⌘" : "Ctrl";
 const SHIFT = isMac ? "⇧" : "Shift";
@@ -112,9 +112,9 @@ export function ShortcutsOverlay({
             Keyboard shortcuts
           </span>
           <div className="ml-auto">
-            <IconBtn onClick={onClose}>
+            <IconButton onClick={onClose}>
               <X size={14} />
-            </IconBtn>
+            </IconButton>
           </div>
         </div>
         <div className="px-6 py-5">

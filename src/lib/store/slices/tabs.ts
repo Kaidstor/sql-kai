@@ -79,7 +79,7 @@ export function createTabsSlice(set: Set, get: Get, ctx: StoreContext): TabsSlic
         existing.state.kind === "table" &&
         existing.state.filter !== filter
       ) {
-        void get().loadTablePage(existing.id, { filter, page: 0 });
+        void get().refreshTablePage(existing.id, { filter, page: 0 });
       }
       return;
     }
@@ -185,7 +185,7 @@ export function createTabsSlice(set: Set, get: Get, ctx: StoreContext): TabsSlic
         }
       }
       if (isoIds.size > 0) {
-        for (const sid of isoIds) api.disconnect(sid).catch(() => {});
+        for (const sid of isoIds) api.disconnectSession(sid).catch(() => {});
         set((s) => ({
           isolatedSessions: Object.fromEntries(
             Object.entries(s.isolatedSessions).filter(([id]) => !isoIds.has(id)),

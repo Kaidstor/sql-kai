@@ -127,7 +127,7 @@ function ErrorScreen({ message }: { message: string }) {
 
 function SetupScreen() {
   const setupVault = useApp((s) => s.setupVault);
-  const supported = useApp((s) => s.vault?.biometricsSupported ?? false);
+  const supported = useApp((s) => s.vault?.biometricSupported ?? false);
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [enableBio, setEnableBio] = useState(true);
@@ -193,8 +193,8 @@ function SetupScreen() {
 function UnlockScreen() {
   const unlockVault = useApp((s) => s.unlockVault);
   const unlockVaultBiometric = useApp((s) => s.unlockVaultBiometric);
-  const supported = useApp((s) => s.vault?.biometricsSupported ?? false);
-  const enrolled = useApp((s) => s.vault?.biometricsEnrolled ?? false);
+  const supported = useApp((s) => s.vault?.biometricSupported ?? false);
+  const enrolled = useApp((s) => s.vault?.biometricEnrolled ?? false);
   const [pw, setPw] = useState("");
   const [enableBio, setEnableBio] = useState(false);
   const [busy, setBusy] = useState(false);

@@ -151,7 +151,7 @@ function PaletteModal({
 
 /** ⌘⌥O — fuzzy connection switcher; ⌘P — saved queries; ⌘T — tables/columns/
  *  functions of the active database. */
-export function AppPalette() {
+export function Palette() {
   const palette = useApp((s) => s.palette);
   const setPalette = useApp((s) => s.setPalette);
   const profiles = useApp((s) => s.profiles);

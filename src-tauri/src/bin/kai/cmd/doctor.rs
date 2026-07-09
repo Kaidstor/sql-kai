@@ -9,14 +9,15 @@ use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
+use crate::output::{self, Format, FormatArgs};
 use crate::{sec, session};
 
 #[derive(Args)]
 pub struct DoctorArgs {
     /// Проверить один профиль (имя или id); без него — все
     alias: Option<String>,
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    fmt: FormatArgs,
 }
 
 /// Итог проверки одного источника пароля.
@@ -103,7 +104,8 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         }));
     }
 
-    if a.json {
+    let fmt = a.fmt.pick();
+    if fmt == Format::Json {
         println!("{}", serde_json::to_string_pretty(&rows).unwrap());
     } else {
         let table: Vec<Vec<Option<String>>> = rows
@@ -117,8 +119,8 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
                 ]
             })
             .collect();
-        crate::output::print_rows(&["profile", "vault", "sec", "note"], &table, false);
-        if sec_ok {
+        output::print_rows(&["profile", "vault", "sec", "note"], &table, fmt);
+        if sec_ok && fmt == Format::Table {
             eprintln!("подсказка: что пора ротировать по срокам — `sec stale`");
         }
     }

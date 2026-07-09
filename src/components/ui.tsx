@@ -30,14 +30,14 @@ export function Overlay({
     if (!closeOnEsc) return;
     // Capture phase + stopPropagation so an open grid/editor underneath the
     // dialog doesn't also react to the same Escape.
-    const onKey = (e: KeyboardEvent) => {
+    const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
       }
     };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", handleKey, true);
+    return () => window.removeEventListener("keydown", handleKey, true);
   }, [closeOnEsc, onClose]);
   return (
     <div
@@ -69,17 +69,17 @@ export function Popover({
 
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => {
+    const handleDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => {
+    const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", handleDown);
+    document.addEventListener("keydown", handleKey);
     return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", handleDown);
+      document.removeEventListener("keydown", handleKey);
     };
   }, [open, onClose]);
 
@@ -128,7 +128,7 @@ export function Button({
 }
 
 /** Toolbar dropdown trigger: icon + label with a trailing chevron. */
-export function MenuBtn({
+export function MenuButton({
   className,
   children,
   ...props
@@ -192,7 +192,7 @@ export function ColorDot({ color }: { color: string | null }) {
   );
 }
 
-export function IconBtn({
+export function IconButton({
   className,
   title,
   ...props
@@ -211,24 +211,24 @@ export function IconBtn({
   );
 }
 
-/** Refresh icon button that swaps to a spinner while loading. */
-export function RefreshBtn({
-  loading,
+/** Refresh icon button that swaps to a spinner while busy. */
+export function RefreshButton({
+  busy,
   onClick,
   title = "Refresh",
 }: {
-  loading: boolean;
+  busy: boolean;
   onClick: () => void;
   title?: string;
 }) {
   return (
-    <IconBtn title={title} disabled={loading} onClick={onClick}>
-      {loading ? (
+    <IconButton title={title} disabled={busy} onClick={onClick}>
+      {busy ? (
         <Loader2 size={13} className="animate-spin" />
       ) : (
         <RefreshCw size={13} />
       )}
-    </IconBtn>
+    </IconButton>
   );
 }
 

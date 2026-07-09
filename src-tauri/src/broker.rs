@@ -220,7 +220,7 @@ impl BrokerState {
             .cloned()
     }
 
-    fn drop_entry(&self, profile_id: &str) {
+    fn remove_entry(&self, profile_id: &str) {
         self.cli.lock().unwrap().remove(profile_id);
     }
 }
@@ -427,7 +427,7 @@ async fn do_query(
             // сессия могла умереть под запросом — выкинуть, следующий запрос
             // откроет свежую
             if entry.session.client.is_closed() {
-                state.drop_entry(profile_id);
+                state.remove_entry(profile_id);
                 (hooks.changed)();
             }
             Err(MethodError {
@@ -450,7 +450,7 @@ async fn get_or_open(
     if let Some(entry) = state.get_live(profile_id) {
         return Ok(entry);
     }
-    let profile = store::find_profile(profile_id)?;
+    let profile = store::profile_by_id(profile_id)?;
     let connected = db::connect(
         &profile,
         db::ConnectOptions {

@@ -4,7 +4,7 @@ import { api, errText } from "../lib/api";
 import { ACCENTS, accentColor } from "../lib/colors";
 import { useApp } from "../lib/store";
 import type { Profile } from "../lib/types";
-import { Button, Field, IconBtn, Input, Overlay, ProdBadge, cn } from "./ui";
+import { Button, Field, IconButton, Input, Overlay, ProdBadge, cn } from "./ui";
 
 interface FormState {
   name: string;
@@ -186,7 +186,7 @@ export function ConnectionDialog() {
   const passwordArg = secretArg(form.password, form.clearPassword);
   const sshPassphraseArg = secretArg(form.sshPassphrase, form.clearSshPassphrase);
 
-  const onTest = async () => {
+  const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
     try {
@@ -203,7 +203,7 @@ export function ConnectionDialog() {
     }
   };
 
-  const onSave = async () => {
+  const handleSave = async () => {
     setSaving(true);
     try {
       await saveProfile(toProfile(form, editing), passwordArg, sshPassphraseArg);
@@ -221,9 +221,9 @@ export function ConnectionDialog() {
           <div className="text-[13px] font-semibold text-zinc-100">
             {editing ? "Edit connection" : "New connection"}
           </div>
-          <IconBtn onClick={closeDialog}>
+          <IconButton onClick={closeDialog}>
             <X size={15} />
-          </IconBtn>
+          </IconButton>
         </div>
 
         <div className="p-4 space-y-3">
@@ -427,7 +427,7 @@ export function ConnectionDialog() {
         </div>
 
         <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-800">
-          <Button onClick={() => void onTest()} disabled={testing || saving}>
+          <Button onClick={() => void handleTest()} disabled={testing || saving}>
             {testing && <Loader2 size={13} className="animate-spin" />}
             Test connection
           </Button>
@@ -437,7 +437,7 @@ export function ConnectionDialog() {
             </Button>
             <Button
               variant="primary"
-              onClick={() => void onSave()}
+              onClick={() => void handleSave()}
               disabled={saving || !form.host || !form.database || !form.user}
             >
               {saving && <Loader2 size={13} className="animate-spin" />}

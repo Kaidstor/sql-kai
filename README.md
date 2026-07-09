@@ -79,7 +79,7 @@ kai vault trust                 # тихий доступ CLI к паролям 
 - **Интеграция с [sec](https://go.dev)** (агент-безопасный менеджер секретов; хранилища не сливаются —
   vault для GUI, sec для CLI). kai зовёт `sec` из PATH (или `KAI_SEC_BIN`), ключ
   по конвенции `<имя>/DB_PASSWORD`:
-  - `kai discover --to-sec [--no-store]` — пароль БД в sec (прод-политика: не в vault),
+  - `kai discover --to-sec [--no-vault]` — пароль БД в sec (прод-политика: не в vault),
     `kai <alias> --from-sec` — брать пароль из sec на лету;
   - `kai rotate <alias>` — ротация пароля роли: sec генерирует/версионирует (старое
     в историю sec = страховка от локаута), kai применяет `ALTER ROLE` и проверяет;

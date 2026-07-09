@@ -9,8 +9,8 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "./context-menu";
-import { MenuBtn, Popover, cn } from "./ui";
+} from "./ContextMenu";
+import { MenuButton, Popover, cn } from "./ui";
 
 function fmtTime(at: number): string {
   const d = new Date(at);
@@ -95,13 +95,13 @@ export function HistoryMenu({ tab }: { tab: Tab }) {
       onClose={() => setOpen(false)}
       panelClassName="w-96 max-h-96 overflow-y-auto p-1"
       trigger={
-        <MenuBtn
+        <MenuButton
           title="Query history (right-click entries to clean up)"
           onClick={() => setOpen((v) => !v)}
         >
           <History size={13} />
           History
-        </MenuBtn>
+        </MenuButton>
       }
     >
       {entries.length === 0 ? (

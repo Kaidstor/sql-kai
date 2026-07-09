@@ -81,10 +81,10 @@ export const api = {
   importHistory: (entries: HistoryEntry[]) =>
     invoke<HistoryEntry[]>("import_history", { entries }),
 
-  connect: (profileId: string) =>
+  connectProfile: (profileId: string) =>
     invoke<SessionInfo>("connect_profile", { profileId }),
 
-  disconnect: (sessionId: string) =>
+  disconnectSession: (sessionId: string) =>
     invoke<void>("disconnect_session", { sessionId }),
 
   listSessions: () => invoke<SessionInfo[]>("list_sessions"),
@@ -113,14 +113,14 @@ export const api = {
   sessionTxStatus: (sessionId: string) =>
     invoke<TxStatus>("session_tx_status", { sessionId }),
 
-  getTables: (sessionId: string) =>
-    invoke<TableInfo[]>("get_tables", { sessionId }),
+  listTables: (sessionId: string) =>
+    invoke<TableInfo[]>("list_tables", { sessionId }),
 
-  getColumns: (sessionId: string, schema: string, table: string) =>
-    invoke<ColumnInfo[]>("get_columns", { sessionId, schema, table }),
+  listColumns: (sessionId: string, schema: string, table: string) =>
+    invoke<ColumnInfo[]>("list_columns", { sessionId, schema, table }),
 
-  getAllColumns: (sessionId: string) =>
-    invoke<TableColumns[]>("get_all_columns", { sessionId }),
+  listAllColumns: (sessionId: string) =>
+    invoke<TableColumns[]>("list_all_columns", { sessionId }),
 
   saveTextFile: (path: string, contents: string) =>
     invoke<void>("save_text_file", { path, contents }),
@@ -128,14 +128,14 @@ export const api = {
   getTableDdl: (sessionId: string, schema: string, table: string) =>
     invoke<string>("get_table_ddl", { sessionId, schema, table }),
 
-  getIndexes: (sessionId: string, schema: string, table: string) =>
-    invoke<IndexInfo[]>("get_indexes", { sessionId, schema, table }),
+  listIndexes: (sessionId: string, schema: string, table: string) =>
+    invoke<IndexInfo[]>("list_indexes", { sessionId, schema, table }),
 
-  getRelations: (sessionId: string, schema: string, table: string) =>
-    invoke<RelationInfo[]>("get_relations", { sessionId, schema, table }),
+  listRelations: (sessionId: string, schema: string, table: string) =>
+    invoke<RelationInfo[]>("list_relations", { sessionId, schema, table }),
 
-  getTriggers: (sessionId: string, schema: string, table: string) =>
-    invoke<TriggerInfo[]>("get_triggers", { sessionId, schema, table }),
+  listTriggers: (sessionId: string, schema: string, table: string) =>
+    invoke<TriggerInfo[]>("list_triggers", { sessionId, schema, table }),
 
   getTablePage: (
     sessionId: string,

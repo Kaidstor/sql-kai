@@ -29,7 +29,7 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
-} from "../context-menu";
+} from "../ContextMenu";
 import type { CopyActions } from "./copyActions";
 import type { CellRef, GridEditing } from "./types";
 import type { useColumnLayout } from "./useColumnLayout";

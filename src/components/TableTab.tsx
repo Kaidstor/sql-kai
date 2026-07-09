@@ -13,7 +13,7 @@ import type { ColumnInfo, RelationInfo, SortSpec } from "../lib/types";
 import { ReconnectButton } from "./ReconnectButton";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
-import { cn, IconBtn, PendingChangesBar, RefreshBtn, Select } from "./ui";
+import { cn, IconButton, PendingChangesBar, RefreshButton, Select } from "./ui";
 
 function formatApprox(n: number): string {
   if (n < 0) return "~?";
@@ -40,7 +40,7 @@ export function TableTab({ tab }: { tab: Tab }) {
   const state = tab.state as TableTabState;
   const sessions = useApp((s) => s.sessions);
   const tables = useApp((s) => s.tables);
-  const loadTablePage = useApp((s) => s.loadTablePage);
+  const refreshTablePage = useApp((s) => s.refreshTablePage);
   const loadTableColumns = useApp((s) => s.loadTableColumns);
   const tableColumns = useApp((s) => s.tableColumns);
   const loadTableRelations = useApp((s) => s.loadTableRelations);
@@ -48,7 +48,7 @@ export function TableTab({ tab }: { tab: Tab }) {
   const openQueryTab = useApp((s) => s.openQueryTab);
   const openTableTab = useApp((s) => s.openTableTab);
   const stageCellEdit = useApp((s) => s.stageCellEdit);
-  const toggleRowDeletes = useApp((s) => s.toggleRowDeletes);
+  const setRowsDeleted = useApp((s) => s.setRowsDeleted);
   const duplicateRows = useApp((s) => s.duplicateRows);
   const stageInsertCell = useApp((s) => s.stageInsertCell);
   const removeInsertRow = useApp((s) => s.removeInsertRow);
@@ -77,7 +77,7 @@ export function TableTab({ tab }: { tab: Tab }) {
   // at boot (dozens of parallel page queries froze the app).
   useEffect(() => {
     if (connected && !state.data && !state.loading && !state.error) {
-      void loadTablePage(tab.id);
+      void refreshTablePage(tab.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
@@ -188,9 +188,9 @@ export function TableTab({ tab }: { tab: Tab }) {
     () => ({ schema: state.schema, table: state.table }),
     [state.schema, state.table],
   );
-  const onSortsChange = useCallback(
-    (sorts: SortSpec[]) => void loadTablePage(tab.id, { sorts, page: 0 }),
-    [loadTablePage, tab.id],
+  const handleSortsChange = useCallback(
+    (sorts: SortSpec[]) => void refreshTablePage(tab.id, { sorts, page: 0 }),
+    [refreshTablePage, tab.id],
   );
   const editing = useMemo<GridEditing>(
     () => ({
@@ -201,7 +201,7 @@ export function TableTab({ tab }: { tab: Tab }) {
       applyFailed: state.applyFailed,
       onEdit: (row, col, value) => stageCellEdit(tab.id, row, col, value),
       onToggleDelete: (rowsToToggle, del) =>
-        toggleRowDeletes(tab.id, rowsToToggle, del),
+        setRowsDeleted(tab.id, rowsToToggle, del),
       onDuplicate: (rowsToCopy) => duplicateRows(tab.id, rowsToCopy),
       onInsertEdit: (index, col, value) =>
         stageInsertCell(tab.id, index, col, value),
@@ -217,7 +217,7 @@ export function TableTab({ tab }: { tab: Tab }) {
       state.applyFailed,
       tab.id,
       stageCellEdit,
-      toggleRowDeletes,
+      setRowsDeleted,
       duplicateRows,
       stageInsertCell,
       removeInsertRow,
@@ -232,12 +232,12 @@ export function TableTab({ tab }: { tab: Tab }) {
         <span className="font-mono text-zinc-300">
           {state.schema}.{state.table}
         </span>
-        <RefreshBtn
+        <RefreshButton
           title="Refresh (⌘R)"
-          loading={state.loading}
-          onClick={() => void loadTablePage(tab.id)}
+          busy={state.loading}
+          onClick={() => void refreshTablePage(tab.id)}
         />
-        <IconBtn
+        <IconButton
           title="Current view as query — open this grid's SQL in a new tab"
           onClick={() => {
             const all = state.data?.result.columns ?? [];
@@ -252,14 +252,14 @@ export function TableTab({ tab }: { tab: Tab }) {
           }}
         >
           <FileCode2 size={13} />
-        </IconBtn>
-        <IconBtn
+        </IconButton>
+        <IconButton
           title="Filter (WHERE …)"
           className={state.filter ? "text-amber-400" : undefined}
           onClick={() => setShowFilter((v) => !v || Boolean(state.filter))}
         >
           <Funnel size={13} />
-        </IconBtn>
+        </IconButton>
 
         {dirty > 0 && (
           <PendingChangesBar
@@ -292,7 +292,7 @@ export function TableTab({ tab }: { tab: Tab }) {
           <Select
             value={state.pageSize}
             onChange={(e) =>
-              void loadTablePage(tab.id, {
+              void refreshTablePage(tab.id, {
                 pageSize: Number(e.target.value),
                 page: 0,
               })
@@ -302,23 +302,23 @@ export function TableTab({ tab }: { tab: Tab }) {
             <option value={500}>500 / page</option>
             <option value={1000}>1000 / page</option>
           </Select>
-          <IconBtn
+          <IconButton
             title="Previous page"
             disabled={state.page === 0 || state.loading}
-            onClick={() => void loadTablePage(tab.id, { page: state.page - 1 })}
+            onClick={() => void refreshTablePage(tab.id, { page: state.page - 1 })}
           >
             <ChevronLeft size={14} />
-          </IconBtn>
+          </IconButton>
           <span className="text-zinc-400 tabular-nums">
             {state.page * state.pageSize + 1}–{state.page * state.pageSize + rows}
           </span>
-          <IconBtn
+          <IconButton
             title="Next page"
             disabled={lastPage || state.loading}
-            onClick={() => void loadTablePage(tab.id, { page: state.page + 1 })}
+            onClick={() => void refreshTablePage(tab.id, { page: state.page + 1 })}
           >
             <ChevronRight size={14} />
-          </IconBtn>
+          </IconButton>
         </div>
       </div>
 
@@ -333,7 +333,7 @@ export function TableTab({ tab }: { tab: Tab }) {
             onChange={(e) => setFilterDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
-                void loadTablePage(tab.id, {
+                void refreshTablePage(tab.id, {
                   filter: filterDraft.trim(),
                   page: 0,
                 });
@@ -355,17 +355,17 @@ export function TableTab({ tab }: { tab: Tab }) {
             </span>
           )}
           {(state.filter || filterDraft) && (
-            <IconBtn
+            <IconButton
               title="Clear filter"
               onClick={() => {
                 setFilterDraft("");
                 if (state.filter) {
-                  void loadTablePage(tab.id, { filter: "", page: 0 });
+                  void refreshTablePage(tab.id, { filter: "", page: 0 });
                 }
               }}
             >
               <X size={12} />
-            </IconBtn>
+            </IconButton>
           )}
         </div>
       )}
@@ -413,7 +413,7 @@ export function TableTab({ tab }: { tab: Tab }) {
           <ResultsGrid
             result={state.data.result}
             sorts={state.sorts}
-            onSortsChange={onSortsChange}
+            onSortsChange={handleSortsChange}
             onHiddenColsChange={setHiddenCols}
             columnTypes={columnTypes}
             columnNullable={columnNullable}

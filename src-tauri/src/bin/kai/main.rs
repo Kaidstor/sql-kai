@@ -54,8 +54,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Выполнить SQL в базе профиля (kai <alias> — то же самое)
-    #[command(alias = "query")]
-    Q(QueryArgs),
+    #[command(name = "q", alias = "query")]
+    Query(QueryArgs),
     /// Прямой режим без профиля: ssh <alias> -> docker exec psql
     Exec(ExecArgs),
     /// Найти postgres на ssh-хосте и создать/обновить профиль
@@ -141,10 +141,10 @@ fn main() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
     match cli.cmd {
-        Cmd::Q(a) => cmd::query::run(a).await,
+        Cmd::Query(a) => cmd::query::run(a).await,
         Cmd::Exec(a) => cmd::exec::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
-        Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { json: false })),
+        Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { fmt: Default::default() })),
         Cmd::Tables(a) => cmd::introspect::tables(a).await,
         Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
         Cmd::Ddl(a) => cmd::introspect::table_info(a, TableInfoKind::Ddl).await,

@@ -102,12 +102,12 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
 
 /** Check now and re-check on window focus (hourly). Returns a cleanup fn. */
 export function initUpdater(): () => void {
-  const onFocus = () => {
+  const handleFocus = () => {
     if (Date.now() - lastCheckTime > CHECK_INTERVAL) {
       void useUpdater.getState().checkForUpdates();
     }
   };
-  onFocus();
-  window.addEventListener("focus", onFocus);
-  return () => window.removeEventListener("focus", onFocus);
+  handleFocus();
+  window.addEventListener("focus", handleFocus);
+  return () => window.removeEventListener("focus", handleFocus);
 }

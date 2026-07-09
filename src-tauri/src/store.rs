@@ -95,7 +95,7 @@ pub fn save_profiles(profiles: &[Profile]) -> Result<(), AppError> {
     save_list("profiles.json", profiles)
 }
 
-pub fn find_profile(id: &str) -> Result<Profile, AppError> {
+pub fn profile_by_id(id: &str) -> Result<Profile, AppError> {
     load_profiles()?
         .into_iter()
         .find(|p| p.id == id)
@@ -142,7 +142,7 @@ pub fn upsert_profile(
             return Err(AppError::Msg("ssh user не может начинаться с '-'".into()));
         }
     }
-    let existing = find_profile(&profile.id).ok();
+    let existing = profile_by_id(&profile.id).ok();
     profile.has_password = apply_secret(
         &profile.id,
         password,

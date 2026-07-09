@@ -9,7 +9,7 @@ import {
   type Tab,
 } from "../lib/store";
 import { TabError } from "./TabError";
-import { IconBtn, RefreshBtn, Select, cn } from "./ui";
+import { IconButton, RefreshButton, Select, cn } from "./ui";
 
 function stateColor(state: string): string {
   if (state === "active") return "text-emerald-400";
@@ -21,7 +21,7 @@ function stateColor(state: string): string {
 export function ActivityTab({ tab }: { tab: Tab }) {
   const state = tab.state as ActivityTabState;
   const sessions = useApp((s) => s.sessions);
-  const loadActivity = useApp((s) => s.loadActivity);
+  const refreshActivity = useApp((s) => s.refreshActivity);
   const setActivityOptions = useApp((s) => s.setActivityOptions);
   const showToast = useApp((s) => s.showToast);
   const session = sessions[tab.profileId];
@@ -31,10 +31,10 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   // interval dies with the unmount when the user switches away.
   useEffect(() => {
     if (!connected) return;
-    void loadActivity(tab.id);
+    void refreshActivity(tab.id);
     if (state.refreshSec <= 0) return;
     const timer = setInterval(
-      () => void loadActivity(tab.id),
+      () => void refreshActivity(tab.id),
       state.refreshSec * 1000,
     );
     return () => clearInterval(timer);
@@ -66,7 +66,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     } catch (e) {
       showToast(errText(e));
     }
-    void loadActivity(tab.id);
+    void refreshActivity(tab.id);
   };
 
   const rows = state.rows ?? [];
@@ -76,9 +76,9 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-zinc-800 px-2 py-1.5 text-[12px]">
         <span className="font-medium text-zinc-300">pg_stat_activity</span>
-        <RefreshBtn
-          loading={state.loading}
-          onClick={() => void loadActivity(tab.id)}
+        <RefreshButton
+          busy={state.loading}
+          onClick={() => void refreshActivity(tab.id)}
         />
         <label className="flex cursor-pointer items-center gap-1.5 pl-1 text-[11px] text-zinc-400">
           <input
@@ -206,18 +206,18 @@ export function ActivityTab({ tab }: { tab: Tab }) {
                   </td>
                   <td className="border-b border-zinc-800/70 px-1 py-0.5 whitespace-nowrap">
                     <span className="invisible flex items-center group-hover:visible">
-                      <IconBtn
+                      <IconButton
                         title="Cancel query (pg_cancel_backend)"
                         onClick={() => void signal(r, false)}
                       >
                         <CircleStop size={13} className="text-amber-400" />
-                      </IconBtn>
-                      <IconBtn
+                      </IconButton>
+                      <IconButton
                         title="Terminate backend (pg_terminate_backend)"
                         onClick={() => void signal(r, true)}
                       >
                         <OctagonX size={13} className="text-red-400" />
-                      </IconBtn>
+                      </IconButton>
                     </span>
                   </td>
                 </tr>

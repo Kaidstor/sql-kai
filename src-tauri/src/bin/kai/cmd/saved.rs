@@ -8,16 +8,17 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
 use crate::cmd::history::one_line;
-use crate::cmd::query::{self, FormatArgs, QueryArgs};
-use crate::{output, session};
+use crate::cmd::query::{self, QueryArgs};
+use crate::output::{self, Format, FormatArgs};
+use crate::session;
 
 #[derive(Subcommand)]
 pub enum SavedCmd {
     /// Сохранённые запросы: глобальные + видимые профилю
     List {
         alias: Option<String>,
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        fmt: FormatArgs,
     },
     /// Выполнить сохранённый запрос по имени
     Run {
@@ -58,13 +59,14 @@ fn saved_scope(p: &Profile) -> String {
 
 pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
     match cmd {
-        SavedCmd::List { alias, json } => {
+        SavedCmd::List { alias, fmt } => {
             let mut queries = store::load_queries()?;
             if let Some(alias) = &alias {
                 let key = saved_scope(&session::resolve_profile(alias)?);
                 queries.retain(|q| q.scope.is_none() || q.scope.as_deref() == Some(&key));
             }
-            if json {
+            // --json отдаёт полные объекты (id/sql/scope), не табличную проекцию
+            if fmt.pick() == Format::Json {
                 println!("{}", serde_json::to_string_pretty(&queries).unwrap());
                 return Ok(ExitCode::SUCCESS);
             }
@@ -78,7 +80,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                     ]
                 })
                 .collect();
-            output::print_rows(&["name", "scope", "sql"], &rows, false);
+            output::print_rows(&["name", "scope", "sql"], &rows, fmt.pick());
             Ok(ExitCode::SUCCESS)
         }
         SavedCmd::Run {

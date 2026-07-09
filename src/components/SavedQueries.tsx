@@ -4,7 +4,7 @@ import { queryScopeOf, scopeLabelOf } from "../lib/profile";
 import { sqlPreview } from "../lib/sql";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import type { SavedQuery } from "../lib/types";
-import { Button, IconBtn, Input, MenuBtn, Popover } from "./ui";
+import { Button, IconButton, Input, MenuButton, Popover } from "./ui";
 
 /** "Save query" button: name + target collection (group/database or global).
  *  Open state lives in the store so ⌘S on an unsaved query can pop it too. */
@@ -61,13 +61,13 @@ export function SaveQueryButton({ tab }: { tab: Tab }) {
       onClose={close}
       panelClassName="w-72 p-3 space-y-2.5"
       trigger={
-        <IconBtn
+        <IconButton
           title="Save query ⌘S"
           disabled={!state.sql.trim()}
           onClick={() => setSaveDialogFor(open ? null : tab.id)}
         >
           <BookmarkPlus size={14} />
-        </IconBtn>
+        </IconButton>
       }
     >
       <div className="text-[11px] font-semibold tracking-wider text-zinc-500">
@@ -142,7 +142,7 @@ function QueryRow({
           {sqlPreview(query.sql, 80)}
         </div>
       </div>
-      <IconBtn
+      <IconButton
         title="Delete saved query"
         className="opacity-0 group-hover:opacity-100"
         onClick={(e) => {
@@ -151,7 +151,7 @@ function QueryRow({
         }}
       >
         <X size={12} />
-      </IconBtn>
+      </IconButton>
     </div>
   );
 }
@@ -203,10 +203,10 @@ export function SavedQueriesMenu({ tab }: { tab: Tab }) {
       onClose={() => setOpen(false)}
       panelClassName="w-80 max-h-96 overflow-y-auto p-1"
       trigger={
-        <MenuBtn title="Saved queries" onClick={() => setOpen((v) => !v)}>
+        <MenuButton title="Saved queries" onClick={() => setOpen((v) => !v)}>
           <Bookmark size={13} />
           Saved
-        </MenuBtn>
+        </MenuButton>
       }
     >
       {section(

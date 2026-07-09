@@ -4,7 +4,7 @@ import type { Get, Set, StoreContext } from "../context";
 import type { ActivityRow, ActivityTabState } from "../types";
 
 export interface ActivitySlice {
-  loadActivity: (tabId: string) => Promise<void>;
+  refreshActivity: (tabId: string) => Promise<void>;
   setActivityOptions: (
     tabId: string,
     patch: Partial<Pick<ActivityTabState, "refreshSec" | "showIdle">>,
@@ -19,7 +19,7 @@ export function createActivitySlice(
   const { tabOf, patchTab } = ctx;
 
   return {
-    loadActivity: async (tabId) => {
+    refreshActivity: async (tabId) => {
       const tab = tabOf(tabId, "activity");
       if (!tab || tab.state.loading) return;
       const session = get().sessions[tab.profileId];
@@ -76,7 +76,7 @@ export function createActivitySlice(
       if (!tab) return;
       patchTab<ActivityTabState>(tabId, patch);
       // toggling idle changes the SQL — refetch right away
-      if (patch.showIdle !== undefined) void get().loadActivity(tabId);
+      if (patch.showIdle !== undefined) void get().refreshActivity(tabId);
     },
   };
 }

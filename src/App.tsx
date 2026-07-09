@@ -6,7 +6,7 @@ import { ActivityTab } from "./components/ActivityTab";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
 import { LogViewer } from "./components/LogViewer";
-import { AppPalette } from "./components/Palette";
+import { Palette } from "./components/Palette";
 import { QueryTab } from "./components/QueryTab";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutSections, ShortcutsOverlay } from "./components/ShortcutsHelp";
@@ -33,7 +33,7 @@ function App() {
   const sessions = useApp((s) => s.sessions);
   const lost = useApp((s) => s.lost);
   const launcherOpen = useApp((s) => s.launcherOpen);
-  const sidebarHidden = useApp((s) => s.sidebarHidden);
+  const sidebarOpen = useApp((s) => s.sidebarOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.
@@ -58,7 +58,7 @@ function App() {
   useEffect(() => {
     // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
     // accelerator consumes the keypress before the webview sees it.
-    const onKey = (e: KeyboardEvent) => {
+    const handleKey = (e: KeyboardEvent) => {
       const s = useApp.getState();
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
@@ -125,13 +125,13 @@ function App() {
         const tab = s.tabs.find((t) => t.id === s.activeTabId);
         if (tab?.state.kind === "table") {
           e.preventDefault();
-          void s.loadTablePage(tab.id);
+          void s.refreshTablePage(tab.id);
         } else if (tab?.state.kind === "structure") {
           e.preventDefault();
-          void s.loadStructure(tab.id);
+          void s.refreshStructure(tab.id);
         } else if (tab?.state.kind === "activity") {
           e.preventDefault();
-          void s.loadActivity(tab.id);
+          void s.refreshActivity(tab.id);
         }
       } else if (!isMac && e.ctrlKey && !e.altKey) {
         // JS fallback for the shortcuts the mac menu owns
@@ -154,8 +154,8 @@ function App() {
         }
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
   // Native menu items (mac): New Query Tab ⌘N, Close Tab ⌘W, Reopen ⌘⇧T.
@@ -226,7 +226,7 @@ function App() {
           <Launcher />
         ) : (
           <>
-            {!sidebarHidden && <Sidebar />}
+            {sidebarOpen && <Sidebar />}
             <main className="flex-1 flex flex-col min-w-0 min-h-0">
               <TabsBar />
               <div className="flex-1 min-h-0">
@@ -259,7 +259,7 @@ function App() {
       <ConnectionDialog />
       <SettingsDialog />
       <LogViewer />
-      <AppPalette />
+      <Palette />
       <ShortcutsOverlay
         open={showShortcuts}
         onClose={() => setShowShortcuts(false)}

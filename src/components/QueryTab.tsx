@@ -12,7 +12,7 @@ import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
 import { TabError } from "./TabError";
-import { Button, cn, MenuBtn, Popover, Select } from "./ui";
+import { Button, cn, MenuButton, Popover, Select } from "./ui";
 
 /** Sorts fetched rows locally — the query is NOT re-run, so only what was
  *  fetched is ordered. Columns where every non-null value parses as a number
@@ -111,7 +111,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
   const setTabMaxRows = useApp((s) => s.setTabMaxRows);
   const setTabEditorPct = useApp((s) => s.setTabEditorPct);
   const isolateTab = useApp((s) => s.isolateTab);
-  const mergeTab = useApp((s) => s.mergeTab);
+  const unisolateTab = useApp((s) => s.unisolateTab);
   const setCommitMode = useApp((s) => s.setCommitMode);
   const commitTx = useApp((s) => s.commitTx);
   const rollbackTx = useApp((s) => s.rollbackTx);
@@ -215,7 +215,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
           onClose={() => setExplainOpen(false)}
           panelClassName="w-64 p-1"
           trigger={
-            <MenuBtn
+            <MenuButton
               disabled={!connected || !state.sql.trim() || state.running}
               className="disabled:opacity-40 disabled:pointer-events-none"
               title="Query plan (EXPLAIN)"
@@ -223,7 +223,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
             >
               <Route size={12} className="text-violet-400/80" />
               Explain
-            </MenuBtn>
+            </MenuButton>
           }
         >
           {(
@@ -324,7 +324,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
                 {isoSession?.tx === "active" && " · in tx"}
                 {isoSession?.tx === "failed" && " · aborted"}
                 <button
-                  onClick={() => void mergeTab(tab.id)}
+                  onClick={() => void unisolateTab(tab.id)}
                   title="Merge back onto the shared connection (rolls back any open transaction)"
                   className="ml-0.5 hover:text-zinc-100"
                 >

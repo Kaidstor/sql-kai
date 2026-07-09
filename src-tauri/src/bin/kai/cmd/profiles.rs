@@ -8,14 +8,15 @@ use clap::Subcommand;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store;
 
-use crate::{output, session};
+use crate::output::{self, Format, FormatArgs};
+use crate::session;
 
 #[derive(Subcommand)]
 pub enum ProfilesCmd {
     /// Список профилей
     List {
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        fmt: FormatArgs,
     },
     /// Показать профиль
     Show { alias: String },
@@ -30,9 +31,10 @@ pub enum ProfilesCmd {
 
 pub fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
     match cmd {
-        ProfilesCmd::List { json } => {
+        ProfilesCmd::List { fmt } => {
             let profiles = store::load_profiles()?;
-            if json {
+            // --json отдаёт полные объекты профилей, не табличную проекцию
+            if fmt.pick() == Format::Json {
                 println!("{}", serde_json::to_string_pretty(&profiles).unwrap());
                 return Ok(ExitCode::SUCCESS);
             }
@@ -53,7 +55,7 @@ pub fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
             output::print_rows(
                 &["name", "group", "host", "db", "user", "ssh", "pw"],
                 &rows,
-                false,
+                fmt.pick(),
             );
         }
         ProfilesCmd::Show { alias } => {

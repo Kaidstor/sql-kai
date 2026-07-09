@@ -40,7 +40,7 @@ pub fn run(cmd: TunnelCmd) -> Result<ExitCode, AppError> {
                     ]
                 })
                 .collect();
-            output::print_rows(&["target", "state"], &rows, false);
+            output::print_rows(&["target", "state"], &rows, output::Format::Table);
         }
         TunnelCmd::Close { target, all } => {
             let only = if all { None } else { target.as_deref() };

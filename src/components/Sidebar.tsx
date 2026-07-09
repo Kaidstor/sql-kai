@@ -25,9 +25,9 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-} from "./context-menu";
+} from "./ContextMenu";
 import { ReconnectButton } from "./ReconnectButton";
-import { CliBadge, cn, IconBtn, Input, ProdBadge } from "./ui";
+import { CliBadge, cn, IconButton, Input, ProdBadge } from "./ui";
 
 function shortType(t: string): string {
   return t
@@ -280,12 +280,12 @@ export function Sidebar() {
           {profile?.production && <ProdBadge />}
           {cliSession && <CliBadge idleSec={cliSession.idleSec} />}
         </div>
-        <IconBtn
+        <IconButton
           title="All connections"
           onClick={() => setLauncherOpen(true)}
         >
           <LayoutGrid size={14} />
-        </IconBtn>
+        </IconButton>
       </div>
 
       <div className="flex items-center justify-between pl-3 pr-4 pt-2 pb-1.5">
@@ -293,24 +293,24 @@ export function Sidebar() {
           SCHEMA
         </div>
         <div className="flex items-center gap-0.5">
-          <IconBtn
+          <IconButton
             title="New SQL tab"
             onClick={() => openQueryTab(activeProfileId)}
           >
             <FilePlus2 size={13} />
-          </IconBtn>
-          <IconBtn
+          </IconButton>
+          <IconButton
             title="Server activity (pg_stat_activity)"
             onClick={() => openActivityTab(activeProfileId)}
           >
             <Activity size={13} />
-          </IconBtn>
-          <IconBtn
+          </IconButton>
+          <IconButton
             title="Refresh tables"
             onClick={() => void refreshTables(activeProfileId)}
           >
             <RefreshCw size={12} />
-          </IconBtn>
+          </IconButton>
         </div>
       </div>
       {activeLost && (

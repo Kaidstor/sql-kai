@@ -54,7 +54,7 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
       .logEvent(`"${profile?.name ?? profileId}": session lost — ${errText(e)}`)
       .catch(() => {});
     // free the backend half (tunnel included); it may already be gone
-    api.disconnect(session.sessionId).catch(() => {});
+    api.disconnectSession(session.sessionId).catch(() => {});
     set((s) => ({
       sessions: without(s.sessions, profileId),
       lost: { ...s.lost, [profileId]: true },
