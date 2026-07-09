@@ -7,12 +7,34 @@ use std::process::ExitCode;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use clap::Args;
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile, SshConfig};
 
 use crate::remote::{self, CONTAINER_DETECT};
-use crate::{sec, session, DiscoverArgs};
+use crate::{sec, session};
+
+#[derive(Args)]
+pub struct DiscoverArgs {
+    /// SSH-алиас хоста (из ~/.ssh/config*)
+    alias: String,
+    /// Имя профиля (по умолчанию = alias)
+    #[arg(long)]
+    name: Option<String>,
+    /// Положить найденный пароль в sec (по умолч. ключ <имя>/DB_PASSWORD)
+    #[arg(long)]
+    to_sec: bool,
+    /// Ключ sec для пароля (proj/KEY); включает --to-sec
+    #[arg(long, value_name = "PROJ/KEY")]
+    sec_key: Option<String>,
+    /// Не хранить пароль в vault (прод-политика: только sec / --password-env)
+    #[arg(long)]
+    no_store: bool,
+    /// Только показать найденное, не сохранять профиль
+    #[arg(long)]
+    dry_run: bool,
+}
 
 /// Хвост поверх [`CONTAINER_DETECT`]: тянет POSTGRES_PASSWORD и решает, куда
 /// туннелировать — опубликованный порт (docker port) или IP контейнера в

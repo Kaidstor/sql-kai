@@ -27,7 +27,11 @@ pub enum BrokerError {
     /// Vault в GUI заблокирован — kai разблокирует сам (автономный путь).
     VaultLocked,
     /// Сервер выполнил запрос и вернул ошибку (SQL и т.п.) — финальный ответ.
-    Query(String),
+    /// `sqlstate` — код ошибки Postgres (например 25006 read-only), если есть.
+    Query {
+        message: String,
+        sqlstate: Option<String>,
+    },
 }
 
 impl std::fmt::Display for BrokerError {
@@ -35,7 +39,7 @@ impl std::fmt::Display for BrokerError {
         match self {
             BrokerError::Transport(m) => write!(f, "broker: {m}"),
             BrokerError::VaultLocked => write!(f, "vault заблокирован в GUI"),
-            BrokerError::Query(m) => write!(f, "{m}"),
+            BrokerError::Query { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -100,7 +104,13 @@ impl Broker {
             let code = v.get("code").and_then(Value::as_str).unwrap_or("");
             return Err(match code {
                 "vault_locked" => BrokerError::VaultLocked,
-                "query" => BrokerError::Query(err.to_string()),
+                "query" => BrokerError::Query {
+                    message: err.to_string(),
+                    sqlstate: v
+                        .get("sqlstate")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                },
                 // connect/cancel/no_session/protocol — считаем транспортными:
                 // автономный путь либо решит проблему, либо покажет свою ошибку
                 _ => BrokerError::Transport(err.to_string()),

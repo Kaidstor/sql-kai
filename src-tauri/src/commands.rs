@@ -41,7 +41,7 @@ fn with_session<T>(
     let sessions = state.sessions.lock().unwrap();
     let session = sessions
         .get(session_id)
-        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?;
+        .ok_or(AppError::SessionGone)?;
     Ok(f(session))
 }
 
@@ -62,7 +62,7 @@ fn client_and_tx(
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions
         .get(session_id)
-        .ok_or_else(|| AppError::Msg("session not found (already disconnected?)".into()))?;
+        .ok_or(AppError::SessionGone)?;
     let client = session.client.clone();
     if client.is_closed() {
         let name = session.profile_name.clone();
@@ -73,9 +73,7 @@ fn client_and_tx(
             "session",
             &format!("\"{name}\": dead client detected on API call — session dropped"),
         );
-        return Err(AppError::Msg(
-            "connection lost (tunnel or server dropped) — reconnect the profile".into(),
-        ));
+        return Err(AppError::ConnectionLost);
     }
     Ok((client, session.tx.clone()))
 }

@@ -7,7 +7,7 @@
 //!
 //! Протокол: JSON-line на запрос, JSON-line на ответ.
 //!   → {"id":1,"method":"query","params":{"profileId":"…","sql":"…"}}
-//!   ← {"id":1,"result":{…}} | {"id":1,"error":"…","code":"vault_locked"}
+//!   ← {"id":1,"result":{…}} | {"id":1,"error":"…","code":"vault_locked","sqlstate":null}
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -286,7 +286,9 @@ async fn handle_conn(
                 let id = req.id;
                 match dispatch(req.method, &state, &hooks).await {
                     Ok(result) => json!({ "id": id, "result": result }),
-                    Err((code, msg)) => json!({ "id": id, "error": msg, "code": code }),
+                    Err(e) => json!({
+                        "id": id, "error": e.message, "code": e.code, "sqlstate": e.sqlstate,
+                    }),
                 }
             }
             Err(e) => json!({ "id": 0, "error": format!("bad request: {e}"), "code": "protocol" }),
@@ -299,7 +301,18 @@ async fn handle_conn(
 }
 
 #[cfg(unix)]
-type MethodError = (&'static str, String);
+struct MethodError {
+    code: &'static str,
+    message: String,
+    /// SQLSTATE серверной ошибки (например 25006 read-only) — kai по нему
+    /// показывает hint, не разбирая текст. Старые клиенты поле игнорируют.
+    sqlstate: Option<String>,
+}
+
+#[cfg(unix)]
+fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
+    MethodError { code, message: message.into(), sqlstate: None }
+}
 
 #[cfg(unix)]
 async fn dispatch(
@@ -339,14 +352,14 @@ async fn dispatch(
         Method::Cancel { profile_id } => {
             let entry = state
                 .get_live(&profile_id)
-                .ok_or(("no_session", "нет cli-сессии этого профиля".to_string()))?;
+                .ok_or_else(|| method_err("no_session", "нет cli-сессии этого профиля"))?;
             entry
                 .session
                 .cancel
                 .clone()
                 .cancel_query(NoTls)
                 .await
-                .map_err(|e| ("cancel", e.to_string()))?;
+                .map_err(|e| method_err("cancel", e.to_string()))?;
             Ok(json!({}))
         }
     }
@@ -365,11 +378,11 @@ async fn do_query(
     if !vault::is_unlocked() {
         // kai по этому коду откатывается на автономный путь со своей
         // цепочкой разблокировки
-        return Err(("vault_locked", "vault заблокирован в GUI".into()));
+        return Err(method_err("vault_locked", "vault заблокирован в GUI"));
     }
     let entry = get_or_open(state, hooks, profile_id)
         .await
-        .map_err(|e| ("connect", e.to_string()))?;
+        .map_err(|e| method_err("connect", e.to_string()))?;
     let _busy = entry.busy.lock().await;
     *entry.last_used.lock().unwrap() = Instant::now();
 
@@ -417,7 +430,11 @@ async fn do_query(
                 state.drop_entry(profile_id);
                 (hooks.changed)();
             }
-            Err(("query", e.to_string()))
+            Err(MethodError {
+                code: "query",
+                message: e.to_string(),
+                sqlstate: e.sqlstate().map(str::to_string),
+            })
         }
     }
 }

@@ -1,0 +1,261 @@
+use tokio_postgres::Client;
+
+use super::exec::{cell, cell_bool, query_rows, query_scalar};
+use crate::error::AppError;
+
+pub fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+pub fn quote_literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// quote_literal()'d qualified name, ready for a `::regclass` cast.
+pub fn regclass_literal(schema: &str, table: &str) -> String {
+    quote_literal(&format!("{}.{}", quote_ident(schema), quote_ident(table)))
+}
+
+pub const TABLES_SQL: &str = "\
+SELECT n.nspname, c.relname, c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','v','m','f')
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY n.nspname, c.relname";
+
+/// TABLES_SQL + a 4th column: approximate row count from pg_class.reltuples.
+/// '?' = never analyzed (reltuples = -1); partitioned parents sum their
+/// direct partitions; views get NULL.
+pub const TABLES_COUNTS_SQL: &str = "\
+SELECT n.nspname, c.relname, c.relkind::text,
+       CASE
+         WHEN c.relkind = 'p' THEN COALESCE((
+             SELECT sum(GREATEST(ch.reltuples, 0))::bigint
+             FROM pg_inherits i JOIN pg_class ch ON ch.oid = i.inhrelid
+             WHERE i.inhparent = c.oid), 0)::text
+         WHEN c.relkind IN ('r','m','f') THEN
+           CASE WHEN c.reltuples < 0 THEN '?' ELSE c.reltuples::bigint::text END
+       END
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','v','m','f')
+  AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND n.nspname NOT LIKE 'pg_toast%'
+  AND n.nspname NOT LIKE 'pg_temp%'
+ORDER BY n.nspname, c.relname";
+
+/// `regclass` — a quote_literal()'d qualified table name, e.g. `'"public"."t"'`.
+pub fn columns_sql(regclass: &str) -> String {
+    format!(
+        "SELECT a.attname,
+                format_type(a.atttypid, a.atttypmod),
+                (NOT a.attnotnull)::text,
+                COALESCE((SELECT true FROM pg_index i
+                          WHERE i.indrelid = a.attrelid
+                            AND a.attnum = ANY(i.indkey)
+                            AND i.indisprimary), false)::text,
+                pg_get_expr(d.adbin, d.adrelid),
+                col_description(a.attrelid, a.attnum)
+         FROM pg_attribute a
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE a.attrelid = {regclass}::regclass AND a.attnum > 0 AND NOT a.attisdropped
+         ORDER BY a.attnum"
+    )
+}
+
+pub fn indexes_sql(regclass: &str) -> String {
+    format!(
+        "SELECT c.relname,
+                i.indisunique::text,
+                i.indisprimary::text,
+                (SELECT string_agg(a.attname, ', ' ORDER BY k.ord)
+                   FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                  WHERE k.attnum > 0),
+                pg_get_indexdef(i.indexrelid)
+         FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indexrelid
+         WHERE i.indrelid = {regclass}::regclass
+         ORDER BY i.indisprimary DESC, c.relname"
+    )
+}
+
+pub fn relations_sql(regclass: &str) -> String {
+    format!(
+        "SELECT con.conname,
+                (SELECT string_agg(a.attname, ', ' ORDER BY k.ord)
+                   FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum),
+                con.confrelid::regclass::text,
+                (SELECT string_agg(a.attname, ', ' ORDER BY k.ord)
+                   FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum),
+                CASE con.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+                     WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT'
+                     ELSE con.confupdtype::text END,
+                CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+                     WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT'
+                     ELSE con.confdeltype::text END
+         FROM pg_constraint con
+         WHERE con.conrelid = {regclass}::regclass AND con.contype = 'f'
+         ORDER BY con.conname"
+    )
+}
+
+pub fn triggers_sql(regclass: &str) -> String {
+    format!(
+        "SELECT t.tgname,
+                CASE WHEN (t.tgtype & 2) > 0 THEN 'BEFORE'
+                     WHEN (t.tgtype & 64) > 0 THEN 'INSTEAD OF'
+                     ELSE 'AFTER' END,
+                concat_ws(' OR ',
+                  CASE WHEN (t.tgtype & 4) > 0 THEN 'INSERT' END,
+                  CASE WHEN (t.tgtype & 8) > 0 THEN 'DELETE' END,
+                  CASE WHEN (t.tgtype & 16) > 0 THEN 'UPDATE' END,
+                  CASE WHEN (t.tgtype & 32) > 0 THEN 'TRUNCATE' END),
+                pg_get_triggerdef(t.oid)
+         FROM pg_trigger t
+         WHERE t.tgrelid = {regclass}::regclass AND NOT t.tgisinternal
+         ORDER BY t.tgname"
+    )
+}
+
+/** Postgres has no SHOW CREATE TABLE — assemble the DDL from the catalogs:
+ *  columns (types/defaults/identity), constraints, secondary indexes,
+ *  partition key and comments. Views return their stored definition. */
+pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<String, AppError> {
+    let rel = format!("{}::regclass", regclass_literal(schema, table));
+    let qualified = format!("{}.{}", quote_ident(schema), quote_ident(table));
+
+    let kind = query_scalar(
+        client,
+        &format!("SELECT relkind::text FROM pg_class WHERE oid = {rel}"),
+    )
+    .await?
+    .unwrap_or_default();
+
+    if kind == "v" || kind == "m" {
+        let body = query_scalar(client, &format!("SELECT pg_get_viewdef({rel}, true)"))
+            .await?
+            .unwrap_or_default();
+        let head = if kind == "m" {
+            "CREATE MATERIALIZED VIEW"
+        } else {
+            "CREATE OR REPLACE VIEW"
+        };
+        return Ok(format!("{head} {qualified} AS\n{body}"));
+    }
+
+    let cols = query_rows(
+        client,
+        &format!(
+            "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull::text, \
+             pg_get_expr(d.adbin, d.adrelid), a.attidentity::text, a.attgenerated::text \
+             FROM pg_attribute a \
+             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY a.attnum"
+        ),
+    )
+    .await?;
+    let mut lines: Vec<String> = Vec::new();
+    for row in &cols {
+        let mut line = format!("  {} {}", quote_ident(&cell(row, 0)), cell(row, 1));
+        let default = row[3].as_deref();
+        match (row[5].as_deref(), row[4].as_deref()) {
+            (Some("s"), _) => line.push_str(&format!(
+                " GENERATED ALWAYS AS ({}) STORED",
+                default.unwrap_or_default()
+            )),
+            (_, Some("a")) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
+            (_, Some("d")) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+            _ => {
+                if let Some(d) = default {
+                    line.push_str(&format!(" DEFAULT {d}"));
+                }
+            }
+        }
+        if cell_bool(row, 2) {
+            line.push_str(" NOT NULL");
+        }
+        lines.push(line);
+    }
+
+    // NOT NULL lives inline above — 'n' rows (PG18+) would duplicate it.
+    let cons = query_rows(
+        client,
+        &format!(
+            "SELECT conname, pg_get_constraintdef(oid, true) FROM pg_constraint \
+             WHERE conrelid = {rel} AND contype IN ('p','u','f','c','x') \
+             ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname"
+        ),
+    )
+    .await?;
+    for row in &cons {
+        lines.push(format!(
+            "  CONSTRAINT {} {}",
+            quote_ident(&cell(row, 0)),
+            cell(row, 1)
+        ));
+    }
+
+    let mut ddl = format!("CREATE TABLE {qualified} (\n{}\n)", lines.join(",\n"));
+    if kind == "p" {
+        if let Some(part) =
+            query_scalar(client, &format!("SELECT pg_get_partkeydef({rel})")).await?
+        {
+            ddl.push_str(&format!(" PARTITION BY {part}"));
+        }
+    }
+    ddl.push(';');
+
+    let idx = query_rows(
+        client,
+        &format!(
+            "SELECT pg_get_indexdef(i.indexrelid, 0, true) FROM pg_index i \
+             WHERE i.indrelid = {rel} \
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid) \
+             ORDER BY 1"
+        ),
+    )
+    .await?;
+    for row in &idx {
+        if let Some(def) = row[0].as_deref() {
+            ddl.push_str(&format!("\n{def};"));
+        }
+    }
+
+    if let Some(c) =
+        query_scalar(client, &format!("SELECT obj_description({rel}, 'pg_class')")).await?
+    {
+        ddl.push_str(&format!(
+            "\nCOMMENT ON TABLE {qualified} IS {};",
+            quote_literal(&c)
+        ));
+    }
+    let comments = query_rows(
+        client,
+        &format!(
+            "SELECT a.attname, col_description(a.attrelid, a.attnum) \
+             FROM pg_attribute a \
+             WHERE a.attrelid = {rel} AND a.attnum > 0 AND NOT a.attisdropped \
+               AND col_description(a.attrelid, a.attnum) IS NOT NULL \
+             ORDER BY a.attnum"
+        ),
+    )
+    .await?;
+    for row in &comments {
+        if let Some(c) = row[1].as_deref() {
+            ddl.push_str(&format!(
+                "\nCOMMENT ON COLUMN {qualified}.{} IS {};",
+                quote_ident(&cell(row, 0)),
+                quote_literal(c)
+            ));
+        }
+    }
+
+    Ok(ddl)
+}

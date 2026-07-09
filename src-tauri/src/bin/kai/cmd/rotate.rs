@@ -11,12 +11,42 @@
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
+use clap::Args;
 use rand::Rng;
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store;
 
-use crate::{sec, session, RotateArgs};
+use crate::{sec, session};
+
+#[derive(Args)]
+pub struct RotateArgs {
+    /// Профиль: имя, id или группа
+    alias: String,
+    /// Роль Postgres (по умолчанию — пользователь профиля)
+    #[arg(long)]
+    role: Option<String>,
+    /// Ключ sec для пароля (proj/KEY); по умолчанию <имя>/DB_PASSWORD
+    #[arg(long, value_name = "PROJ/KEY")]
+    sec_key: Option<String>,
+    /// Длина нового пароля
+    #[arg(long, default_value_t = 32)]
+    length: usize,
+    /// Интервал ротации для sec meta (напр. 90d)
+    #[arg(long, value_name = "DUR")]
+    rotate_every: Option<String>,
+    /// Текущий пароль из env-переменной (если не в vault/sec)
+    #[arg(long, value_name = "VAR")]
+    password_env: Option<String>,
+    /// Текущий пароль взять из sec
+    #[arg(long)]
+    from_sec: bool,
+    /// Не спрашивать подтверждение
+    #[arg(long)]
+    yes: bool,
+    #[arg(short, long)]
+    verbose: bool,
+}
 
 /// base62 — совместим везде (URL/env/SQL), без экранирования.
 fn gen_password(len: usize) -> String {

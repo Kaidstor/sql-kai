@@ -4,11 +4,20 @@
 
 use std::process::ExitCode;
 
+use clap::Args;
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
-use crate::{sec, session, DoctorArgs};
+use crate::{sec, session};
+
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Проверить один профиль (имя или id); без него — все
+    alias: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
 
 /// Итог проверки одного источника пароля.
 fn probe_label(res: &Result<(), AppError>) -> &'static str {
