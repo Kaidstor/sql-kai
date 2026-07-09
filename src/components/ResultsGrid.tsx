@@ -1,145 +1,37 @@
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  ArrowUpRight,
-  Braces,
-  Brackets,
-  Copy,
-  CopyPlus,
-  Database,
-  Eraser,
-  EyeOff,
-  FileDown,
-  MoveHorizontal,
-  Pencil,
-  RotateCcw,
-  Sheet,
-  SquarePen,
-  Trash2,
-  Undo2,
-  UnfoldHorizontal,
-  X,
-} from "lucide-react";
+// Results grid orchestrator. The moving parts live in grid/: column layout
+// (useColumnLayout), the selection model (useGridSelection), copy/export
+// actions (copyActions), the inline/full-value editors (CellInput/CellDialog),
+// pending-INSERT rows (InsertRowTr) and both context menus (menus.tsx).
+// This file wires them to the table markup and the keyboard/mouse handlers.
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import {
   Fragment,
   memo,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
-  type MouseEvent,
 } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
-import { api, errText } from "../lib/api";
-import { copyText, readClipboardText } from "../lib/clipboard";
-import { toCsv, toJson, toMarkdown } from "../lib/export";
-import { quoteIdent, quoteLit, relIdent } from "../lib/sql";
-import { useApp, type InsertRow } from "../lib/store";
+import { readClipboardText } from "../lib/clipboard";
+import { useApp } from "../lib/store";
 import type { SortSpec, StatementResult } from "../lib/types";
 import {
   ContextMenu,
   ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "./context-menu";
-import { Button, IconBtn, Overlay, cn } from "./ui";
+import { cn } from "./ui";
+import { CellDialog, type CellDialogState } from "./grid/CellDialog";
+import { CellInput } from "./grid/CellInput";
+import { makeCopyActions } from "./grid/copyActions";
+import { InsertRowTr, type InsertEdit } from "./grid/InsertRowTr";
+import { CellMenu, ColumnMenu } from "./grid/menus";
+import type { CellRef, GridEditing } from "./grid/types";
+import { useColumnLayout } from "./grid/useColumnLayout";
+import { useGridSelection } from "./grid/useGridSelection";
 
-
-/** Inline cell editor. Blur stages the draft (clicking away mustn't lose the
- *  input); Enter stages and refocuses the grid; Esc cancels and refocuses.
- *  Keeping the draft local means typing doesn't re-render the whole grid.
- *  The input is borderless — the host cell carries the editing highlight. */
-function CellInput({
-  initial,
-  onStage,
-  onNull,
-  onClose,
-}: {
-  initial: string;
-  onStage: (value: string) => void;
-  /** Stages NULL via the ⊗ button; present only for nullable columns. */
-  onNull?: () => void;
-  /** refocus=true hands focus back to the grid (Enter/Esc, not blur). */
-  onClose: (refocus: boolean) => void;
-}) {
-  const [draft, setDraft] = useState(initial);
-  // Enter/Esc refocus the grid, which fires blur before the input unmounts —
-  // this flag keeps that blur from staging a value already handled (or, for
-  // Esc, explicitly cancelled).
-  const skipBlur = useRef(false);
-  return (
-    <span className="flex h-[18px] w-full items-center gap-1">
-      <input
-        autoFocus
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        onBlur={() => {
-          if (skipBlur.current) return;
-          onStage(draft);
-          onClose(false);
-        }}
-        onKeyDown={(e) => {
-          // Don't let Esc bubble up and discard ALL edits.
-          e.stopPropagation();
-          if (e.key === "Enter") {
-            skipBlur.current = true;
-            onStage(draft);
-            onClose(true);
-          }
-          if (e.key === "Escape") {
-            skipBlur.current = true;
-            onClose(true);
-          }
-        }}
-        className="w-full min-w-0 flex-1 bg-transparent p-0 font-mono text-[12px] text-zinc-100 outline-none"
-      />
-      {onNull && (
-        <button
-          title="Set NULL"
-          // preventDefault keeps focus on the input so blur doesn't stage
-          // the draft before the click lands
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={(e) => {
-            e.stopPropagation();
-            skipBlur.current = true;
-            onNull();
-            onClose(true);
-          }}
-          className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-zinc-400 text-zinc-950 hover:bg-zinc-100"
-        >
-          <X size={9} strokeWidth={3} />
-        </button>
-      )}
-    </span>
-  );
-}
-
-/** Staged-edit wiring; when present the grid becomes editable (dblclick a cell). */
-export interface GridEditing {
-  edits: Record<number, Record<number, string | null>>;
-  deletes: readonly number[];
-  /** Pending INSERT rows shown under the data (⌘D duplicate). */
-  inserts: readonly InsertRow[];
-  /** Set when editing is unavailable (e.g. no primary key) — shown on attempt. */
-  disabledReason?: string;
-  /** Last Apply failed and rolled back — staged cells render red, not amber. */
-  applyFailed?: boolean;
-  onEdit: (row: number, col: number, value: string | null) => void;
-  onToggleDelete: (rows: number[], del: boolean) => void;
-  onDuplicate: (rows: number[]) => void;
-  onInsertEdit: (index: number, col: number, value: string | null | undefined) => void;
-  onInsertRemove: (index: number) => void;
-  /** ⌘S while the grid is focused and changes are pending. */
-  onApply?: () => void;
-  /** Esc while the grid is focused and changes are pending. */
-  onDiscard?: () => void;
-}
+export type { GridEditing } from "./grid/types";
 
 interface Props {
   result: StatementResult;
@@ -176,207 +68,45 @@ function ResultsGridImpl({
   onFollowFk,
 }: Props) {
   const showToast = useApp((s) => s.showToast);
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
-  const [anchor, setAnchor] = useState<number | null>(null);
-  /** Whole-column selection (header click; shift/⌘ extend), exclusive with
-   *  row and cell selection. */
-  const [selCols, setSelCols] = useState<ReadonlySet<number>>(new Set());
-  const [colAnchor, setColAnchor] = useState<number | null>(null);
-  const [menuCell, setMenuCell] = useState<{ row: number; col: number } | null>(
-    null,
-  );
-  const [editCell, setEditCell] = useState<{
-    row: number;
-    col: number;
-    initial: string;
-  } | null>(null);
+  /** Column the header context menu is open for (null = cell/row menu). */
+  const [menuCol, setMenuCol] = useState<number | null>(null);
+  const [menuCell, setMenuCell] = useState<CellRef | null>(null);
+  const [editCell, setEditCell] = useState<
+    (CellRef & { initial: string }) | null
+  >(null);
   /** Cell being edited in a pending INSERT row. */
-  const [editIns, setEditIns] = useState<{
-    index: number;
-    col: number;
-    initial: string;
-  } | null>(null);
-  const [focused, setFocused] = useState<{ row: number; col: number } | null>(
-    null,
-  );
-  /** Rectangular cell selection (shift+click extends from the anchor). */
-  const [cellSel, setCellSel] = useState<{
-    a: { row: number; col: number };
-    b: { row: number; col: number };
-  } | null>(null);
-  const [dialog, setDialog] = useState<{
-    row: number;
-    col: number;
-    text: string;
-    isJson: boolean;
-  } | null>(null);
+  const [editIns, setEditIns] = useState<InsertEdit | null>(null);
+  const [dialog, setDialog] = useState<CellDialogState | null>(null);
+
   // Hotkeys (⌘C/⌘⏎/⌘S/Esc) live on this container and only fire while focus
   // is inside it — clicks outside the grid naturally deactivate them.
   const gridRef = useRef<HTMLDivElement>(null);
   const focusGrid = () => gridRef.current?.focus();
 
-  // --- Column layout -------------------------------------------------------
-  // First data render is auto-layout; actual widths are then measured and the
-  // table switches to table-layout:fixed. Fixed widths keep cells from
-  // reflowing when an editor mounts and make drag-resize possible. Key -1 is
-  // the row-number gutter. Widths survive result swaps with the same column
-  // set (page/sort) and re-measure when the columns change.
-  const tableRef = useRef<HTMLTableElement>(null);
-  const [colWidths, setColWidths] = useState<Record<number, number>>({});
-  const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
-  const [sizedFor, setSizedFor] = useState<string | null>(null);
-  /** Column the header context menu is open for (null = cell/row menu). */
-  const [menuCol, setMenuCol] = useState<number | null>(null);
-  const colsKey = result.columns.join("\u0000");
-  const sized = sizedFor === colsKey;
+  const layout = useColumnLayout(result, onHiddenColsChange);
+  const { hiddenCols } = layout;
 
-  const changeHiddenCols = (next: ReadonlySet<number>) => {
-    setHiddenCols(next);
-    onHiddenColsChange?.(next);
-  };
-
-  useLayoutEffect(() => {
-    if (sized) return;
-    const ths = tableRef.current?.querySelectorAll("thead th");
-    if (!ths || ths.length === 0) return;
-    const widths: Record<number, number> = {};
-    ths.forEach((th, i) => {
-      widths[i - 1] = Math.ceil(th.getBoundingClientRect().width);
-    });
-    setColWidths(widths);
-    changeHiddenCols(new Set());
-    setSizedFor(colsKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sized, colsKey]);
-
-  // table-layout:fixed only kicks in with a non-auto table width, so the
-  // table is given the exact sum of its visible columns.
-  const totalW = sized
-    ? Object.entries(colWidths).reduce((acc, [k, w]) => {
-        const idx = Number(k);
-        return idx >= 0 && hiddenCols.has(idx) ? acc : acc + w;
-      }, 0)
-    : undefined;
-
-  const startResize = (ci: number, e: MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startW = colWidths[ci] ?? 150;
-    const move = (ev: globalThis.MouseEvent) => {
-      const w = Math.max(40, Math.round(startW + ev.clientX - startX));
-      setColWidths((cw) => (cw[ci] === w ? cw : { ...cw, [ci]: w }));
-    };
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
-
-  /** Content-fit width via canvas text metrics (grid font, longest line). */
-  const fitCanvas = useRef<HTMLCanvasElement | null>(null);
-  const fitWidth = (ci: number): number | null => {
-    const t = tableRef.current;
-    const ctx = (fitCanvas.current ??= document.createElement("canvas")).getContext("2d");
-    if (!t || !ctx) return null;
-    const cs = getComputedStyle(t);
-    ctx.font = `${cs.fontSize} ${cs.fontFamily}`;
-    // header label + the sort button that sits next to it
-    let w = ctx.measureText(result.columns[ci] ?? "").width + 22;
-    for (const row of result.rows) {
-      const v = row[ci];
-      if (!v) continue;
-      for (const line of v.split("\n")) {
-        const lw = ctx.measureText(line).width;
-        if (lw > w) w = lw;
-      }
-    }
-    // px-2 cell padding + border; capped like the old max-w-105
-    return Math.min(Math.max(Math.ceil(w) + 17, 40), 420);
-  };
-  const fitColumn = (ci: number) => {
-    const w = fitWidth(ci);
-    if (w !== null) setColWidths((cw) => ({ ...cw, [ci]: w }));
-  };
-  const fitAllColumns = () => {
-    const next: Record<number, number> = { ...colWidths };
-    result.columns.forEach((_, ci) => {
-      if (hiddenCols.has(ci)) return;
-      const w = fitWidth(ci);
-      if (w !== null) next[ci] = w;
-    });
-    setColWidths(next);
-  };
-  /** Gives every visible column the width of column `ci`. */
-  const matchAllColumns = (ci: number) => {
-    const w = colWidths[ci];
-    if (!w) return;
-    const next: Record<number, number> = { ...colWidths };
-    result.columns.forEach((_, i) => {
-      if (!hiddenCols.has(i)) next[i] = w;
-    });
-    setColWidths(next);
-  };
-  const resetLayout = () => {
-    // dropping the size key re-renders auto-layout, which re-measures
-    setSizedFor(null);
-    setColWidths({});
-    changeHiddenCols(new Set());
-  };
-
-  /** Focuses a single cell, replacing any row/column selection. */
-  const focusCell = (ri: number, ci: number) => {
-    setSelected(new Set());
-    setAnchor(null);
-    setSelCols(new Set());
-    setColAnchor(null);
-    setFocused({ row: ri, col: ci });
-    setCellSel({ a: { row: ri, col: ci }, b: { row: ri, col: ci } });
-  };
-
-  // Mouse-drag cell selection: anchor on mousedown, extend while the button
-  // is held over other cells; mouseup anywhere (incl. outside) ends it.
-  const dragSel = useRef(false);
-  /** Row-drag started on the number gutter: anchor row index, null when idle. */
-  const rowDrag = useRef<number | null>(null);
-  useEffect(() => {
-    const up = () => {
-      dragSel.current = false;
-      rowDrag.current = null;
-    };
-    window.addEventListener("mouseup", up);
-    return () => window.removeEventListener("mouseup", up);
-  }, []);
+  const sel = useGridSelection(result, { hiddenCols, focusGrid });
+  const {
+    selected,
+    focused,
+    cellSel,
+    rect,
+    rectCount,
+    inRect,
+    focusCell,
+    selRows,
+    selColList,
+  } = sel;
+  const n = selRows.length;
 
   useEffect(() => {
-    setSelected(new Set());
-    setAnchor(null);
-    setSelCols(new Set());
-    setColAnchor(null);
     setMenuCell(null);
     setMenuCol(null);
     setEditCell(null);
     setEditIns(null);
-    setFocused(null);
-    setCellSel(null);
     setDialog(null);
   }, [result]);
-
-  const rect = cellSel
-    ? {
-        r1: Math.min(cellSel.a.row, cellSel.b.row),
-        r2: Math.max(cellSel.a.row, cellSel.b.row),
-        c1: Math.min(cellSel.a.col, cellSel.b.col),
-        c2: Math.max(cellSel.a.col, cellSel.b.col),
-      }
-    : null;
-  const rectCount = rect
-    ? (rect.r2 - rect.r1 + 1) * (rect.c2 - rect.c1 + 1)
-    : 0;
-  const inRect = (r: number, c: number) =>
-    rect !== null && r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2;
 
   const deletedRows = useMemo(
     () => new Set(editing?.deletes ?? []),
@@ -443,158 +173,26 @@ function ResultsGridImpl({
     return null;
   }
 
-  const selectRow = (ri: number, e: MouseEvent) => {
-    setSelCols(new Set());
-    setColAnchor(null);
-    if (e.shiftKey && anchor !== null) {
-      const [from, to] = anchor < ri ? [anchor, ri] : [ri, anchor];
-      const range = new Set<number>();
-      for (let i = from; i <= to; i++) range.add(i);
-      setSelected(range);
-    } else if (e.metaKey || e.ctrlKey) {
-      const next = new Set(selected);
-      if (next.has(ri)) next.delete(ri);
-      else next.add(ri);
-      setSelected(next);
-      setAnchor(ri);
-    } else {
-      setSelected(new Set([ri]));
-      setAnchor(ri);
-    }
-  };
-
-  /** Extends the gutter row-drag to the hovered row (from the drag anchor). */
-  const extendRowDrag = (ri: number) => {
-    const from = rowDrag.current;
-    if (from === null) return;
-    const [lo, hi] = from < ri ? [from, ri] : [ri, from];
-    const range = new Set<number>();
-    for (let i = lo; i <= hi; i++) range.add(i);
-    setSelected(range);
-  };
-
   const onCellContext = (ri: number, ci: number) => {
     setMenuCell({ row: ri, col: ci });
     setMenuCol(null);
     if (!selected.has(ri)) {
-      setSelected(new Set([ri]));
-      setAnchor(ri);
+      sel.setSelected(new Set([ri]));
+      sel.setAnchor(ri);
     }
   };
 
-  const selRows = [...selected]
-    .sort((a, b) => a - b)
-    .filter((i) => i < result.rows.length);
-  const n = selRows.length;
-
-  const toastCopied = (what: string) => showToast(what, "info");
-
-  /** Copies and reports success in the status bar. */
-  const copyAndToast = (text: string, message: string) =>
-    void copyText(text).then((ok) => ok && toastCopied(message));
-
-  const copyRows = (sep: string, suffix: string) => {
-    if (!n) return;
-    const text = selRows
-      .map((i) =>
-        result.columns.map((_, ci) => shownValue(i, ci) ?? "").join(sep),
-      )
-      .join("\n");
-    copyAndToast(text, `Copied ${n} row(s) ${suffix}`);
-  };
-
-  const copyJson = () => {
-    if (!n) return;
-    const objs = selRows.map((i) =>
-      Object.fromEntries(result.columns.map((c, ci) => [c, shownValue(i, ci)])),
-    );
-    copyAndToast(
-      JSON.stringify(n === 1 ? objs[0] : objs, null, 2),
-      `Copied ${n} row(s) as JSON`,
-    );
-  };
-
-  /** Multi-row INSERT ready to run elsewhere (e.g. paste into prod). String
-   *  literals for every value — Postgres coerces them to the column types. */
-  const copyInsert = () => {
-    if (!insertTarget || !n) return;
-    const rel = relIdent(insertTarget.schema, insertTarget.table);
-    const cols = result.columns.map(quoteIdent).join(", ");
-    const tuples = selRows.map(
-      (i) =>
-        `  (${result.columns
-          .map((_, ci) => {
-            const v = shownValue(i, ci);
-            return v === null ? "NULL" : quoteLit(v);
-          })
-          .join(", ")})`,
-    );
-    copyAndToast(
-      `INSERT INTO ${rel} (${cols}) VALUES\n${tuples.join(",\n")};`,
-      `Copied ${n} row(s) as INSERT`,
-    );
-  };
-
-  const copyCellAt = (ri: number, ci: number) =>
-    copyAndToast(shownValue(ri, ci) ?? "", "Cell copied");
-
-  /** Header click: selects the whole column; shift extends a contiguous
-   *  range from the anchor, ⌘/ctrl toggles individual columns. */
-  const clickColumn = (ci: number, e: MouseEvent) => {
-    setSelected(new Set());
-    setAnchor(null);
-    setFocused(null);
-    setCellSel(null);
-    if (e.shiftKey && colAnchor !== null) {
-      const [lo, hi] = colAnchor < ci ? [colAnchor, ci] : [ci, colAnchor];
-      const range = new Set<number>();
-      for (let i = lo; i <= hi; i++) if (!hiddenCols.has(i)) range.add(i);
-      setSelCols(range);
-    } else if (e.metaKey || e.ctrlKey) {
-      const next = new Set(selCols);
-      if (next.has(ci)) next.delete(ci);
-      else next.add(ci);
-      setSelCols(next);
-      setColAnchor(ci);
-    } else {
-      setSelCols(new Set([ci]));
-      setColAnchor(ci);
-    }
-    focusGrid();
-  };
-
-  /** Selected columns in display order (bounded to the current result). */
-  const selColList = [...selCols]
-    .filter((c) => c >= 0 && c < result.columns.length)
-    .sort((a, b) => a - b);
-
-  /** TSV of the selected columns across all rows (single column = lines). */
-  const copyColumns = () => {
-    if (!selColList.length) return;
-    const lines = result.rows.map((_, ri) =>
-      selColList.map((c) => shownValue(ri, c) ?? "").join("\t"),
-    );
-    copyAndToast(
-      lines.join("\n"),
-      `Copied ${selColList.length} column(s) as TSV`,
-    );
-  };
-
-  const copyColumnValues = (ci: number) => {
-    const text = result.rows.map((_, ri) => shownValue(ri, ci) ?? "").join("\n");
-    copyAndToast(text, `Copied ${result.rows.length} value(s)`);
-  };
-
-  /** Distinct non-NULL values as a quoted SQL IN list. */
-  const copyColumnIn = (ci: number) => {
-    const seen = new Set<string>();
-    for (let ri = 0; ri < result.rows.length; ri++) {
-      const v = shownValue(ri, ci);
-      if (v !== null) seen.add(v);
-    }
-    const list = [...seen].map(quoteLit).join(", ");
-    copyAndToast(`(${list})`, `Copied ${seen.size} value(s) for IN`);
-  };
+  const copy = makeCopyActions({
+    result,
+    shownValue,
+    selRows,
+    selColList,
+    rect,
+    rectCount,
+    hiddenCols,
+    insertTarget,
+    showToast,
+  });
 
   // --- Sorting --------------------------------------------------------------
   const sortIdxOf = (name: string) =>
@@ -624,84 +222,6 @@ function ResultsGridImpl({
     }
   };
 
-  const copyCell = () => {
-    if (!menuCell || menuCell.col < 0) return;
-    copyCellAt(menuCell.row, menuCell.col);
-  };
-
-  /** TSV of the rectangular cell selection. */
-  const copyCells = () => {
-    if (!rect) return;
-    const lines: string[] = [];
-    for (let r = rect.r1; r <= rect.r2; r++) {
-      if (!result.rows[r]) continue;
-      const cells: string[] = [];
-      for (let c = rect.c1; c <= rect.c2; c++) {
-        cells.push(shownValue(r, c) ?? "");
-      }
-      lines.push(cells.join("\t"));
-    }
-    copyAndToast(lines.join("\n"), `Copied ${rectCount} cell(s) as TSV`);
-  };
-
-  const copyAll = () => {
-    const text = [
-      result.columns.join("\t"),
-      ...result.rows.map((r, ri) =>
-        r.map((_, ci) => shownValue(ri, ci) ?? "").join("\t"),
-      ),
-    ].join("\n");
-    copyAndToast(text, `Copied ${result.rows.length} row(s) with header`);
-  };
-
-  // --- Export (CSV / JSON / Markdown) ---------------------------------------
-  // Selected rows when a selection exists, the whole result otherwise;
-  // hidden columns are left out, mirroring what's on screen.
-  const exportable = () => {
-    const rowIdxs = n > 0 ? selRows : result.rows.map((_, i) => i);
-    const visCols = result.columns
-      .map((_, i) => i)
-      .filter((i) => !hiddenCols.has(i));
-    return {
-      columns: visCols.map((i) => result.columns[i]),
-      rows: rowIdxs.map((ri) => visCols.map((ci) => shownValue(ri, ci))),
-    };
-  };
-
-  const exportLabel = n > 0 ? `${n} row(s)` : "all";
-
-  const exportRows = async (kind: "csv" | "json" | "md") => {
-    const { columns, rows } = exportable();
-    const content =
-      kind === "csv"
-        ? toCsv(columns, rows)
-        : kind === "json"
-          ? toJson(columns, rows)
-          : toMarkdown(columns, rows);
-    try {
-      const path = await save({
-        defaultPath: `${insertTarget?.table ?? "result"}.${kind}`,
-        filters: [
-          { name: kind.toUpperCase(), extensions: [kind] },
-          { name: "All files", extensions: ["*"] },
-        ],
-      });
-      if (!path) return;
-      await api.saveTextFile(path, content);
-      toastCopied(`Exported ${rows.length} row(s) → ${path.split("/").pop()}`);
-    } catch (e) {
-      showToast(errText(e));
-    }
-  };
-
-  const copyMarkdown = () => {
-    const { columns, rows } = exportable();
-    copyAndToast(
-      toMarkdown(columns, rows),
-      `Copied ${rows.length} row(s) as Markdown`,
-    );
-  };
-
   const dirty = Boolean(
     editing &&
       (Object.keys(editing.edits).length > 0 ||
@@ -716,16 +236,16 @@ function ResultsGridImpl({
       // column > cell selection > whole rows (via the row-number gutter)
       if (selColList.length > 0) {
         e.preventDefault();
-        copyColumns();
+        copy.copyColumns();
       } else if (rectCount > 1) {
         e.preventDefault();
-        copyCells();
+        copy.copyCells();
       } else if (focused) {
         e.preventDefault();
-        copyCellAt(focused.row, focused.col);
+        copy.copyCellAt(focused.row, focused.col);
       } else if (n > 0) {
         e.preventDefault();
-        copyRows(" ", "");
+        copy.copyRows(" ", "");
       }
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
@@ -768,13 +288,13 @@ function ResultsGridImpl({
       if (dirty) editing?.onApply?.();
     }
     if (e.key === "Escape") {
-      if (selCols.size > 0) {
-        setSelCols(new Set());
-        setColAnchor(null);
-      } else if (rectCount > 1) setCellSel(null);
+      if (sel.selCols.size > 0) {
+        sel.setSelCols(new Set());
+        sel.setColAnchor(null);
+      } else if (rectCount > 1) sel.setCellSel(null);
       else if (n > 0) {
-        setSelected(new Set());
-        setAnchor(null);
+        sel.setSelected(new Set());
+        sel.setAnchor(null);
       } else if (dirty) editing?.onDiscard?.();
     }
   };
@@ -807,7 +327,7 @@ function ResultsGridImpl({
         pasted += 1;
       });
     });
-    if (pasted > 0) toastCopied(`Pasted ${pasted} cell(s) — staged`);
+    if (pasted > 0) copy.toastCopied(`Pasted ${pasted} cell(s) — staged`);
   };
 
   /** Fallback path for environments that do fire `paste` here (dev browser). */
@@ -823,7 +343,6 @@ function ResultsGridImpl({
 
   const rowsLabel = n > 1 ? `${n} rows` : "row";
 
-  const menuCellOk = Boolean(menuCell && menuCell.col >= 0);
   const menuCellStaged = Boolean(
     menuCell && menuCell.col >= 0 && stagedOf(menuCell.row, menuCell.col).has,
   );
@@ -845,76 +364,23 @@ function ResultsGridImpl({
     }
   });
 
-  const renderInsert = (ii: number) => {
-    if (!editing) return null;
-    const row = inserts[ii];
-    return (
-      <tr
+  const renderInsert = (ii: number) =>
+    editing ? (
+      <InsertRowTr
         key={`+${ii}`}
-        className={cn(
-          "group",
-          editing.applyFailed ? "bg-red-500/10" : "bg-emerald-950/25",
-        )}
-      >
-        <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 text-right text-emerald-400/80">
-          <span className="group-hover:hidden">+{ii + 1}</span>
-          <button
-            className="hidden text-red-400 group-hover:inline"
-            title="Remove pending row"
-            onClick={() => editing.onInsertRemove(ii)}
-          >
-            <X size={11} />
-          </button>
-        </td>
-        {result.columns.map((_, ci) => {
-          if (hiddenCols.has(ci)) return null;
-          const v = row.values[ci];
-          const isEd = editIns?.index === ii && editIns?.col === ci;
-          return (
-            <td
-              key={ci}
-              title={v ?? undefined}
-              onDoubleClick={() => startInsertEdit(ii, ci)}
-              className={cn(
-                "border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-pre text-emerald-100/90 max-w-105 truncate",
-                isEd &&
-                  "bg-zinc-900 shadow-[inset_0_0_0_1.5px_var(--color-amber-400)]",
-              )}
-            >
-              {isEd ? (
-                <CellInput
-                  initial={editIns.initial}
-                  onStage={(val) =>
-                    editing.onInsertEdit(
-                      ii,
-                      ci,
-                      // an untouched generated column stays on DEFAULT
-                      val === "" && v === undefined ? undefined : val,
-                    )
-                  }
-                  onNull={
-                    columnNullable?.[ci]
-                      ? () => editing.onInsertEdit(ii, ci, null)
-                      : undefined
-                  }
-                  onClose={(refocus) => {
-                    setEditIns(null);
-                    if (refocus) focusGrid();
-                  }}
-                />
-              ) : v === undefined ? (
-                <span className="italic text-emerald-500/70">auto</span>
-              ) : v === null ? (
-                <span className="italic text-zinc-600">NULL</span>
-              ) : (
-                v
-              )}
-            </td>
-          );
-        })}
-      </tr>
-    );
-  };
+        editing={editing}
+        ii={ii}
+        result={result}
+        hiddenCols={hiddenCols}
+        columnNullable={columnNullable}
+        editIns={editIns}
+        onStartEdit={startInsertEdit}
+        onCloseEdit={(refocus) => {
+          setEditIns(null);
+          if (refocus) focusGrid();
+        }}
+      />
+    ) : null;
 
   const closeDialog = () => {
     setDialog(null);
@@ -960,14 +426,18 @@ function ResultsGridImpl({
         className="block h-full overflow-auto outline-none"
       >
         <table
-          ref={tableRef}
-          style={sized ? { tableLayout: "fixed", width: totalW } : undefined}
+          ref={layout.tableRef}
+          style={
+            layout.sized
+              ? { tableLayout: "fixed", width: layout.totalW }
+              : undefined
+          }
           className="border-separate border-spacing-0 text-[12px] font-mono"
         >
           <thead className="sticky top-0 z-10">
             <tr>
               <th
-                style={sized ? { width: colWidths[-1] } : undefined}
+                style={layout.sized ? { width: layout.colWidths[-1] } : undefined}
                 onContextMenu={() => {
                   setMenuCell(null);
                   setMenuCol(null);
@@ -980,20 +450,20 @@ function ResultsGridImpl({
                 if (hiddenCols.has(i)) return null;
                 const sortIdx = sortIdxOf(name);
                 const sort = sortIdx >= 0 ? sorts?.[sortIdx] : undefined;
-                const isColSel = selCols.has(i);
+                const isColSel = sel.selCols.has(i);
                 return (
                   <th
                     key={i}
-                    style={sized ? { width: colWidths[i] } : undefined}
-                    onClick={(e) => clickColumn(i, e)}
+                    style={layout.sized ? { width: layout.colWidths[i] } : undefined}
+                    onClick={(e) => sel.clickColumn(i, e)}
                     onContextMenu={() => {
                       setMenuCol(i);
                       setMenuCell(null);
                       // right-click outside the selection retargets it,
                       // mirroring how row selection behaves
-                      if (!selCols.has(i)) {
-                        setSelCols(new Set([i]));
-                        setColAnchor(i);
+                      if (!sel.selCols.has(i)) {
+                        sel.setSelCols(new Set([i]));
+                        sel.setColAnchor(i);
                       }
                     }}
                     title={`${name} — click selects column (⇧ range, ⌘ toggle)`}
@@ -1043,11 +513,11 @@ function ResultsGridImpl({
                       )}
                     </span>
                     <span
-                      onMouseDown={(e) => startResize(i, e)}
+                      onMouseDown={(e) => layout.startResize(i, e)}
                       onClick={(e) => e.stopPropagation()}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        fitColumn(i);
+                        layout.fitColumn(i);
                       }}
                       title="Drag to resize · double-click to fit"
                       className="absolute right-0 top-0 h-full w-[5px] cursor-col-resize hover:bg-sky-500/60"
@@ -1079,9 +549,9 @@ function ResultsGridImpl({
                     onClick={(e) => {
                       // whole-row selection lives on the number gutter only;
                       // it replaces any cell selection
-                      selectRow(ri, e);
-                      setFocused(null);
-                      setCellSel(null);
+                      sel.selectRow(ri, e);
+                      sel.setFocused(null);
+                      sel.setCellSel(null);
                     }}
                     onMouseDown={(e) => {
                       // keep a drag over the gutter from starting a native
@@ -1099,16 +569,16 @@ function ResultsGridImpl({
                         !e.metaKey &&
                         !e.ctrlKey
                       ) {
-                        rowDrag.current = ri;
-                        setSelected(new Set([ri]));
-                        setAnchor(ri);
-                        setSelCols(new Set());
-                        setColAnchor(null);
-                        setFocused(null);
-                        setCellSel(null);
+                        sel.rowDrag.current = ri;
+                        sel.setSelected(new Set([ri]));
+                        sel.setAnchor(ri);
+                        sel.setSelCols(new Set());
+                        sel.setColAnchor(null);
+                        sel.setFocused(null);
+                        sel.setCellSel(null);
                       }
                     }}
-                    onMouseEnter={() => extendRowDrag(ri)}
+                    onMouseEnter={() => sel.extendRowDrag(ri)}
                     className={cn(
                       "cursor-pointer border-b border-r border-zinc-800/70 px-2 py-0.5 text-right",
                       isDeleted
@@ -1157,9 +627,12 @@ function ResultsGridImpl({
                           // (cell selection replaces row selection either way)
                           const anchorCell = cellSel?.a ?? focused;
                           if (e.shiftKey && anchorCell) {
-                            setSelected(new Set());
-                            setAnchor(null);
-                            setCellSel({ a: anchorCell, b: { row: ri, col: ci } });
+                            sel.setSelected(new Set());
+                            sel.setAnchor(null);
+                            sel.setCellSel({
+                              a: anchorCell,
+                              b: { row: ri, col: ci },
+                            });
                             return;
                           }
                           focusCell(ri, ci);
@@ -1182,18 +655,18 @@ function ResultsGridImpl({
                             e.preventDefault();
                             focusGrid();
                           }
-                          dragSel.current = true;
+                          sel.dragSel.current = true;
                           focusCell(ri, ci);
                         }}
                         onMouseEnter={() => {
                           // a gutter-started drag keeps extending the row
                           // range even when the cursor drifts onto the cells
-                          if (rowDrag.current !== null) {
-                            extendRowDrag(ri);
+                          if (sel.rowDrag.current !== null) {
+                            sel.extendRowDrag(ri);
                             return;
                           }
-                          if (dragSel.current) {
-                            setCellSel((cs) =>
+                          if (sel.dragSel.current) {
+                            sel.setCellSel((cs) =>
                               cs ? { a: cs.a, b: { row: ri, col: ci } } : cs,
                             );
                           }
@@ -1213,7 +686,7 @@ function ResultsGridImpl({
                               ? "bg-red-500/15 text-red-300"
                               : "bg-amber-500/15 text-amber-200"),
                           isDeleted && "text-zinc-600 line-through",
-                          selCols.has(ci) &&
+                          sel.selCols.has(ci) &&
                             !staged.has &&
                             !isDeleted &&
                             !isEditing &&
@@ -1293,338 +766,59 @@ function ResultsGridImpl({
 
       <ContextMenuContent>
         {menuCol !== null ? (
-          <>
-            {onSortsChange && (
-              <>
-                <ContextMenuItem
-                  icon={ArrowUp}
-                  onClick={() => applySort(result.columns[menuCol], "asc")}
-                >
-                  Sort ascending
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={ArrowDown}
-                  onClick={() => applySort(result.columns[menuCol], "desc")}
-                >
-                  Sort descending
-                </ContextMenuItem>
-                {sortIdxOf(result.columns[menuCol]) < 0 ? (
-                  <ContextMenuItem
-                    icon={ArrowUpDown}
-                    onClick={() =>
-                      applySort(result.columns[menuCol], undefined, true)
-                    }
-                    title="⇧click on the header arrow does the same"
-                  >
-                    Add to multi-sort
-                  </ContextMenuItem>
-                ) : (
-                  (sorts?.length ?? 0) > 1 && (
-                    <ContextMenuItem
-                      icon={X}
-                      onClick={() =>
-                        onSortsChange(
-                          (sorts ?? []).filter(
-                            (s) => s.column !== result.columns[menuCol],
-                          ),
-                        )
-                      }
-                    >
-                      Remove from sort
-                    </ContextMenuItem>
-                  )
-                )}
-                {(sorts?.length ?? 0) > 0 && (
-                  <ContextMenuItem icon={X} onClick={() => onSortsChange([])}>
-                    Clear sort
-                  </ContextMenuItem>
-                )}
-                <ContextMenuSeparator />
-              </>
-            )}
-            {selColList.length > 1 ? (
-              <>
-                <ContextMenuItem icon={Sheet} onClick={copyColumns}>
-                  Copy {selColList.length} columns (TSV)
-                  <ContextMenuShortcut>⌘C</ContextMenuShortcut>
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={Copy}
-                  onClick={() =>
-                    copyAndToast(
-                      selColList.map((c) => result.columns[c]).join(", "),
-                      "Column names copied",
-                    )
-                  }
-                >
-                  Copy column names
-                </ContextMenuItem>
-              </>
-            ) : (
-              <>
-                <ContextMenuItem
-                  icon={Copy}
-                  onClick={() =>
-                    copyAndToast(result.columns[menuCol], "Column name copied")
-                  }
-                >
-                  Copy column name
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={Sheet}
-                  disabled={!result.rows.length}
-                  onClick={() => copyColumnValues(menuCol)}
-                >
-                  Copy column values
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={Brackets}
-                  disabled={!result.rows.length}
-                  onClick={() => copyColumnIn(menuCol)}
-                >
-                  Copy for IN (…)
-                </ContextMenuItem>
-              </>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={MoveHorizontal}
-              onClick={() =>
-                (selColList.length > 1 ? selColList : [menuCol]).forEach(
-                  fitColumn,
-                )
-              }
-            >
-              Fit column width{selColList.length > 1 ? ` (${selColList.length})` : ""}
-            </ContextMenuItem>
-            <ContextMenuItem icon={UnfoldHorizontal} onClick={fitAllColumns}>
-              Fit all columns
-            </ContextMenuItem>
-            <ContextMenuItem
-              icon={MoveHorizontal}
-              onClick={() => matchAllColumns(menuCol)}
-            >
-              Resize all to match
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={EyeOff}
-              onClick={() => {
-                const next = new Set(hiddenCols);
-                (selColList.length > 1 ? selColList : [menuCol]).forEach((c) =>
-                  next.add(c),
-                );
-                changeHiddenCols(next);
-                setSelCols(new Set());
-                setColAnchor(null);
-              }}
-            >
-              {selColList.length > 1
-                ? `Hide ${selColList.length} columns`
-                : `Hide ${result.columns[menuCol]}`}
-            </ContextMenuItem>
-            <ContextMenuItem icon={RotateCcw} onClick={resetLayout}>
-              Reset layout
-            </ContextMenuItem>
-          </>
+          <ColumnMenu
+            menuCol={menuCol}
+            result={result}
+            sorts={sorts}
+            onSortsChange={onSortsChange}
+            applySort={applySort}
+            sortIdxOf={sortIdxOf}
+            selColList={selColList}
+            copy={copy}
+            layout={layout}
+            onHideColumns={(cols) => {
+              const next = new Set(hiddenCols);
+              cols.forEach((c) => next.add(c));
+              layout.changeHiddenCols(next);
+              sel.setSelCols(new Set());
+              sel.setColAnchor(null);
+            }}
+          />
         ) : (
-          <>
-            <ContextMenuItem icon={Copy} disabled={!menuCellOk} onClick={copyCell}>
-              Copy cell
-              {rectCount <= 1 && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
-            </ContextMenuItem>
-            {rectCount > 1 && (
-              <ContextMenuItem icon={Sheet} onClick={copyCells}>
-                Copy {rectCount} cells (TSV)
-                <ContextMenuShortcut>⌘C</ContextMenuShortcut>
-              </ContextMenuItem>
-            )}
-            <ContextMenuItem icon={Copy} disabled={!n} onClick={() => copyRows(" ", "")}>
-              Copy {rowsLabel}
-            </ContextMenuItem>
-            <ContextMenuItem icon={Sheet} disabled={!n} onClick={() => copyRows("\t", "as TSV")}>
-              Copy {rowsLabel} as TSV
-            </ContextMenuItem>
-            <ContextMenuItem icon={Braces} disabled={!n} onClick={copyJson}>
-              Copy {rowsLabel} as JSON
-            </ContextMenuItem>
-            {insertTarget && (
-              <ContextMenuItem icon={Database} disabled={!n} onClick={copyInsert}>
-                Copy {rowsLabel} as INSERT
-              </ContextMenuItem>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem icon={Sheet} disabled={!result.rows.length} onClick={copyAll}>
-              Copy all with header (TSV)
-            </ContextMenuItem>
-            <ContextMenuItem
-              icon={Braces}
-              disabled={!result.rows.length}
-              onClick={copyMarkdown}
-            >
-              Copy {exportLabel} as Markdown
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={FileDown}
-              disabled={!result.rows.length}
-              onClick={() => void exportRows("csv")}
-            >
-              Export {exportLabel} as CSV…
-            </ContextMenuItem>
-            <ContextMenuItem
-              icon={FileDown}
-              disabled={!result.rows.length}
-              onClick={() => void exportRows("json")}
-            >
-              Export {exportLabel} as JSON…
-            </ContextMenuItem>
-            <ContextMenuItem
-              icon={FileDown}
-              disabled={!result.rows.length}
-              onClick={() => void exportRows("md")}
-            >
-              Export {exportLabel} as Markdown…
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              icon={SquarePen}
-              disabled={!menuCellOk}
-              onClick={() => menuCell && openCellDialog(menuCell.row, menuCell.col)}
-            >
-              Open cell in editor
-              <ContextMenuShortcut>⌘⏎</ContextMenuShortcut>
-            </ContextMenuItem>
-            {onFollowFk && menuCell && fkColumns?.has(menuCell.col) && (
-              <ContextMenuItem
-                icon={ArrowUpRight}
-                disabled={result.rows[menuCell.row]?.[menuCell.col] == null}
-                onClick={() => onFollowFk(menuCell.row, menuCell.col)}
-              >
-                Open referenced row
-                <ContextMenuShortcut>⌘click</ContextMenuShortcut>
-              </ContextMenuItem>
-            )}
-            {editing && (
-              <>
-                <ContextMenuSeparator />
-                <ContextMenuItem
-                  icon={Pencil}
-                  disabled={!canEdit || !menuCellOk}
-                  onClick={() => menuCell && startEdit(menuCell.row, menuCell.col)}
-                >
-                  Edit cell
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={Eraser}
-                  disabled={!canEdit || !menuCellOk}
-                  onClick={() =>
-                    menuCell && editing.onEdit(menuCell.row, menuCell.col, null)
-                  }
-                >
-                  Set cell NULL
-                </ContextMenuItem>
-                {menuCellStaged && (
-                  <ContextMenuItem
-                    icon={Undo2}
-                    onClick={() =>
-                      menuCell &&
-                      editing.onEdit(
-                        menuCell.row,
-                        menuCell.col,
-                        result.rows[menuCell.row][menuCell.col],
-                      )
-                    }
-                  >
-                    Revert cell
-                  </ContextMenuItem>
-                )}
-                <ContextMenuItem
-                  icon={CopyPlus}
-                  disabled={!canEdit || !n}
-                  onClick={() => editing.onDuplicate(selRows)}
-                  title="Copies stay pending until Apply; generated keys are regenerated"
-                >
-                  Duplicate {rowsLabel}
-                  <ContextMenuShortcut>⌘D</ContextMenuShortcut>
-                </ContextMenuItem>
-                <ContextMenuItem
-                  icon={allSelectedDeleted ? Undo2 : Trash2}
-                  iconClassName={allSelectedDeleted ? undefined : "text-red-400/80"}
-                  disabled={!canEdit || !n}
-                  onClick={() => editing.onToggleDelete(selRows, !allSelectedDeleted)}
-                >
-                  {allSelectedDeleted ? "Restore" : "Delete"} {rowsLabel}
-                  <ContextMenuShortcut>⌫</ContextMenuShortcut>
-                </ContextMenuItem>
-              </>
-            )}
-            {hiddenCols.size > 0 && (
-              <>
-                <ContextMenuSeparator />
-                <ContextMenuItem icon={RotateCcw} onClick={resetLayout}>
-                  Reset layout ({hiddenCols.size} hidden)
-                </ContextMenuItem>
-              </>
-            )}
-          </>
+          <CellMenu
+            menuCell={menuCell}
+            menuCellStaged={menuCellStaged}
+            result={result}
+            rectCount={rectCount}
+            selRows={selRows}
+            rowsLabel={rowsLabel}
+            allSelectedDeleted={allSelectedDeleted}
+            insertTarget={insertTarget}
+            fkColumns={fkColumns}
+            onFollowFk={onFollowFk}
+            editing={editing}
+            canEdit={canEdit}
+            copy={copy}
+            openCellDialog={openCellDialog}
+            startEdit={startEdit}
+            hiddenCount={hiddenCols.size}
+            resetLayout={layout.resetLayout}
+          />
         )}
       </ContextMenuContent>
     </ContextMenu>
 
     {dialog && (
-      <Overlay onClose={closeDialog} className="items-center bg-black/60">
-        <div className="flex w-[44rem] max-w-[92vw] flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
-          <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5">
-            <span className="font-mono text-[12px] text-zinc-100">
-              {result.columns[dialog.col]}
-            </span>
-            {columnTypes?.[dialog.col] && (
-              <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
-                {columnTypes[dialog.col]}
-              </span>
-            )}
-            <span className="text-[11px] text-zinc-600">
-              row {dialog.row + 1}
-            </span>
-            <div className="ml-auto">
-              <IconBtn onClick={closeDialog}>
-                <X size={14} />
-              </IconBtn>
-            </div>
-          </div>
-          <textarea
-            autoFocus
-            spellCheck={false}
-            value={dialog.text}
-            readOnly={!canEdit}
-            onChange={(e) => setDialog({ ...dialog, text: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") closeDialog();
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") stageDialog();
-            }}
-            className="selectable m-3 h-80 resize-y rounded-md border border-zinc-700 bg-zinc-950 p-2.5 font-mono text-[12px] leading-relaxed text-zinc-100 outline-none focus:border-sky-600"
-          />
-          <div className="flex items-center gap-2 border-t border-zinc-800 px-4 py-2.5">
-            {dialog.isJson && (
-              <span className="text-[11px] text-zinc-600">
-                JSON · prettified{canEdit ? " · stored compact" : ""}
-              </span>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              <Button onClick={() => copyAndToast(dialog.text, "Cell copied")}>
-                Copy
-              </Button>
-              {canEdit && (
-                <Button variant="primary" title="⌘⏎" onClick={stageDialog}>
-                  Stage change
-                </Button>
-              )}
-              <Button onClick={closeDialog}>Close</Button>
-            </div>
-          </div>
-        </div>
-      </Overlay>
+      <CellDialog
+        dialog={dialog}
+        columnName={result.columns[dialog.col]}
+        columnType={columnTypes?.[dialog.col]}
+        canEdit={canEdit}
+        onText={(text) => setDialog({ ...dialog, text })}
+        onStage={stageDialog}
+        onClose={closeDialog}
+        onCopy={(text) => copy.copyAndToast(text, "Cell copied")}
+      />
     )}
     </>
   );
