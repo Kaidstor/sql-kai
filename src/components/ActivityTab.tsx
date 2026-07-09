@@ -111,7 +111,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
       </div>
 
       {state.error ? (
-        <TabError profileId={tab.profileId} error={state.error} />
+        <TabError profileId={tab.profileId} error={state.error} lost={state.connectionLost} />
       ) : !state.rows && state.loading ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-[12px] text-zinc-600">
           <Loader2 size={13} className="animate-spin" /> loading…

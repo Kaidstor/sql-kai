@@ -157,19 +157,40 @@ export const api = {
     }),
 };
 
+/** Rust-команды кидают AppError, сериализованный как `{code, message}` —
+ *  коды см. error.rs (connection_lost / session_gone / read_only / db / …). */
+export interface BackendError {
+  code: string;
+  message: string;
+}
+
+function isBackendError(e: unknown): e is BackendError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    typeof (e as BackendError).message === "string"
+  );
+}
+
 export function errText(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
+  if (isBackendError(e)) return e.message;
   return String(e);
+}
+
+/** Код AppError; null для прочих ошибок (строки, JS-исключения). */
+export function errCode(e: unknown): string | null {
+  return isBackendError(e) && typeof e.code === "string" ? e.code : null;
 }
 
 /** Errors that mean the session itself is dead (server/tunnel dropped or the
  *  backend already discarded it) — the fix is a reconnect, not a better query,
- *  so the UI offers one wherever such an error surfaces. */
-export function isConnectionLost(message: string): boolean {
-  return /connection (closed|lost|reset)|session not found|broken pipe|error communicating with the server/i.test(
-    message,
-  );
+ *  so the UI offers one wherever such an error surfaces. Determined by the
+ *  backend's error code, not by matching message text. */
+export function isSessionLost(e: unknown): boolean {
+  const code = errCode(e);
+  return code === "connection_lost" || code === "session_gone";
 }
 
 // Hot-swapping this module would leave stale references in the store —

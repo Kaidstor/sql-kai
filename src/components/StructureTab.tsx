@@ -293,7 +293,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
 
       <div className="min-h-0 flex-1 overflow-auto">
         {state.error && (
-          <TabError profileId={tab.profileId} error={state.error} />
+          <TabError profileId={tab.profileId} error={state.error} lost={state.connectionLost} />
         )}
 
         {!state.error && state.section === "columns" && (

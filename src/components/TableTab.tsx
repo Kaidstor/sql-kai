@@ -7,7 +7,6 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { isConnectionLost } from "../lib/api";
 import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
 import type { ColumnInfo, RelationInfo, SortSpec } from "../lib/types";
@@ -62,9 +61,7 @@ export function TableTab({ tab }: { tab: Tab }) {
   // A drop mid-session must not blank rows the user was looking at: keep
   // the cached page under a Reconnect banner. Errors without cached data
   // (or unrelated to the connection) still take over the tab body.
-  const staleData = Boolean(
-    state.error && state.data && isConnectionLost(state.error),
-  );
+  const staleData = Boolean(state.error && state.data && state.connectionLost);
   // Hidden grid columns, mirrored from ResultsGrid — the "current view as
   // query" SQL leaves them out. Indices refer to state.data.result.columns.
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
@@ -413,7 +410,7 @@ export function TableTab({ tab }: { tab: Tab }) {
 
       <div className="flex-1 min-h-0">
         {state.error && !staleData ? (
-          <TabError profileId={tab.profileId} error={state.error} />
+          <TabError profileId={tab.profileId} error={state.error} lost={state.connectionLost} />
         ) : state.data ? (
           <ResultsGrid
             result={state.data.result}

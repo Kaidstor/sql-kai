@@ -405,7 +405,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
 
         <div className="flex-1 min-h-0 flex flex-col overflow-auto">
           {state.error && (
-            <TabError profileId={tab.profileId} error={state.error} />
+            <TabError profileId={tab.profileId} error={state.error} lost={state.connectionLost} />
           )}
           {!state.error && state.explain && (
             <ExplainView
