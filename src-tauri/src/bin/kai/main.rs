@@ -8,6 +8,7 @@
 
 mod broker_client;
 mod cmd;
+mod input;
 mod output;
 mod redact;
 mod remote;

@@ -50,7 +50,7 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
         println!("{}", serde_json::to_string_pretty(&entries).unwrap());
         return Ok(ExitCode::SUCCESS);
     }
-    let now = session::now_ms();
+    let now = store::now_ms();
     let rows: Vec<Vec<Option<String>>> = entries
         .iter()
         .map(|h| {

@@ -309,6 +309,14 @@ pub struct HistoryEntry {
     pub ok: bool,
 }
 
+/// Current time as epoch milliseconds — the format of [`HistoryEntry::at`].
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub fn load_history() -> Result<Vec<HistoryEntry>, AppError> {
     load_list("history.json")
 }

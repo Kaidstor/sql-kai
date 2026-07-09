@@ -11,7 +11,7 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, HistoryEntry};
 
 use crate::output::{self, Format, FormatArgs};
-use crate::{broker_client, redact, session};
+use crate::{broker_client, input, redact, session};
 
 #[derive(Args)]
 pub struct QueryArgs {
@@ -131,7 +131,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
                 profile_id: profile.id.clone(),
                 profile_name: profile.name.clone(),
                 sql: sql.to_string(),
-                at: session::now_ms(),
+                at: store::now_ms(),
                 ok,
             });
         }
@@ -181,7 +181,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
 }
 
 pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
-    let sql = session::collect_sql(&a.commands, &a.files)?;
+    let sql = input::collect_sql(&a.commands, &a.files)?;
     // Живой GUI обслуживает запрос своей cli-сессией; кастомные источники
     // пароля (--password-env/--from-sec) — всегда автономно.
     if !a.local && a.password_env.is_none() && !a.from_sec && a.sec_key.is_none() {
@@ -209,7 +209,7 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             profile_id: profile.id.clone(),
             profile_name: profile.name.clone(),
             sql: sql.clone(),
-            at: session::now_ms(),
+            at: store::now_ms(),
             ok: outcome.is_ok(),
         });
     }

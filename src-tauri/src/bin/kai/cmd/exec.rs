@@ -11,8 +11,8 @@ use base64::Engine;
 use clap::Args;
 use sql_kai_lib::error::AppError;
 
+use crate::input;
 use crate::remote::{self, CONTAINER_DETECT};
-use crate::session;
 
 #[derive(Args)]
 pub struct ExecArgs {
@@ -51,7 +51,7 @@ $D exec -i "$C" psql -U "$U" -d "$DB" -v ON_ERROR_STOP=1 ${KAI_PSQL_OPTS:-} -f -
 "#;
 
 pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
-    let mut sql = session::collect_sql(&a.commands, &a.files)?;
+    let mut sql = input::collect_sql(&a.commands, &a.files)?;
     if !a.write {
         sql = format!("SET default_transaction_read_only = on;\n{sql}");
     }
