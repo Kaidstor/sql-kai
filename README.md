@@ -22,10 +22,10 @@ ln -sf /Applications/sql-kai.app/Contents/MacOS/kai ~/.local/bin/kai   # люб�
 
 ### Скилл для AI-агентов
 
-В репозитории есть скилл `kai` ([skills/kai/SKILL.md](skills/kai/SKILL.md)) по спецификации [Agent Skills](https://agentskills.io) — инструкции агенту, как выполнять SQL через CLI. Установка в Claude Code:
+В репозитории есть скилл `kai` ([skills/kai/SKILL.md](skills/kai/SKILL.md)) по спецификации [Agent Skills](https://agentskills.io) — инструкции агенту, как выполнять SQL через CLI. Установка (CLI сам спросит, в какого агента и куда — в проект или глобально):
 
 ```bash
-npx skills add https://gitlab.com/kaidstor/sql-kai --skill kai -a claude-code -g
+npx skills add https://gitlab.com/kaidstor/sql-kai --skill kai
 ```
 
 ## Стек
