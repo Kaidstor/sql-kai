@@ -20,6 +20,14 @@ CLI `kai` лежит внутри бандла — чтобы он был в PAT
 ln -sf /Applications/sql-kai.app/Contents/MacOS/kai ~/.local/bin/kai   # любая папка из PATH
 ```
 
+### Скилл для AI-агентов
+
+В репозитории есть скилл `kai` ([skills/kai/SKILL.md](skills/kai/SKILL.md)) по спецификации [Agent Skills](https://agentskills.io) — инструкции агенту, как выполнять SQL через CLI. Установка в Claude Code:
+
+```bash
+npx skills add https://gitlab.com/kaidstor/sql-kai --skill kai -a claude-code -g
+```
+
 ## Стек
 
 - **Backend**: Rust, `tokio-postgres` (simple-query протокол — сервер сам форматирует значения в текст, любые типы отображаются без маппинга), собственный vault (`aes-gcm` + `argon2` — секреты шифруются мастер-паролем), SSH-туннели через супервизию системного `ssh -N -L`.
