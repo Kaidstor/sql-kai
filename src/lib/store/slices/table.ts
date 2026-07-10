@@ -50,7 +50,12 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       if (
         (Object.keys(tab.state.edits).length > 0 ||
           tab.state.deletes.length > 0) &&
-        !confirm("Discard pending changes?")
+        !(await get().confirmDialog({
+          title: "Discard pending changes?",
+          message: "Reloading the page drops staged edits and deletes.",
+          confirmLabel: "Discard",
+          danger: true,
+        }))
       ) {
         return;
       }
@@ -214,7 +219,13 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
         ]
           .filter(Boolean)
           .join(", ");
-        if (!confirm(`"${profile.name}" is PRODUCTION — apply ${parts}?`)) return;
+        const ok = await get().confirmDialog({
+          title: `"${profile.name}" is PRODUCTION`,
+          message: `Apply ${parts}?`,
+          confirmLabel: "Apply",
+          danger: true,
+        });
+        if (!ok) return;
       }
       patchTab<TableTabState>(tabId, {
         loading: true,

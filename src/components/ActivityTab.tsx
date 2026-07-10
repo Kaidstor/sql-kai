@@ -24,6 +24,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   const refreshActivity = useApp((s) => s.refreshActivity);
   const setActivityOptions = useApp((s) => s.setActivityOptions);
   const showToast = useApp((s) => s.showToast);
+  const confirmDialog = useApp((s) => s.confirmDialog);
   const session = sessions[tab.profileId];
   const connected = Boolean(session);
 
@@ -46,9 +47,12 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     if (!session) return;
     if (
       terminate &&
-      !confirm(
-        `Terminate backend ${row.pid}? Its connection will be closed and the transaction rolled back.`,
-      )
+      !(await confirmDialog({
+        title: `Terminate backend ${row.pid}?`,
+        message: "Its connection will be closed and the transaction rolled back.",
+        confirmLabel: "Terminate",
+        danger: true,
+      }))
     ) {
       return;
     }

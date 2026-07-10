@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
 import { LogViewer } from "./components/LogViewer";
@@ -257,6 +258,7 @@ function App() {
       <StatusBar />
       <UpdateToast />
       <ConnectionDialog />
+      <ConfirmDialog />
       <SettingsDialog />
       <LogViewer />
       <Palette />

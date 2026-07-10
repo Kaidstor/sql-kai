@@ -170,6 +170,18 @@ export interface Toast {
   kind: "error" | "info" | "success";
 }
 
+/** In-app confirm dialog request — window.confirm() doesn't block in the
+ *  Tauri webview, so destructive actions go through confirmDialog() instead. */
+export interface ConfirmRequest {
+  title: string;
+  /** Optional body; rendered pre-wrap so SQL previews keep line breaks. */
+  message?: string;
+  /** Confirm button label, default "Confirm". */
+  confirmLabel?: string;
+  /** Destructive action: the confirm button turns red. */
+  danger?: boolean;
+}
+
 export type PaletteKind = "connections" | "queries" | "symbols";
 
 /** One user-defined function for the symbols palette. */

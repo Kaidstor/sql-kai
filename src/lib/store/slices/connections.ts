@@ -29,6 +29,10 @@ export interface ConnectionsSlice {
   /** Last connect attempt that failed (server down, refused, auth) — keyed by
    *  profileId, value is the error text. Cleared when a fresh attempt starts. */
   connectError: Record<string, string>;
+  /** Profiles scheduled for deletion — the launcher card shows an Undo
+   *  countdown while the flag is set; the real delete fires after the grace
+   *  period unless undoDeleteProfile cancels it. */
+  pendingDelete: Record<string, boolean>;
   tables: Record<string, TableInfo[]>; // keyed by profileId
   /** All columns of all relations for editor autocomplete, keyed by profileId. */
   schemaColumns: Record<string, TableColumns[]>;
@@ -58,6 +62,10 @@ export interface ConnectionsSlice {
     password: string | null,
     sshPassphrase: string | null,
   ) => Promise<void>;
+  /** Marks the profile for deletion and starts the undo grace timer. */
+  requestDeleteProfile: (id: string) => void;
+  /** Cancels a pending deletion within the grace period. */
+  undoDeleteProfile: (id: string) => void;
   deleteProfile: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
   loadTableColumns: (
@@ -71,6 +79,13 @@ export interface ConnectionsSlice {
     table: string,
   ) => Promise<void>;
 }
+
+/** Grace period between "Delete" and the profile actually going away. */
+export const UNDO_DELETE_MS = 5000;
+
+// Pending-delete timers live outside the store (like the toast timer):
+// the card that started one may unmount before it fires.
+const deleteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function createConnectionsSlice(
   set: Set,
@@ -106,6 +121,7 @@ export function createConnectionsSlice(
     connecting: {},
     lost: {},
     connectError: {},
+    pendingDelete: {},
     tables: {},
     schemaColumns: {},
     schemaFunctions: {},
@@ -118,6 +134,9 @@ export function createConnectionsSlice(
       // повторный вход (двойной Enter в палитре/лаунчере) — открыл бы вторую
       // сессию и ssh-туннель, а первая повисла бы навсегда
       if (get().connecting[profileId]) return;
+      // профиль в grace-периоде undo-удаления: коннект открыл бы туннель,
+      // который через секунды снесёт deleteProfile
+      if (get().pendingDelete[profileId]) return;
       // a fresh attempt clears the last failure
       set((s) => ({
         connecting: { ...s.connecting, [profileId]: true },
@@ -325,10 +344,31 @@ export function createConnectionsSlice(
       });
     },
 
+    requestDeleteProfile: (id) => {
+      const prev = deleteTimers.get(id);
+      if (prev) clearTimeout(prev);
+      set((s) => ({ pendingDelete: { ...s.pendingDelete, [id]: true } }));
+      deleteTimers.set(
+        id,
+        setTimeout(() => {
+          deleteTimers.delete(id);
+          void get().deleteProfile(id);
+        }, UNDO_DELETE_MS),
+      );
+    },
+
+    undoDeleteProfile: (id) => {
+      const timer = deleteTimers.get(id);
+      if (timer) clearTimeout(timer);
+      deleteTimers.delete(id);
+      set((s) => ({ pendingDelete: without(s.pendingDelete, id) }));
+    },
+
     deleteProfile: async (id) => {
       try {
         await api.deleteProfile(id);
       } catch (e) {
+        set((s) => ({ pendingDelete: without(s.pendingDelete, id) }));
         get().showToast(errText(e));
         return;
       }
@@ -347,6 +387,7 @@ export function createConnectionsSlice(
           isolatedSessions,
           lost: without(s.lost, id),
           connectError: without(s.connectError, id),
+          pendingDelete: without(s.pendingDelete, id),
           tabs,
           closedTabs: s.closedTabs.filter((c) => c.tab.profileId !== id),
           activeProfileId: s.activeProfileId === id ? null : s.activeProfileId,

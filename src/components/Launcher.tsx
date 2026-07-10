@@ -7,6 +7,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  RotateCcw,
   Trash2,
   Unplug,
   X,
@@ -16,6 +17,7 @@ import { accentColor } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
+import { UNDO_DELETE_MS } from "../lib/store/slices/connections";
 import type { Profile } from "../lib/types";
 import {
   ContextMenu,
@@ -37,7 +39,9 @@ function ProfileCard({ profile }: { profile: Profile }) {
   const reconnect = useApp((s) => s.reconnect);
   const selectProfile = useApp((s) => s.selectProfile);
   const openDialog = useApp((s) => s.openDialog);
-  const deleteProfile = useApp((s) => s.deleteProfile);
+  const requestDeleteProfile = useApp((s) => s.requestDeleteProfile);
+  const undoDeleteProfile = useApp((s) => s.undoDeleteProfile);
+  const pendingDelete = useApp((s) => s.pendingDelete);
   const duplicateProfile = useApp((s) => s.duplicateProfile);
   const cli = cliSessions[profile.id];
   const connected = Boolean(sessions[profile.id]);
@@ -65,11 +69,36 @@ function ProfileCard({ profile }: { profile: Profile }) {
     else void connect(profile.id);
   };
 
-  const confirmDelete = () => {
-    if (confirm(`Delete connection "${profile.name}"?`)) {
-      void deleteProfile(profile.id);
-    }
-  };
+  // Deletion is scheduled with an undo grace period instead of a confirm():
+  // the card flips into a countdown state and a click anywhere cancels it.
+  if (pendingDelete[profile.id]) {
+    return (
+      <div
+        className="relative cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-925 px-3 py-2.5 hover:border-zinc-600"
+        onClick={() => undoDeleteProfile(profile.id)}
+        title="Click to undo"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="size-2 shrink-0 rounded-full bg-zinc-700" />
+          <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-500 line-through">
+            {profile.name}
+          </span>
+        </div>
+        <div className="truncate pl-4 pt-1 font-mono text-[11px] text-zinc-600">
+          {profile.ssh?.host ? `${profile.ssh.host} ⇢ ` : ""}
+          {profileAddr(profile)}
+        </div>
+        <div className="flex items-center gap-1.5 pl-4 pt-1 text-[10px] text-amber-500/90">
+          <RotateCcw size={10} />
+          deleted — click to undo
+        </div>
+        <span
+          className="absolute bottom-0 left-0 h-0.5 bg-amber-500/70"
+          style={{ animation: `undo-countdown ${UNDO_DELETE_MS}ms linear forwards` }}
+        />
+      </div>
+    );
+  }
 
   return (
     <ContextMenu>
@@ -97,7 +126,9 @@ function ProfileCard({ profile }: { profile: Profile }) {
                 : "Connect"
       }
     >
-      <div className="flex items-center gap-2 min-w-0">
+      {/* on hover the absolute action buttons appear top-right — pad the row
+          so a long name truncates before running underneath them */}
+      <div className="flex items-center gap-2 min-w-0 group-hover:pr-16">
         <span
           className={cn(
             "size-2 rounded-full shrink-0",
@@ -167,7 +198,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
         <IconButton title="Edit" onClick={() => openDialog(profile)}>
           <Pencil size={13} />
         </IconButton>
-        <IconButton title="Delete" onClick={confirmDelete}>
+        <IconButton title="Delete" onClick={() => requestDeleteProfile(profile.id)}>
           <Trash2 size={13} />
         </IconButton>
       </div>
@@ -207,7 +238,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
       <ContextMenuItem
         icon={Trash2}
         iconClassName="text-red-400/80"
-        onClick={confirmDelete}
+        onClick={() => requestDeleteProfile(profile.id)}
       >
         Delete
       </ContextMenuItem>

@@ -48,6 +48,16 @@ textarea,
   background: transparent;
 }
 
+/* undo-delete grace bar on launcher cards (duration set inline) */
+@keyframes undo-countdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
 .cm-editor {
   height: 100%;
   font-size: 13px;

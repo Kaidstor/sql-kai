@@ -205,7 +205,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       if (!tab || tab.state.running) return;
       const sql = (sqlOverride ?? tab.state.sql).trim();
       if (!sql) return;
-      if (!ctx.confirmProdRun(tab.profileId, sql)) return;
+      if (!(await ctx.confirmProdRun(tab.profileId, sql))) return;
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);
       if (!session) return;
@@ -271,7 +271,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
         return;
       }
       // ANALYZE really executes the statement — the prod guard applies
-      if (analyze && !ctx.confirmProdRun(tab.profileId, sql)) return;
+      if (analyze && !(await ctx.confirmProdRun(tab.profileId, sql))) return;
       const explainSql = `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${sql}`;
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);

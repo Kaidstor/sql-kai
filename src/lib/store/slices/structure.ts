@@ -98,7 +98,7 @@ export function createStructureSlice(
       if (!tab) return false;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return false;
-      if (!ctx.confirmProdRun(tab.profileId, sql)) return false;
+      if (!(await ctx.confirmProdRun(tab.profileId, sql))) return false;
       const { schema, table } = tab.state;
       try {
         await api.executeSql(session.sessionId, sql, 10);
@@ -176,7 +176,7 @@ export function createStructureSlice(
       if (stmts.length === 0) return;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return;
-      if (!ctx.confirmProdRun(tab.profileId, stmts.join(";\n"))) return;
+      if (!(await ctx.confirmProdRun(tab.profileId, stmts.join(";\n")))) return;
       patchTab<StructureTabState>(tabId, { loading: true });
       // One simple-query message = one implicit transaction: atomic, and an
       // error auto-rolls-back without leaving the session in an aborted tx.

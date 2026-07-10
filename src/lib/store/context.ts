@@ -32,7 +32,7 @@ export interface StoreContext {
   handleSqlError: (profileId: string, e: unknown) => string;
   /** Production write-guard: true = go ahead (not production, nothing
    *  data-modifying in the SQL, or the user confirmed). */
-  confirmProdRun: (profileId: string, sql: string) => boolean;
+  confirmProdRun: (profileId: string, sql: string) => Promise<boolean>;
   /** Монотонные номера загрузок по табам: устаревший ответ (медленная
    *  страница, обогнанная следующим запросом) молча отбрасывается. */
   nextLoadSeq: (tabId: string) => number;
@@ -85,15 +85,18 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
       return errText(e);
     },
 
-    confirmProdRun: (profileId, sql) => {
+    confirmProdRun: async (profileId, sql) => {
       const profile = get().profiles.find((p) => p.id === profileId);
       if (!profile?.production) return true;
       const dangers = dangerousStatements(sql);
       if (dangers.length === 0) return true;
       const list = dangers.map((d) => `• ${d.label}:  ${d.preview}`).join("\n");
-      return confirm(
-        `"${profile.name}" is PRODUCTION. About to run:\n\n${list}\n\nContinue?`,
-      );
+      return get().confirmDialog({
+        title: `"${profile.name}" is PRODUCTION`,
+        message: `About to run:\n\n${list}`,
+        confirmLabel: "Run",
+        danger: true,
+      });
     },
 
     nextLoadSeq: (tabId) => (loadSeq[tabId] = (loadSeq[tabId] ?? 0) + 1),

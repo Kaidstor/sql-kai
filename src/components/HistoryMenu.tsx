@@ -29,6 +29,7 @@ function HistoryRow({
 }) {
   const deleteHistoryEntry = useApp((s) => s.deleteHistoryEntry);
   const clearHistory = useApp((s) => s.clearHistory);
+  const confirmDialog = useApp((s) => s.confirmDialog);
   return (
     <ContextMenu>
       <ContextMenuTrigger className="block">
@@ -59,8 +60,13 @@ function HistoryRow({
         <ContextMenuItem
           icon={Trash2}
           iconClassName="text-red-400/80"
-          onClick={() => {
-            if (confirm("Clear the whole query history?")) clearHistory();
+          onClick={async () => {
+            const ok = await confirmDialog({
+              title: "Clear the whole query history?",
+              confirmLabel: "Clear",
+              danger: true,
+            });
+            if (ok) clearHistory();
           }}
         >
           Clear all history

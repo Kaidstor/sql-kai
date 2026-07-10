@@ -130,6 +130,7 @@ function QueryRow({
   onOpen: () => void;
   onDelete: () => void;
 }) {
+  const confirmDialog = useApp((s) => s.confirmDialog);
   return (
     <div
       className="group flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-zinc-800"
@@ -145,9 +146,14 @@ function QueryRow({
       <IconButton
         title="Delete saved query"
         className="opacity-0 group-hover:opacity-100"
-        onClick={(e) => {
+        onClick={async (e) => {
           e.stopPropagation();
-          if (confirm(`Delete saved query "${query.name}"?`)) onDelete();
+          const ok = await confirmDialog({
+            title: `Delete saved query "${query.name}"?`,
+            confirmLabel: "Delete",
+            danger: true,
+          });
+          if (ok) onDelete();
         }}
       >
         <X size={12} />

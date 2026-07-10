@@ -4,11 +4,13 @@ import { api, errText } from "../../api";
 import { applyTheme } from "../../themes";
 import type { AppSettings, Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
-import type { PaletteKind, Toast } from "../types";
+import type { ConfirmRequest, PaletteKind, Toast } from "../types";
 
 export interface UiSlice {
   dialog: { open: boolean; profile?: Profile };
   toast: Toast | null;
+  /** Pending confirm dialog; null when closed (see confirmDialog). */
+  confirm: ConfirmRequest | null;
   palette: PaletteKind | null;
   /** Query tab whose "save query" dialog is open (⌘S on an unsaved query). */
   saveDialogFor: string | null;
@@ -33,16 +35,26 @@ export interface UiSlice {
   setTheme: (id: string) => Promise<void>;
   setSaveDialogFor: (tabId: string | null) => void;
   showToast: (message: string, kind?: Toast["kind"]) => void;
+  /** Opens the in-app confirm dialog; resolves true on confirm, false on
+   *  cancel/Esc/backdrop. Replaces window.confirm(), which doesn't block
+   *  in the Tauri webview. */
+  confirmDialog: (req: ConfirmRequest) => Promise<boolean>;
+  /** ConfirmDialog's buttons report the outcome here. */
+  resolveConfirm: (ok: boolean) => void;
   openDialog: (profile?: Profile) => void;
   closeDialog: () => void;
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+// Resolver of the open confirmDialog promise — lives outside the store so the
+// state stays serializable.
+let confirmResolve: ((ok: boolean) => void) | null = null;
 
 export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
   return {
     dialog: { open: false },
     toast: null,
+    confirm: null,
     palette: null,
     saveDialogFor: null,
     settings: {},
@@ -79,6 +91,21 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
       set({ toast: { message, kind } });
       if (toastTimer) clearTimeout(toastTimer);
       toastTimer = setTimeout(() => set({ toast: null }), 6000);
+    },
+
+    confirmDialog: (req) => {
+      confirmResolve?.(false); // a newer request cancels the one still open
+      return new Promise<boolean>((resolve) => {
+        confirmResolve = resolve;
+        set({ confirm: req });
+      });
+    },
+
+    resolveConfirm: (ok) => {
+      set({ confirm: null });
+      const resolve = confirmResolve;
+      confirmResolve = null;
+      resolve?.(ok);
     },
 
     openDialog: (profile) => set({ dialog: { open: true, profile } }),

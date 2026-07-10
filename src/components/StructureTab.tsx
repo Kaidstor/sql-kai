@@ -230,6 +230,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
   const unstageColumnAdd = useApp((s) => s.unstageColumnAdd);
   const discardStructureEdits = useApp((s) => s.discardStructureEdits);
   const applyStructureEdits = useApp((s) => s.applyStructureEdits);
+  const confirmDialog = useApp((s) => s.confirmDialog);
   const [adding, setAdding] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
 
@@ -497,10 +498,13 @@ export function StructureTab({ tab }: { tab: Tab }) {
                     <IconButton
                       title={idx.primary ? "Primary key — drop via constraint" : `Drop index ${idx.name}`}
                       disabled={idx.primary}
-                      onClick={() => {
-                        if (confirm(`Drop index "${idx.name}"?`)) {
-                          ddl(`DROP INDEX ${relIdent(state.schema, idx.name)}`);
-                        }
+                      onClick={async () => {
+                        const ok = await confirmDialog({
+                          title: `Drop index "${idx.name}"?`,
+                          confirmLabel: "Drop",
+                          danger: true,
+                        });
+                        if (ok) ddl(`DROP INDEX ${relIdent(state.schema, idx.name)}`);
                       }}
                     >
                       <X size={13} />
