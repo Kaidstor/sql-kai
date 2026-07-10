@@ -24,6 +24,8 @@ fi
 #   ./release.sh            — бамп patch-версии из package.json
 #   ./release.sh 0.2.0      — явная версия
 #   SKIP_BUILD=1 ./release.sh …  — пропустить сборку (артефакты уже собраны)
+#   NOTES="…" ./release.sh …     — свой changelog; без NOTES он собирается из
+#                                  коммитов с прошлого тега (git log --pretty='- %s')
 
 # Determine version: use argument if provided, else bump patch version from package.json
 if [ $# -eq 0 ] || [ -z "$1" ]; then
@@ -35,7 +37,22 @@ fi
 
 TAG="v${NEW_VER}"
 
+# Changelog: NOTES из env или коммиты с прошлого тега (release-коммиты
+# отфильтровываются). Уходит в описание GitLab-релиза и в notes latest.json —
+# его показывает апдейтер. Считаем до release-коммита, чтобы он не попал в список.
+PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+if [[ -n "${NOTES:-}" ]]; then
+  RELEASE_NOTES="$NOTES"
+elif [[ -n "$PREV_TAG" ]]; then
+  RELEASE_NOTES=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty='- %s' | grep -vE '^- release(\(|:)' || true)
+else
+  RELEASE_NOTES=""
+fi
+[[ -n "$RELEASE_NOTES" ]] || RELEASE_NOTES="Release $TAG"
+
 echo "🎯  Релиз версии ${NEW_VER}"
+echo "📝  Changelog:"
+printf '%s\n' "$RELEASE_NOTES" | sed 's/^/      /'
 
 echo "> Обновляем версии…"
 npm pkg set version="$NEW_VER"
@@ -59,10 +76,13 @@ git push origin HEAD
 git push origin "$TAG"
 
 echo "> Создаём релиз $TAG"
+# jq -n экранирует переводы строк/кавычки changelog'а в валидный JSON
+RELEASE_PAYLOAD=$(jq -n --arg name "Release $TAG" --arg tag "$TAG" --arg desc "$RELEASE_NOTES" \
+  '{name: $name, tag_name: $tag, description: $desc}')
 RELEASE_RESP=$(curl -s -w "\n%{http_code}" --request POST \
   --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
   --header "Content-Type: application/json" \
-  --data "{\"name\":\"Release $TAG\",\"tag_name\":\"$TAG\",\"description\":\"Release $TAG\"}" \
+  --data "$RELEASE_PAYLOAD" \
   "$API/projects/$PROJECT_ID/releases")
 
 HTTP_CODE=$(echo "$RELEASE_RESP" | tail -n1)
@@ -114,20 +134,12 @@ SIG=$(tr -d '\n' < "$SIG_FILE")
 # формируем URL загрузки артефакта
 
 URL="https://gitlab.com/$NAMESPACE/$PROJECT/-/releases/$TAG/downloads/$(basename "$TAR_ARCHIVE")"
-# создаём манифест
-cat > "$BUNDLE_DIR/latest.json" <<EOF
-{
-  "version": "$NEW_VER",
-  "notes": "",
-  "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "platforms": {
-    "darwin-aarch64": {
-      "url": "$URL",
-      "signature": "$SIG"
-    }
-  }
-}
-EOF
+# создаём манифест (jq — ради корректного экранирования changelog в notes)
+jq -n --arg v "$NEW_VER" --arg notes "$RELEASE_NOTES" \
+  --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$URL" --arg sig "$SIG" \
+  '{version: $v, notes: $notes, pub_date: $date,
+    platforms: {"darwin-aarch64": {url: $url, signature: $sig}}}' \
+  > "$BUNDLE_DIR/latest.json"
 
 echo "> Пакуем CLI kai…"
 # имя без версии — стабильная ссылка через permalink/latest/downloads/
