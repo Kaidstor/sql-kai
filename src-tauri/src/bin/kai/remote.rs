@@ -9,15 +9,28 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 /// определяет POSTGRES_USER/DB (с фолбэком на живой psql-запрос). Каждая команда
 /// дописывает свой хвост — единственная копия этого блока (раньше он дублировался
 /// байт-в-байт в discover.rs и execmode.rs).
+///
+/// Непустой `KAI_CONTAINER` (экспортируется из `--container`) выбирает контейнер
+/// явно — на хосте их может быть несколько (db_admin + db_app и т.п.); без него
+/// берётся первый кандидат, а при нескольких печатается предупреждение со списком.
 pub const CONTAINER_DETECT: &str = r#"set -u
 D=docker
 docker ps >/dev/null 2>&1 || D="sudo docker"
-C=$($D ps --format '{{.Names}}' 2>/dev/null | grep -iE '(^|[-_])db([-_]|$)|postgres' | head -1)
-[ -n "$C" ] || { echo 'kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
+if [ -n "${KAI_CONTAINER:-}" ]; then
+  C=$($D ps --format '{{.Names}}' 2>/dev/null | grep -xF -- "$KAI_CONTAINER")
+  [ -n "$C" ] || { echo "kai: контейнер '$KAI_CONTAINER' не найден среди запущенных (docker ps)" >&2; exit 3; }
+else
+  CANDS=$($D ps --format '{{.Names}}' 2>/dev/null | grep -iE '(^|[-_])db([-_]|$)|postgres')
+  C=$(printf '%s\n' "$CANDS" | head -1)
+  [ -n "$C" ] || { echo 'kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
+  if [ "$(printf '%s\n' "$CANDS" | grep -c .)" -gt 1 ]; then
+    echo "kai: на хосте несколько postgres-контейнеров ($(printf '%s ' $CANDS)) — выбран '$C', другой задаётся через --container" >&2
+  fi
+fi
 U=$($D exec "$C" printenv POSTGRES_USER 2>/dev/null)
 [ -n "$U" ] || U=postgres
 DB=$($D exec "$C" printenv POSTGRES_DB 2>/dev/null)
-[ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') ORDER BY datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+[ -n "$DB" ] || DB=$($D exec "$C" psql -U "$U" -tAc "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname = 'postgres', datname LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 [ -n "$DB" ] || { echo 'kai: не удалось определить имя базы' >&2; exit 5; }
 "#;
 

@@ -21,6 +21,9 @@ pub struct ExecArgs {
     /// SQL-команда (можно повторять)
     #[arg(short = 'c', long = "command", value_name = "SQL")]
     commands: Vec<String>,
+    /// Docker-контейнер postgres (когда на хосте их несколько)
+    #[arg(long, value_name = "NAME")]
+    container: Option<String>,
     /// Файл с SQL (можно повторять)
     #[arg(short = 'f', long = "file", value_name = "FILE")]
     files: Vec<PathBuf>,
@@ -66,6 +69,7 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         ("KAI_SQL_B64", B64.encode(&sql)),
         ("KAI_PSQL_OPTS", psql_opts.join(" ")),
         ("KAI_VERBOSE", if a.verbose { "1" } else { "" }.to_string()),
+        ("KAI_CONTAINER", a.container.clone().unwrap_or_default()),
     ];
     let script = format!("{CONTAINER_DETECT}{EXEC_TAIL}");
     let payload = remote::stdin_payload(&script, &env);

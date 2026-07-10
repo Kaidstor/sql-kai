@@ -22,6 +22,9 @@ pub struct DiscoverArgs {
     /// Имя профиля (по умолчанию = alias)
     #[arg(long)]
     name: Option<String>,
+    /// Docker-контейнер postgres (когда на хосте их несколько)
+    #[arg(long, value_name = "NAME")]
+    container: Option<String>,
     /// Положить найденный пароль в sec (по умолч. ключ <имя>/DB_PASSWORD)
     #[arg(long)]
     to_sec: bool,
@@ -58,9 +61,13 @@ struct Discovered {
     endpoint: (String, u16),
 }
 
-fn discover_host(alias: &str) -> Result<Discovered, AppError> {
+fn discover_host(alias: &str, container: Option<&str>) -> Result<Discovered, AppError> {
     let script = format!("{CONTAINER_DETECT}{DISCOVER_TAIL}");
-    let out = remote::output_via_stdin(alias, &remote::stdin_payload(&script, &[]))
+    let env = [(
+        "KAI_CONTAINER",
+        container.unwrap_or_default().to_string(),
+    )];
+    let out = remote::output_via_stdin(alias, &remote::stdin_payload(&script, &env))
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     for line in String::from_utf8_lossy(&out.stderr).lines() {
@@ -130,7 +137,7 @@ fn discover_host(alias: &str) -> Result<Discovered, AppError> {
 
 pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
     eprintln!("[{}] discovery…", a.alias);
-    let d = discover_host(&a.alias)?;
+    let d = discover_host(&a.alias, a.container.as_deref())?;
     eprintln!(
         "[container={} user={} db={} endpoint={}:{} password={}]",
         d.container,
