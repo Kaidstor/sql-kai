@@ -69,6 +69,15 @@ function App() {
         if (!target) return;
         e.preventDefault();
         s.selectProfile(target.id);
+      } else if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && key === "c") {
+        // Ctrl+C (terminal-style) — cancel the active tab's running query.
+        // Only claimed while one is actually running, so copy stays intact
+        // on platforms where Ctrl+C is the copy shortcut.
+        const tab = s.tabs.find((t) => t.id === s.activeTabId);
+        if (tab?.state.kind === "query" && tab.state.running) {
+          e.preventDefault();
+          void s.cancelQuery(tab.id);
+        }
       } else if (mod && e.altKey && e.code === "KeyO") {
         // e.code, not e.key — Option+O types "ø" on mac
         e.preventDefault();

@@ -49,6 +49,9 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
 // Resolver of the open confirmDialog promise — lives outside the store so the
 // state stays serializable.
 let confirmResolve: ((ok: boolean) => void) | null = null;
+// Element focused when the dialog was requested — restored on close so
+// Esc/Enter don't strand the user outside the editor they came from.
+let confirmReturnFocus: HTMLElement | null = null;
 
 export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
   return {
@@ -95,6 +98,14 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
 
     confirmDialog: (req) => {
       confirmResolve?.(false); // a newer request cancels the one still open
+      // superseding an open dialog keeps the original focus target — the
+      // current activeElement would be the dying dialog's button
+      if (!get().confirm) {
+        confirmReturnFocus =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+      }
       return new Promise<boolean>((resolve) => {
         confirmResolve = resolve;
         set({ confirm: req });
@@ -105,6 +116,9 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
       set({ confirm: null });
       const resolve = confirmResolve;
       confirmResolve = null;
+      const target = confirmReturnFocus;
+      confirmReturnFocus = null;
+      if (target?.isConnected) target.focus();
       resolve?.(ok);
     },
 

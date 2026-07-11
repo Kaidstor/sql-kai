@@ -187,7 +187,11 @@ export function QueryTab({ tab }: { tab: Tab }) {
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center gap-2 px-2 py-1.5 border-b border-zinc-800 shrink-0">
         {state.running ? (
-          <Button variant="danger" onClick={() => void cancelQuery(tab.id)}>
+          <Button
+            variant="danger"
+            title="Ctrl+C"
+            onClick={() => void cancelQuery(tab.id)}
+          >
             <CircleStop size={13} /> Cancel
           </Button>
         ) : (

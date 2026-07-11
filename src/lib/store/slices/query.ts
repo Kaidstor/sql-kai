@@ -205,7 +205,8 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       if (!tab || tab.state.running) return;
       const sql = (sqlOverride ?? tab.state.sql).trim();
       if (!sql) return;
-      if (!(await ctx.confirmProdRun(tab.profileId, sql))) return;
+      // No prod-confirm on run (deliberate): the dialog was reflex-Enter'd
+      // anyway — the safety story is Ctrl+C cancel + the PROD chrome tints.
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);
       if (!session) return;
@@ -270,8 +271,6 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
         get().showToast("Explain needs a single statement", "info");
         return;
       }
-      // ANALYZE really executes the statement — the prod guard applies
-      if (analyze && !(await ctx.confirmProdRun(tab.profileId, sql))) return;
       const explainSql = `EXPLAIN (${analyze ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${sql}`;
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);

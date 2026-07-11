@@ -1,27 +1,14 @@
-import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
-import type { ConfirmRequest } from "../lib/store/types";
 import { Button, Overlay } from "./ui";
 
-function Panel({
-  confirm,
-  resolveConfirm,
-}: {
-  confirm: ConfirmRequest;
-  resolveConfirm: (ok: boolean) => void;
-}) {
-  // Captured during the first render — before autoFocus moves focus to the
-  // confirm button — and restored on close, so Esc/Enter don't strand the
-  // user outside the editor they triggered the dialog from.
-  const [prevFocus] = useState(
-    () => document.activeElement as HTMLElement | null,
-  );
-  useEffect(
-    () => () => {
-      if (prevFocus?.isConnected) prevFocus.focus();
-    },
-    [prevFocus],
-  );
+/** App-styled modal confirm (see confirmDialog in the ui slice) —
+ *  window.confirm() doesn't block in the Tauri webview, so destructive
+ *  actions route through this instead. Enter confirms, Esc cancels; the
+ *  store restores focus to the triggering element on close. */
+export function ConfirmDialog() {
+  const confirm = useApp((s) => s.confirm);
+  const resolveConfirm = useApp((s) => s.resolveConfirm);
+  if (!confirm) return null;
 
   return (
     <Overlay
@@ -51,14 +38,4 @@ function Panel({
       </div>
     </Overlay>
   );
-}
-
-/** App-styled modal confirm (see confirmDialog in the ui slice) —
- *  window.confirm() doesn't block in the Tauri webview, so destructive
- *  actions route through this instead. Enter confirms, Esc cancels. */
-export function ConfirmDialog() {
-  const confirm = useApp((s) => s.confirm);
-  const resolveConfirm = useApp((s) => s.resolveConfirm);
-  if (!confirm) return null;
-  return <Panel confirm={confirm} resolveConfirm={resolveConfirm} />;
 }
