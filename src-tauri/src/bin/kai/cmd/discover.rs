@@ -215,6 +215,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         };
         profile = store::upsert_profile(profile, password_arg, None)?;
         println!("профиль '{}' сохранён (id {})", profile.name, profile.id);
+        crate::broker_client::notify_profiles_changed().await;
         if a.no_vault && to_sec {
             println!(
                 "прод-режим: пароль только в sec — запускай `kai {} -c \"…\" --from-sec` \

@@ -145,7 +145,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Query(a) => cmd::query::run(a).await,
         Cmd::Exec(a) => cmd::exec::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
-        Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { fmt: Default::default() })),
+        Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { fmt: Default::default() })).await,
         Cmd::Tables(a) => cmd::introspect::tables(a).await,
         Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
         Cmd::Ddl(a) => cmd::introspect::table_info(a, TableInfoKind::Ddl).await,

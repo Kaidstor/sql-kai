@@ -99,6 +99,8 @@ pub enum Method {
         #[serde(rename = "profileId")]
         profile_id: String,
     },
+    /// kai изменил состав профилей (discover/rm) — GUI перечитывает список.
+    ProfilesChanged,
 }
 
 fn default_max_rows() -> usize {
@@ -231,6 +233,8 @@ impl BrokerState {
 pub struct BrokerHooks {
     pub gui_sessions: Box<dyn Fn() -> Vec<BrokerSessionInfo> + Send + Sync>,
     pub changed: Box<dyn Fn() + Send + Sync>,
+    /// kai сообщил об изменении профилей — интерфейс перечитывает список.
+    pub profiles_changed: Box<dyn Fn() + Send + Sync>,
 }
 
 // --- Server ---------------------------------------------------------------------
@@ -349,6 +353,10 @@ async fn dispatch(
             write,
             with_types,
         } => do_query(state, hooks, &profile_id, &sql, max_rows, write, with_types).await,
+        Method::ProfilesChanged => {
+            (hooks.profiles_changed)();
+            Ok(json!({}))
+        }
         Method::Cancel { profile_id } => {
             let entry = state
                 .get_live(&profile_id)
@@ -531,6 +539,7 @@ mod tests {
         let hooks = Arc::new(BrokerHooks {
             gui_sessions: Box::new(Vec::new),
             changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
         });
         tokio::spawn(serve(listener, state, hooks));
 
@@ -558,6 +567,37 @@ mod tests {
                 "unexpected reply: {v}"
             );
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// profiles_changed дёргает хук и отвечает без ошибки — контракт для
+    /// notify_profiles_changed() в kai (discover/rm).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn profiles_changed_fires_hook() {
+        let path = std::env::temp_dir()
+            .join(format!("kai-broker-test-pc-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        let hooks = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(move || f.store(true, Ordering::Relaxed)),
+        });
+        tokio::spawn(serve(listener, Arc::new(BrokerState::default()), hooks));
+
+        let stream = UnixStream::connect(&path).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut lines = BufReader::new(r).lines();
+        w.write_all(b"{\"id\":1,\"method\":\"profiles_changed\",\"params\":null}\n")
+            .await
+            .unwrap();
+        let v: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(v.get("error").is_none(), "unexpected reply: {v}");
+        assert!(fired.load(Ordering::Relaxed));
         let _ = std::fs::remove_file(&path);
     }
 

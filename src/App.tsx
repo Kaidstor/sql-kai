@@ -212,6 +212,10 @@ function App() {
       listen("broker://changed", () =>
         void useApp.getState().refreshCliSessions(),
       ),
+      // kai discover/rm изменил состав профилей — перечитать список
+      listen("profiles://changed", () =>
+        void useApp.getState().reloadProfiles(),
+      ),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());

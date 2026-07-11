@@ -165,3 +165,12 @@ impl BrokerClient {
             .map(|_| ())
     }
 }
+
+/// Сообщить запущенному GUI, что состав профилей изменился (discover/rm),
+/// чтобы тот перечитал список. Best-effort: GUI не запущен или старый —
+/// молча ничего не делаем.
+pub async fn notify_profiles_changed() {
+    if let Some(mut b) = connect().await {
+        let _ = b.request("profiles_changed", Value::Null).await;
+    }
+}

@@ -116,6 +116,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
     };
     let gui = app.handle().clone();
     let notify = app.handle().clone();
+    let notify_profiles = app.handle().clone();
     let hooks = std::sync::Arc::new(broker::BrokerHooks {
         gui_sessions: Box::new(move || {
             let state = gui.state::<AppState>();
@@ -128,6 +129,9 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
         }),
         changed: Box::new(move || {
             let _ = notify.emit("broker://changed", ());
+        }),
+        profiles_changed: Box::new(move || {
+            let _ = notify_profiles.emit("profiles://changed", ());
         }),
     });
     tauri::async_runtime::spawn(broker::serve(listener, state.clone(), hooks));

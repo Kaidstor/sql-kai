@@ -29,7 +29,7 @@ pub enum ProfilesCmd {
     },
 }
 
-pub fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
+pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
     match cmd {
         ProfilesCmd::List { fmt } => {
             let profiles = store::load_profiles()?;
@@ -80,6 +80,7 @@ pub fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
             }
             store::delete_profile(&p.id)?;
             println!("профиль '{}' удалён", p.name);
+            crate::broker_client::notify_profiles_changed().await;
         }
     }
     Ok(ExitCode::SUCCESS)

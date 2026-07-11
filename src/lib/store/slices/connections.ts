@@ -68,6 +68,9 @@ export interface ConnectionsSlice {
   undoDeleteProfile: (id: string) => void;
   deleteProfile: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
+  /** Re-reads the profile list from disk — kai discover/rm changed it
+   *  (triggered by the profiles://changed broker event). */
+  reloadProfiles: () => Promise<void>;
   loadTableColumns: (
     profileId: string,
     schema: string,
@@ -408,6 +411,14 @@ export function createConnectionsSlice(
         get().showToast("Connection duplicated", "info");
       } catch (e) {
         get().showToast(errText(e));
+      }
+    },
+
+    reloadProfiles: async () => {
+      try {
+        set({ profiles: await api.listProfiles() });
+      } catch {
+        // не смогли перечитать — список просто останется прежним
       }
     },
 
