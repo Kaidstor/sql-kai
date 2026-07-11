@@ -106,6 +106,8 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><td><code>kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются</td></tr>
 <tr><td><code>kai history --scan</code></td><td>Прогнать history.json через <code>sec scan</code></td></tr>
 <tr><td><code>kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
+<tr><td><code>kai sessions</code></td><td>Живые сессии GUI-брокера и holder'а (origin: gui / cli / holder, простой)</td></tr>
+<tr><td><code>kai holder stop</code></td><td>Погасить фоновый держатель сессий (см. «Holder»); поднимается он сам</td></tr>
 <tr><td><code>kai profiles list|show|rm</code></td><td>Профили</td></tr>
 <tr><td><code>kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
 </table>
@@ -237,7 +239,8 @@ ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый в�
 2-й, 3-й…:   форвард ── attach ──────┘   (без auth, ~1 RTT → БД)
 </pre></div>
 <ul>
-  <li>Включено по умолчанию. <code>--no-mux</code> — разовый обычный туннель;
+  <li>Включено по умолчанию. <code>--no-mux</code> — разовый обычный туннель и всегда
+      автономная сессия (мимо GUI/holder — их сессии mux-овые);
       <code>KAI_SSH_MUX_TTL=&lt;сек&gt;</code> — сколько мастер живёт после простоя.</li>
   <li>Управляющие сокеты — в <code>/tmp/kai-ssh-mux-&lt;user&gt;/</code> (0700),
       имя сокета = <code>[user@]host:port</code>.</li>
@@ -246,6 +249,37 @@ ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый в�
   <li>Мастер поднимается best-effort: если не удался, форвард просто откатывается
       к обычному прямому соединению (медленнее, но работает).</li>
   <li>GUI это не затрагивает — он и так держит один туннель на всю сессию.</li>
+</ul>
+
+<h2 id="holder">Holder: сессии между запусками</h2>
+<p>Mux избавляет от повторной ssh-аутентификации, но каждый <code>kai</code> — короткий
+процесс: он всё равно платил бы за pg-connect, а сессия (и открытая транзакция) умирала бы
+с ним. Поэтому запросы обслуживает <strong>сервер сессий</strong>:</p>
+<div class="scheme"><pre>
+kai q ──► брокер GUI        (GUI запущен: сессию держит приложение)
+      └─► holder            (иначе: фоновый `kai holder run`, спавнится сам)
+      └─► автономно         (--local / --no-mux / vault не разлочить тихо)
+</pre></div>
+<p>Holder — тот же broker-протокол, что у GUI, но фоновым процессом: pg-сессии и
+ssh-туннели живут между запусками kai, повторные запросы идут в уже открытую сессию
+(быстрее даже mux-пути), а транзакция одного вызова доживает до следующего —
+<code>BEGIN</code> в одном <code>kai q</code>, <code>COMMIT</code> в следующем.</p>
+<ul>
+  <li><strong>Жизненный цикл:</strong> спавнится первым <code>kai q</code>, только если vault
+      разлочивается тихо (keychain-trust / <code>KAI_VAULT_PASSWORD</code>) — иначе kai молча
+      работает автономно. Сессии живут 15&nbsp;мин простоя (с открытой транзакцией — 180&nbsp;с:
+      висящий BEGIN держит блокировки); сам holder гаснет через ~2&nbsp;мин без сессий и
+      обращений.</li>
+  <li><strong>Погасить немедленно:</strong> <code>kai holder stop</code>; vault lock в GUI и
+      <code>kai vault revoke</code> гасят его автоматически (DEK не должен переживать отзыв).</li>
+  <li><strong>Обновление kai:</strong> holder от прежней версии бинаря гасится и поднимается
+      свежий (сверка версии при рукопожатии).</li>
+  <li><strong>Безопасность:</strong> сокет <code>holder.sock</code> — 0600; DEK только в памяти
+      процесса; <code>KAI_VAULT_PASSWORD</code> вычищается из окружения holder'а сразу после
+      разлока — долгоживущий процесс не держит мастер-пароль и не передаёт его ssh-детям.</li>
+  <li><strong>Мимо сервера сессий:</strong> <code>--local</code> — одноразовая автономная сессия;
+      <code>--no-mux</code> — то же плюс свежий ssh без ControlMaster. Кастомные источники
+      пароля (<code>--password-env</code> / <code>--from-sec</code>) всегда идут автономно.</li>
 </ul>
 
 <h2 id="vault">Vault: как CLI читает пароли</h2>
@@ -298,7 +332,7 @@ env-переменной, vault не трогается вовсе.</p>
 <h2 id="env">Переменные окружения</h2>
 <table>
 <tr><th>Переменная</th><th>Назначение</th></tr>
-<tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>)</td></tr>
+<tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>); holder вычищает её из своего окружения после разлока</td></tr>
 <tr><td><code>KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-kai</code>) — изолированные окружения и тесты</td></tr>
@@ -333,6 +367,10 @@ env-переменной, vault не трогается вовсе.</p>
 <tr><td>ssh-мастер держит коннект к хосту после работы</td>
     <td>Это ожидаемо — он гаснет сам после простоя (<code>KAI_SSH_MUX_TTL</code>, 5 мин).
         Закрыть сразу: <code>kai tunnel close --all</code>; разовый запрос без мастера — <code>--no-mux</code>.</td></tr>
+<tr><td>Фоновый процесс <code>kai holder run</code> после запросов</td>
+    <td>Это держатель сессий (см. «Holder») — гаснет сам через ~2 мин после закрытия
+        сессий; немедленно — <code>kai holder stop</code>. Не поднимать вовсе —
+        <code>--local</code> / <code>--no-mux</code>.</td></tr>
 </table>
 
 <p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/kai/</code> ·
