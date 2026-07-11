@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 use tokio_postgres::{Client, NoTls};
 
 use crate::db::{self, cell, cell_bool, ExecResult, Session, StatementResult, TxStatus};
@@ -30,6 +30,66 @@ pub struct SessionInfo {
     pub isolated: bool,
     /// Backend pid — filled for isolated sessions so the tab can show it.
     pub pid: Option<i32>,
+}
+
+/// Payload of `session://lost` — pushed the instant a session's wire dies.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionLostEvent {
+    session_id: String,
+    profile_id: String,
+    reason: String,
+}
+
+/// Inserts a fresh session into the map and arms its "wire died" push (see
+/// Session::closed_rx): the moment the pg connection future resolves — ssh
+/// tunnel killed, network drop, server gone — the dead session is dropped
+/// (tearing its tunnel down) and `session://lost` reaches the frontend, so
+/// the loss is visible at once instead of on the next query. A deliberate
+/// disconnect aborts the sender, so no event fires then. Insert-then-watch,
+/// in that order — a wire already dead at spawn time is found and removed.
+fn insert_and_watch(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    session_id: &str,
+    mut session: Session,
+) {
+    let rx = session.closed_rx.take();
+    let session_id = session_id.to_string();
+    let profile_id = session.profile_id.clone();
+    let name = session.profile_name.clone();
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), session);
+    let Some(rx) = rx else { return };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(reason) = rx.await else {
+            return; // sender aborted — the app closed the session itself
+        };
+        let removed = {
+            let state = app.state::<AppState>();
+            let mut sessions = state.sessions.lock().unwrap();
+            sessions.remove(&session_id)
+        };
+        if removed.is_some() {
+            logging::log(
+                "session",
+                &format!("\"{name}\": session dropped right after connection loss"),
+            );
+        }
+        drop(removed); // teardown туннеля — вне лока
+        let _ = app.emit(
+            "session://lost",
+            SessionLostEvent {
+                session_id,
+                profile_id,
+                reason,
+            },
+        );
+    });
 }
 
 /// Runs `f` on the live session, or errors if it was already disconnected.
@@ -274,6 +334,7 @@ pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, A
 
 #[tauri::command]
 pub async fn connect_profile(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
@@ -298,11 +359,7 @@ pub async fn connect_profile(
         isolated: false,
         pid: None,
     };
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(session_id, connected.session);
+    insert_and_watch(&app, &state, &session_id, connected.session);
     Ok(info)
 }
 
@@ -311,6 +368,7 @@ pub async fn connect_profile(
 /// and transaction. The profile must already be connected.
 #[tauri::command]
 pub async fn open_isolated_session(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
@@ -360,11 +418,7 @@ pub async fn open_isolated_session(
         isolated: true,
         pid,
     };
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(session_id, connected.session);
+    insert_and_watch(&app, &state, &session_id, connected.session);
     Ok(info)
 }
 

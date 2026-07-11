@@ -26,6 +26,11 @@ pub struct Session {
     /// A per-tab secondary connection (own backend pid / transaction) that
     /// reuses the profile's tunnel — not the profile's primary session.
     pub isolated: bool,
+    /// Resolves with the close reason the moment the wire dies (the connection
+    /// future finished) — hosts take it to react immediately instead of
+    /// discovering the corpse on the next call. A deliberate teardown aborts
+    /// the sending task, so the receiver errors — that is "not lost".
+    pub closed_rx: Option<tokio::sync::oneshot::Receiver<String>>,
     // Held so the ssh child stays alive; killed on Drop.
     pub _tunnel: Option<Tunnel>,
     conn_task: tokio::task::JoinHandle<()>,
@@ -116,19 +121,17 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
         );
     })?;
     // The connection future resolves when the wire dies — its resolution is
-    // the ground truth for "why did this session drop".
+    // the ground truth for "why did this session drop". The oneshot carries
+    // that moment to the session's host (see Session::closed_rx).
     let log_name = profile.name.clone();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
     let conn_task = tokio::spawn(async move {
-        match connection.await {
-            Ok(()) => logging::log(
-                "session",
-                &format!("\"{log_name}\": connection closed by server or tunnel"),
-            ),
-            Err(e) => logging::log(
-                "session",
-                &format!("\"{log_name}\": connection terminated: {e}"),
-            ),
-        }
+        let reason = match connection.await {
+            Ok(()) => "connection closed by server or tunnel".to_string(),
+            Err(e) => format!("connection terminated: {e}"),
+        };
+        logging::log("session", &format!("\"{log_name}\": {reason}"));
+        let _ = closed_tx.send(reason);
     });
     let client = Arc::new(client);
     let cancel = client.cancel_token();
@@ -167,6 +170,7 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             cancel,
             tx: Arc::new(AtomicU8::new(TxStatus::Idle as u8)),
             isolated,
+            closed_rx: Some(closed_rx),
             _tunnel: tunnel,
             conn_task,
         },

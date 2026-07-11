@@ -105,10 +105,15 @@ fn ssh_target(ssh: &SshConfig) -> String {
     }
 }
 
-/// Keepalive pings so an idle tunnel survives NAT/firewall timeouts.
-/// Per-profile ServerAliveInterval, 15s when unset; 0 = ssh's "off".
+/// Keepalive pings: an idle tunnel survives NAT/firewall timeouts, and a
+/// silently dropped link (VPN off, network change) is declared dead after
+/// interval × 3 — with the default that's ~15s, after which ssh exits and the
+/// sessions on it notice immediately. Per-profile ServerAliveInterval, 5s when
+/// unset; 0 = ssh's "off".
+pub const DEFAULT_KEEPALIVE: u32 = 5;
+
 fn push_keepalive(cmd: &mut Command, ssh: &SshConfig) {
-    let interval = ssh.keepalive_interval.unwrap_or(15);
+    let interval = ssh.keepalive_interval.unwrap_or(DEFAULT_KEEPALIVE);
     cmd.args(["-o", &format!("ServerAliveInterval={interval}")])
         .args(["-o", "ServerAliveCountMax=3"]);
 }
@@ -331,7 +336,7 @@ pub async fn open_tunnel(
         "tunnel",
         &format!(
             "opening {target}: -L 127.0.0.1:{local_port}:{db_host}:{db_port}, keepalive {}s",
-            ssh.keepalive_interval.unwrap_or(15)
+            ssh.keepalive_interval.unwrap_or(DEFAULT_KEEPALIVE)
         ),
     );
 

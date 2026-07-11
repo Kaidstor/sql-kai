@@ -48,6 +48,10 @@ export interface ConnectionsSlice {
 
   connect: (profileId: string) => Promise<void>;
   disconnect: (profileId: string) => Promise<void>;
+  /** Пуш с бэкенда (session://lost): соединение умерло — сразу убрать сессию
+   *  и зажечь Reconnect, не дожидаясь, пока следующий запрос наткнётся на
+   *  труп. Изолированная сессия просто отвязывается от своего таба. */
+  markSessionLost: (sessionId: string, profileId: string) => void;
   /** Re-dials the profile in place: tabs survive (unlike disconnect→connect),
    *  and tabs that errored with the dead session reload once connected. */
   reconnect: (profileId: string) => Promise<void>;
@@ -210,6 +214,32 @@ export function createConnectionsSlice(
       } finally {
         set((s) => ({ connecting: { ...s.connecting, [profileId]: false } }));
       }
+    },
+
+    markSessionLost: (sessionId, profileId) => {
+      const s = get();
+      // изолированная сессия: отвязать от таба — следующий Run переоткроет
+      if (s.isolatedSessions[sessionId]) {
+        set((st) => ({
+          isolatedSessions: without(st.isolatedSessions, sessionId),
+          tabs: st.tabs.map((t) =>
+            t.state.kind === "query" && t.state.sessionId === sessionId
+              ? { ...t, state: { ...t.state, sessionId: undefined } }
+              : t,
+          ),
+        }));
+        return;
+      }
+      const session = s.sessions[profileId];
+      // сессии уже нет (ошибка запроса успела раньше) или профиль уже
+      // переподключён свежей — событие относится к прошлому, молчим
+      if (!session || session.sessionId !== sessionId) return;
+      set((st) => ({
+        sessions: without(st.sessions, profileId),
+        lost: { ...st.lost, [profileId]: true },
+      }));
+      const name = s.profiles.find((p) => p.id === profileId)?.name ?? profileId;
+      get().showToast(`"${name}": connection lost`);
     },
 
     disconnect: async (profileId) => {

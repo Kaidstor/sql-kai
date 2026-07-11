@@ -396,8 +396,8 @@ export function ConnectionDialog() {
                     min={0}
                     value={form.sshKeepalive}
                     onChange={(e) => set({ sshKeepalive: e.target.value })}
-                    placeholder="15"
-                    title="Ping the server after this many seconds when idle to prevent getting disconnected due to inactivity (ServerAliveInterval). Empty = 15, 0 = off."
+                    placeholder="5"
+                    title="Ping the server after this many seconds when idle (ServerAliveInterval) — keeps the tunnel through NAT/firewalls and detects a dead link after 3 missed pings. Empty = 5, 0 = off."
                   />
                 </Field>
               </div>

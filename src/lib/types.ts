@@ -4,7 +4,7 @@ export interface SshConfig {
   port?: number | null;
   keyPath?: string | null;
   /** Seconds between keepalive pings when idle (ssh ServerAliveInterval).
-   *  null = app default (15), 0 = off. */
+   *  null = app default (5), 0 = off. */
   keepaliveInterval?: number | null;
 }
 

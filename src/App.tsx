@@ -208,6 +208,15 @@ function App() {
           });
         }
       }),
+      // сессия умерла на проводе (ssh-туннель/сеть/сервер) — бэкенд сообщает
+      // сразу, не дожидаясь, пока следующий запрос наткнётся на труп
+      listen<{ sessionId: string; profileId: string; reason: string }>(
+        "session://lost",
+        (e) =>
+          useApp
+            .getState()
+            .markSessionLost(e.payload.sessionId, e.payload.profileId),
+      ),
       // брокер: kai открыл/закрыл cli-сессию — обновить бейджи
       listen("broker://changed", () =>
         void useApp.getState().refreshCliSessions(),

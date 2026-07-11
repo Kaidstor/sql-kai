@@ -467,35 +467,77 @@ async fn get_or_open(
         },
     )
     .await?;
-    let _ = db::execute(
-        &connected.session.client,
-        "SET default_transaction_read_only = on",
-        1,
-    )
-    .await;
+    let mut session = connected.session;
+    let closed_rx = session.closed_rx.take();
+    let _ = db::execute(&session.client, "SET default_transaction_read_only = on", 1).await;
     let entry = Arc::new(CliEntry {
-        session: connected.session,
+        session,
         busy: tokio::sync::Mutex::new(()),
         last_used: Mutex::new(Instant::now()),
     });
-    let winner = {
+    let (winner, ours_won) = {
         let mut map = state.cli.lock().unwrap();
         // гонка двух kai: если параллельный открыватель успел раньше и его
         // сессия жива — наша лишняя, отдаём его
         match map.get(profile_id) {
-            Some(existing) if !existing.session.client.is_closed() => existing.clone(),
+            Some(existing) if !existing.session.client.is_closed() => (existing.clone(), false),
             _ => {
                 map.insert(profile_id.to_string(), entry.clone());
-                entry
+                (entry, true)
             }
         }
     };
+    if ours_won {
+        if let Some(rx) = closed_rx {
+            watch_cli_session_closed(state, hooks, profile_id, &winner, rx);
+        }
+    }
     logging::log(
         "broker",
         &format!("\"{}\": cli-сессия открыта по запросу kai", profile.name),
     );
     (hooks.changed)();
     Ok(winner)
+}
+
+/// Смерть провода cli-сессии (см. Session::closed_rx) — выкинуть её сразу и
+/// дёрнуть `changed`, чтобы бейдж в GUI погас мгновенно, а не через sweep
+/// (до 60 с) или следующий запрос kai. Держим Weak: сильная ссылка не дала бы
+/// vault_lock/clear() до конца снести сессию (её туннель) — Drop сработал бы
+/// только после этого watcher'а, который сам ждёт Drop.
+#[cfg(unix)]
+fn watch_cli_session_closed(
+    state: &Arc<BrokerState>,
+    hooks: &Arc<BrokerHooks>,
+    profile_id: &str,
+    entry: &Arc<CliEntry>,
+    rx: tokio::sync::oneshot::Receiver<String>,
+) {
+    let state = state.clone();
+    let hooks = hooks.clone();
+    let profile_id = profile_id.to_string();
+    let ours = Arc::downgrade(entry);
+    tokio::spawn(async move {
+        let Ok(_reason) = rx.await else {
+            return; // сессию закрыли штатно (clear/sweep) — уже учтено
+        };
+        let removed = {
+            let mut map = state.cli.lock().unwrap();
+            // убираем только СВОЮ запись: место могла успеть занять свежая
+            match (map.get(&profile_id), ours.upgrade()) {
+                (Some(cur), Some(ours)) if Arc::ptr_eq(cur, &ours) => map.remove(&profile_id),
+                _ => None,
+            }
+        };
+        if removed.is_some() {
+            drop(removed); // teardown туннеля — вне лока
+            logging::log(
+                "broker",
+                &format!("cli-сессия профиля {profile_id} закрыта: соединение умерло"),
+            );
+            (hooks.changed)();
+        }
+    });
 }
 
 #[cfg(test)]
