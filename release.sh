@@ -76,10 +76,14 @@ git push origin HEAD
 git push origin "$TAG"
 
 echo "> Создаём релиз $TAG"
+# Сеть до gitlab.com бывает флапает — все curl'ы релиза ретраят транспортные
+# ошибки (HTTP-ответы вроде 409 приходят как обычно, без ретрая).
+CURL_RETRY=(--retry 5 --retry-all-errors --retry-delay 10)
+
 # jq -n экранирует переводы строк/кавычки changelog'а в валидный JSON
 RELEASE_PAYLOAD=$(jq -n --arg name "Release $TAG" --arg tag "$TAG" --arg desc "$RELEASE_NOTES" \
   '{name: $name, tag_name: $tag, description: $desc}')
-RELEASE_RESP=$(curl -s -w "\n%{http_code}" --request POST \
+RELEASE_RESP=$(curl -s "${CURL_RETRY[@]}" -m 60 -w "\n%{http_code}" --request POST \
   --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
   --header "Content-Type: application/json" \
   --data "$RELEASE_PAYLOAD" \
@@ -169,7 +173,7 @@ printf '  %s\n' "${BUNDLE_FILES[@]}"
 # Заливаем каждый файл через Uploads API и привязываем к релизу
 for file in "${BUNDLE_FILES[@]}"; do
   echo "→ Upload: $file"
-  RESP=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  RESP=$(curl -s "${CURL_RETRY[@]}" -m 600 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
     --form "file=@$file" \
     "$API/projects/$PROJECT_ID/uploads")
 
@@ -180,7 +184,7 @@ for file in "${BUNDLE_FILES[@]}"; do
   NAME=$(basename "$file")
 
   echo "  → Link to release ${TAG}: $NAME"
-  curl -s --request POST \
+  curl -s "${CURL_RETRY[@]}" -m 60 --request POST \
     --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
     --header "Content-Type: application/json" \
     --data "{\"name\":\"$NAME\",\"url\":\"$FULL_URL\",\"direct_asset_path\":\"/$NAME\"}" \
