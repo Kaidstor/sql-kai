@@ -6,8 +6,9 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::Profile;
 use sql_kai_lib::vault;
 
-/// Цепочка разлока vault: keychain-trust -> KAI_VAULT_PASSWORD -> запрос в TTY.
-pub fn unlock_vault() -> Result<(), AppError> {
+/// Тихая часть цепочки разлока (без TTY): keychain-trust -> KAI_VAULT_PASSWORD.
+/// Holder поднимается только через неё — TTY у него нет по построению.
+pub fn unlock_vault_headless() -> Result<(), AppError> {
     if vault::is_unlocked() {
         return Ok(());
     }
@@ -24,15 +25,34 @@ pub fn unlock_vault() -> Result<(), AppError> {
             return vault::unlock_password(&pw);
         }
     }
-    if std::io::stdin().is_terminal() {
-        let pw = rpassword::prompt_password("vault master password: ").map_err(AppError::Io)?;
-        return vault::unlock_password(&pw);
-    }
     Err(AppError::Msg(
         "vault заблокирован — настрой `kai vault trust`, задай KAI_VAULT_PASSWORD \
          или используй --password-env"
             .into(),
     ))
+}
+
+/// Спавнить holder имеет смысл, только если он сможет тихо разлочить vault —
+/// иначе каждый `kai q` плодил бы мгновенно умирающий процесс.
+pub fn headless_unlock_possible() -> bool {
+    vault::is_unlocked()
+        || std::env::var("KAI_VAULT_PASSWORD").map(|v| !v.is_empty()).unwrap_or(false)
+        || (vault::exists() && vault::cli_trust_enrolled())
+}
+
+/// Полная цепочка разлока: тихая часть, затем запрос пароля в TTY.
+pub fn unlock_vault() -> Result<(), AppError> {
+    match unlock_vault_headless() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if vault::exists() && std::io::stdin().is_terminal() {
+                let pw = rpassword::prompt_password("vault master password: ")
+                    .map_err(AppError::Io)?;
+                return vault::unlock_password(&pw);
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Разлочивает vault, только если профилю есть что из него читать.

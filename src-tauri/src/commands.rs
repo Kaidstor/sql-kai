@@ -215,6 +215,10 @@ pub fn vault_lock(
     drop(drained); // teardown ssh-туннелей — вне лока
     broker.clear();
     vault::lock();
+    // Holder (фоновый держатель cli-сессий kai) тоже держит DEK в памяти —
+    // lock гасит и его. Best-effort: не запущен — тишина.
+    #[cfg(unix)]
+    tauri::async_runtime::spawn(crate::broker::shutdown_holder());
 }
 
 /// Live cli-brokered sessions — drives the "cli" badges in the frontend.

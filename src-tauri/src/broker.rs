@@ -40,8 +40,58 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Как долго cli-сессия живёт без запросов, прежде чем брокер её закроет.
 const CLI_IDLE_TTL_SEC: u64 = 15 * 60;
 
+/// …но сессия с открытой транзакцией — коротко: висящий BEGIN держит
+/// блокировки и мешает vacuum'у на проде. Drop соединения её откатит.
+const CLI_TX_IDLE_TTL_SEC: u64 = 180;
+
 pub fn socket_path() -> Result<PathBuf, AppError> {
     fsio::config_path("broker.sock")
+}
+
+/// Сокет holder'а — фонового держателя cli-сессий на то время, когда GUI не
+/// запущен (`kai holder run`). Тот же протокол, что и у GUI-брокера.
+pub fn holder_socket_path() -> Result<PathBuf, AppError> {
+    fsio::config_path("holder.sock")
+}
+
+/// Бинд сокета holder'а: если по нему уже кто-то отвечает — занято (None,
+/// живой holder обслужит клиентов сам), иначе протухший файл убирается и
+/// поднимается свежий 0600-листенер. Гонка двух спавнеров решается самим
+/// бинд-фактом: проигравший увидит живой сокет и выйдет.
+#[cfg(unix)]
+pub async fn bind_holder() -> Result<Option<UnixListener>, AppError> {
+    let path = holder_socket_path()?;
+    if UnixStream::connect(&path).await.is_ok() {
+        return Ok(None);
+    }
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Как и у GUI-брокера: не ужали права — не поднимаемся, через сокет
+        // выполняется SQL под разлоченным vault.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(Some(listener))
+}
+
+/// Best-effort «погасни» в сокет holder'а. Vault lock означает «ничего не
+/// остаётся подключенным» — включая фоновый держатель cli-сессий.
+#[cfg(unix)]
+pub async fn shutdown_holder() {
+    let Ok(path) = holder_socket_path() else { return };
+    let Ok(stream) = UnixStream::connect(&path).await else { return };
+    let (read, mut write) = stream.into_split();
+    if write
+        .write_all(b"{\"id\":1,\"method\":\"shutdown\",\"params\":null}\n")
+        .await
+        .is_err()
+    {
+        return;
+    }
+    // дождаться ответа (не дольше секунды), чтобы holder успел принять запрос
+    let mut lines = BufReader::new(read).lines();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), lines.next_line()).await;
 }
 
 /// Removes a stale socket file and binds a fresh 0600 listener.
@@ -101,6 +151,8 @@ pub enum Method {
     },
     /// kai изменил состав профилей (discover/rm) — GUI перечитывает список.
     ProfilesChanged,
+    /// Погасить сервер: закрыть сессии и выйти (holder). GUI-брокер отвергает.
+    Shutdown,
 }
 
 fn default_max_rows() -> usize {
@@ -166,6 +218,9 @@ pub struct CliEntry {
 #[derive(Default)]
 pub struct BrokerState {
     cli: Mutex<HashMap<String, Arc<CliEntry>>>,
+    /// Момент последнего запроса по сокету (любого). Holder по нему решает,
+    /// что он никому не нужен, и самозавершается; GUI-брокер не читает.
+    last_activity: Mutex<Option<Instant>>,
 }
 
 impl BrokerState {
@@ -202,8 +257,12 @@ impl BrokerState {
             let mut map = self.cli.lock().unwrap();
             let before = map.len();
             map.retain(|_, e| {
+                let ttl = match TxStatus::from_u8(e.session.tx.load(Ordering::Relaxed)) {
+                    TxStatus::Idle => CLI_IDLE_TTL_SEC,
+                    _ => CLI_TX_IDLE_TTL_SEC,
+                };
                 let live = !e.session.client.is_closed()
-                    && e.last_used.lock().unwrap().elapsed().as_secs() < CLI_IDLE_TTL_SEC;
+                    && e.last_used.lock().unwrap().elapsed().as_secs() < ttl;
                 if !live {
                     dead.push(e.clone());
                 }
@@ -213,6 +272,25 @@ impl BrokerState {
         };
         drop(dead); // последние Arc-рефы гаснут вне лока
         removed
+    }
+
+    /// Отметить активность по сокету (см. `last_activity`).
+    pub fn touch(&self) {
+        *self.last_activity.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// Нет сессий и нет запросов дольше `linger_sec` — holder'у пора выходить.
+    /// Без единого запроса (None) простоем считается "бесконечность": holder
+    /// вызывает touch() на старте, так что None здесь не встречается.
+    pub fn is_idle(&self, linger_sec: u64) -> bool {
+        if !self.cli.lock().unwrap().is_empty() {
+            return false;
+        }
+        self.last_activity
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_secs() >= linger_sec)
+            .unwrap_or(true)
     }
 
     fn get_live(&self, profile_id: &str) -> Option<Arc<CliEntry>> {
@@ -235,6 +313,9 @@ pub struct BrokerHooks {
     pub changed: Box<dyn Fn() + Send + Sync>,
     /// kai сообщил об изменении профилей — интерфейс перечитывает список.
     pub profiles_changed: Box<dyn Fn() + Send + Sync>,
+    /// Обработчик `shutdown`: holder закрывает сессии и завершается.
+    /// None (GUI-брокер) — метод отвергается: приложение так не гасят.
+    pub shutdown: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 // --- Server ---------------------------------------------------------------------
@@ -324,6 +405,7 @@ async fn dispatch(
     state: &Arc<BrokerState>,
     hooks: &Arc<BrokerHooks>,
 ) -> Result<Value, MethodError> {
+    state.touch();
     match method {
         Method::Hello { client_version } => {
             if !client_version.is_empty() && client_version != env!("CARGO_PKG_VERSION") {
@@ -357,6 +439,13 @@ async fn dispatch(
             (hooks.profiles_changed)();
             Ok(json!({}))
         }
+        Method::Shutdown => match &hooks.shutdown {
+            Some(f) => {
+                f();
+                Ok(json!({}))
+            }
+            None => Err(method_err("unsupported", "этот сервер нельзя погасить по сокету")),
+        },
         Method::Cancel { profile_id } => {
             let entry = state
                 .get_live(&profile_id)
@@ -582,6 +671,7 @@ mod tests {
             gui_sessions: Box::new(Vec::new),
             changed: Box::new(|| {}),
             profiles_changed: Box::new(|| {}),
+            shutdown: None,
         });
         tokio::spawn(serve(listener, state, hooks));
 
@@ -627,6 +717,7 @@ mod tests {
             gui_sessions: Box::new(Vec::new),
             changed: Box::new(|| {}),
             profiles_changed: Box::new(move || f.store(true, Ordering::Relaxed)),
+            shutdown: None,
         });
         tokio::spawn(serve(listener, Arc::new(BrokerState::default()), hooks));
 
@@ -641,6 +732,34 @@ mod tests {
         assert!(v.get("error").is_none(), "unexpected reply: {v}");
         assert!(fired.load(Ordering::Relaxed));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// shutdown: с хуком (holder) — ok и хук дёрнут; без хука (GUI) — ошибка
+    /// unsupported. Контракт для vault_lock / kai holder stop.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_dispatch_by_hook() {
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = fired.clone();
+        let with_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: Some(Box::new(move || f.store(true, Ordering::Relaxed))),
+        });
+        let state = Arc::new(BrokerState::default());
+        let r = dispatch(Method::Shutdown, &state, &with_hook).await;
+        assert!(r.is_ok());
+        assert!(fired.load(Ordering::Relaxed));
+
+        let without_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: None,
+        });
+        let r = dispatch(Method::Shutdown, &state, &without_hook).await;
+        assert!(matches!(r, Err(e) if e.code == "unsupported"));
     }
 
     #[test]

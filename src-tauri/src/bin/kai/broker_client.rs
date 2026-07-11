@@ -1,7 +1,11 @@
-//! Клиент брокера GUI: если приложение запущено (живой unix-сокет), kai
-//! выполняет запросы его силами — vault уже разблокирован, туннель уже
-//! поднят, cli-сессия переживает выход kai и переиспользуется следующим
-//! запуском. Любая транспортная проблема — тихий откат на автономный путь.
+//! Клиент серверов сессий kai — GUI-брокера и holder'а (общий протокол).
+//! Если жив unix-сокет одного из них, kai выполняет запросы его силами:
+//! vault уже разблокирован, туннель уже поднят, cli-сессия переживает выход
+//! kai и переиспользуется следующим запуском. Когда GUI не запущен, holder
+//! спавнится по требованию (см. connect_any). Любая транспортная проблема —
+//! тихий откат на автономный путь.
+
+use std::path::Path;
 
 use serde_json::{json, Value};
 use sql_kai_lib::broker::{self, BrokerSessionInfo, HelloReply, WireColumnTypes};
@@ -9,11 +13,23 @@ use sql_kai_lib::db::ExecResult;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::session;
+
+/// Какой сервер сессий обслуживает это соединение.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Via {
+    /// Брокер запущенного GUI-приложения.
+    Gui,
+    /// Фоновый holder (`kai holder run`).
+    Holder,
+}
+
 pub struct BrokerClient {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
     next_id: u64,
     pub hello: HelloReply,
+    pub via: Via,
 }
 
 pub struct BrokerQuery {
@@ -44,10 +60,86 @@ impl std::fmt::Display for BrokerError {
     }
 }
 
-/// Живой брокер или None (GUI не запущен / несовместимый протокол).
+/// Живой брокер GUI или None (GUI не запущен / несовместимый протокол).
 pub async fn connect() -> Option<BrokerClient> {
-    let path = broker::socket_path().ok()?;
-    let stream = UnixStream::connect(&path).await.ok()?;
+    connect_path(&broker::socket_path().ok()?, Via::Gui).await
+}
+
+/// Живой holder или None (не запущен / несовместимый протокол).
+pub async fn connect_holder() -> Option<BrokerClient> {
+    connect_path(&broker::holder_socket_path().ok()?, Via::Holder).await
+}
+
+/// Повторное соединение с тем же сервером (например, cancel параллельно
+/// занятому запросом сокету).
+pub async fn reconnect(via: Via) -> Option<BrokerClient> {
+    match via {
+        Via::Gui => connect().await,
+        Via::Holder => connect_holder().await,
+    }
+}
+
+/// Живой сервер сессий: GUI-брокер → holder → спавн holder'а. None — только
+/// автономный путь (нет тихого доступа к vault или holder не поднялся).
+pub async fn connect_any() -> Option<BrokerClient> {
+    if let Some(b) = connect().await {
+        return Some(b);
+    }
+    if let Some(b) = connect_holder().await {
+        // Holder от прежнего бинаря (kai обновился) — гасим и поднимаем свежий.
+        if b.hello.server_version == env!("CARGO_PKG_VERSION") {
+            return Some(b);
+        }
+        broker::shutdown_holder().await;
+        // Гашение асинхронное: holder сначала отвечает и лишь потом (~150 мс)
+        // убирает сокет и выходит. Не дождавшись, свежий holder увидит живой
+        // сокет и погибнет, а мы переподключимся к старому.
+        if let Ok(path) = broker::holder_socket_path() {
+            for _ in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if UnixStream::connect(&path).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    if !session::headless_unlock_possible() {
+        return None; // holder всё равно не разлочит vault — не плодим процессы
+    }
+    spawn_holder().ok()?;
+    // ждём, пока holder разлочит vault и займёт сокет (обычно < 300 мс)
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Some(b) = connect_holder().await {
+            // Недобитый старый holder не возвращаем: свежий узнаём по версии.
+            if b.hello.server_version == env!("CARGO_PKG_VERSION") {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+/// Запускает holder тем же бинарём в фоне: своя process group и без stdio,
+/// чтобы он пережил выход kai и не ловил сигналы его терминала.
+fn spawn_holder() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("holder")
+        .arg("run")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn().map(|_| ())
+}
+
+async fn connect_path(path: &Path, via: Via) -> Option<BrokerClient> {
+    let stream = UnixStream::connect(path).await.ok()?;
     let (read, writer) = stream.into_split();
     let mut b = BrokerClient {
         reader: BufReader::new(read),
@@ -58,6 +150,7 @@ pub async fn connect() -> Option<BrokerClient> {
             server_version: String::new(),
             vault_unlocked: false,
         },
+        via,
     };
     let hello: HelloReply = serde_json::from_value(
         b.request(

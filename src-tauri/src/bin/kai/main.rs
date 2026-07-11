@@ -25,6 +25,7 @@ use cmd::discover::DiscoverArgs;
 use cmd::doctor::DoctorArgs;
 use cmd::exec::ExecArgs;
 use cmd::history::HistoryArgs;
+use cmd::holder::HolderCmd;
 use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
 use cmd::profiles::ProfilesCmd;
 use cmd::query::QueryArgs;
@@ -97,6 +98,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
+    /// Фоновый держатель cli-сессий (спавнится сам при `kai q`, когда GUI
+    /// не запущен) — скрыт: руками нужен разве что `kai holder stop`
+    #[command(hide = true)]
+    Holder {
+        #[command(subcommand)]
+        cmd: HolderCmd,
+    },
 }
 
 /// `kai <alias> -c ...` — шорткат для `kai q <alias> -c ...`: если первый
@@ -156,6 +164,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Doctor(a) => cmd::doctor::run(a).await,
         Cmd::Sessions(a) => cmd::sessions::run(a).await,
         Cmd::Tunnel { cmd } => cmd::tunnel::run(cmd.unwrap_or(TunnelCmd::List)),
-        Cmd::Vault { cmd } => cmd::vault::run(cmd),
+        Cmd::Vault { cmd } => cmd::vault::run(cmd).await,
+        Cmd::Holder { cmd } => cmd::holder::run(cmd).await,
     }
 }

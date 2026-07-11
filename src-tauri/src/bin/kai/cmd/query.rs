@@ -49,7 +49,7 @@ pub struct QueryArgs {
     /// Не переиспользовать ssh-туннель (без ControlMaster)
     #[arg(long)]
     pub(crate) no_mux: bool,
-    /// Не ходить через брокер запущенного GUI — всегда своя сессия
+    /// Не ходить через GUI/holder — всегда своя одноразовая сессия
     #[arg(long)]
     pub(crate) local: bool,
     /// Показать, куда подключились
@@ -101,23 +101,33 @@ fn wire_types(
         .collect()
 }
 
-/// Пытается обслужить запрос брокером запущенного GUI. Some(exit) — запрос
-/// выполнен (или окончательно отвергнут) брокером; None — GUI недоступен или
-/// vault заперт, и нужно идти автономным путём.
+/// Пытается обслужить запрос сервером сессий — брокером запущенного GUI или
+/// holder'ом (спавнится по требованию). Some(exit) — запрос выполнен (или
+/// окончательно отвергнут) сервером; None — сервера нет или vault заперт,
+/// и нужно идти автономным путём.
 async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, AppError> {
-    let Some(mut b) = broker_client::connect().await else {
+    let Some(mut b) = broker_client::connect_any().await else {
         return Ok(None);
     };
     let profile = session::resolve_profile(&a.alias)?;
     if a.verbose {
-        eprintln!("→ через брокер GUI {} (сессию держит приложение)", b.hello.server_version);
+        match b.via {
+            broker_client::Via::Gui => eprintln!(
+                "→ через брокер GUI {} (сессию держит приложение)",
+                b.hello.server_version
+            ),
+            broker_client::Via::Holder => eprintln!(
+                "→ через holder {} (фоновый держатель сессий)",
+                b.hello.server_version
+            ),
+        }
     }
     let with_types = a.fmt.pick() == Format::Json;
     let outcome = tokio::select! {
         r = b.query(&profile.id, sql, a.max_rows.max(1), a.write, with_types) => r,
         _ = tokio::signal::ctrl_c() => {
             // наш сокет занят ожиданием ответа — отмену шлём новым соединением
-            if let Some(mut c) = broker_client::connect().await {
+            if let Some(mut c) = broker_client::reconnect(b.via).await {
                 let _ = c.cancel(&profile.id).await;
             }
             eprintln!("kai: отменено");
@@ -182,9 +192,16 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
 
 pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     let sql = input::collect_sql(&a.commands, &a.files)?;
-    // Живой GUI обслуживает запрос своей cli-сессией; кастомные источники
-    // пароля (--password-env/--from-sec) — всегда автономно.
-    if !a.local && a.password_env.is_none() && !a.from_sec && a.sec_key.is_none() {
+    // Живой GUI (или holder) обслуживает запрос своей cli-сессией; кастомные
+    // источники пароля (--password-env/--from-sec) — всегда автономно.
+    // --no-mux тоже: сервер сессий держит mux-туннели, а флаг просит свежий
+    // ssh без ControlMaster.
+    if !a.local
+        && !a.no_mux
+        && a.password_env.is_none()
+        && !a.from_sec
+        && a.sec_key.is_none()
+    {
         if let Some(code) = try_broker_query(&a, &sql).await? {
             return Ok(code);
         }

@@ -63,15 +63,55 @@ fn ssh_cmd() -> Command {
     cmd
 }
 
-/// A local port forwarded to the database through a supervised `ssh -N -L` child.
-/// Killing the child (on Drop) tears the tunnel down.
+/// A local port forwarded to the database. Two ownership modes:
+/// - plain: a supervised `ssh -N -L` child holds the forward; killing it
+///   (on Drop) tears the tunnel down;
+/// - mux: the `-N` client only registered the forward with the ControlMaster
+///   and exited(0) — the master owns the listening port, so Drop must cancel
+///   the forward via `ssh -O cancel` (killing the dead child does nothing).
 pub struct Tunnel {
     pub local_port: u16,
     child: Child,
+    mux: Option<MuxForward>,
+}
+
+/// Что снимать с мастера на Drop mux-туннеля.
+struct MuxForward {
+    ctl: PathBuf,
+    target: String,
+    /// Тот же `-L`-спек, каким форвард открывали.
+    spec: String,
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
+        if let Some(m) = &self.mux {
+            let ok = Command::new("ssh")
+                .arg("-O")
+                .arg("cancel")
+                .arg("-L")
+                .arg(&m.spec)
+                .arg("-S")
+                .arg(&m.ctl)
+                .arg(&m.target)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            logging::log(
+                "tunnel",
+                &format!(
+                    "local port {}: mux-форвард снят с мастера{}",
+                    self.local_port,
+                    if ok { "" } else { " (мастер уже недоступен)" }
+                ),
+            );
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            return;
+        }
         // Distinguish "we tore it down" from "it was already dead" — the
         // latter means the drop originated on the ssh/network side.
         match self.child.try_wait() {
@@ -371,8 +411,8 @@ pub async fn open_tunnel(
         // direct connection instead of creating a new master.
         cmd.args(["-o", "ControlMaster=no"]).arg("-S").arg(ctl);
     }
-    cmd.arg("-L")
-        .arg(format!("127.0.0.1:{local_port}:{db_host}:{db_port}"));
+    let spec = format!("127.0.0.1:{local_port}:{db_host}:{db_port}");
+    cmd.arg("-L").arg(&spec);
     push_target(&mut cmd, ssh);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -382,17 +422,32 @@ pub async fn open_tunnel(
         .spawn()
         .map_err(|e| AppError::Msg(format!("failed to spawn ssh: {e}")))?;
 
+    // Mux-нюанс: `-N`-клиент, придя к живому мастеру, лишь регистрирует в нём
+    // форвард и сразу выходит с кодом 0 — слушающий порт остаётся у мастера.
+    // Это успех, а не смерть туннеля. false = обычный путь: порт держит сам
+    // ребёнок до своей смерти.
+    let mut master_owned = false;
+
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        if let Some(status) = child.try_wait()? {
-            let mut err = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                let _ = stderr.read_to_string(&mut err);
+        if !master_owned {
+            if let Some(status) = child.try_wait()? {
+                let mut err = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_string(&mut err);
+                }
+                if status.success() && ctl.is_some() {
+                    if !err.trim().is_empty() {
+                        logging::log("ssh", &format!("{target}: {}", err.trim()));
+                    }
+                    master_owned = true;
+                } else {
+                    return Err(AppError::Msg(format!(
+                        "ssh tunnel exited ({status}): {}",
+                        err.trim()
+                    )));
+                }
             }
-            return Err(AppError::Msg(format!(
-                "ssh tunnel exited ({status}): {}",
-                err.trim()
-            )));
         }
         match tokio::net::TcpStream::connect(("127.0.0.1", local_port)).await {
             Ok(_) => break,
@@ -413,16 +468,38 @@ pub async fn open_tunnel(
     // forward dies later (keepalive timeout, network drop, server reboot),
     // ssh's last words ("Timeout, server not responding", "broken pipe", …)
     // are the diagnosis. The thread ends at EOF — i.e. when ssh exits.
-    if let Some(stderr) = child.stderr.take() {
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
-                    logging::log("ssh", &format!("{target}: {line}"));
+    // Мастер-владелец форварда — не наш ребёнок, его stderr уже прочитан выше.
+    if !master_owned {
+        if let Some(stderr) = child.stderr.take() {
+            let target = target.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if !line.trim().is_empty() {
+                        logging::log("ssh", &format!("{target}: {line}"));
+                    }
                 }
-            }
-            logging::log("ssh", &format!("{target}: process exited"));
-        });
+                logging::log("ssh", &format!("{target}: process exited"));
+            });
+        }
     }
 
-    Ok(Tunnel { local_port, child })
+    let mux = match (&ctl, master_owned) {
+        (Some(ctl), true) => {
+            logging::log(
+                "tunnel",
+                &format!("local port {local_port}: форвард держит mux-мастер {target}"),
+            );
+            Some(MuxForward {
+                ctl: ctl.clone(),
+                target,
+                spec,
+            })
+        }
+        _ => None,
+    };
+    Ok(Tunnel {
+        local_port,
+        child,
+        mux,
+    })
 }

@@ -133,6 +133,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
         profiles_changed: Box::new(move || {
             let _ = notify_profiles.emit("profiles://changed", ());
         }),
+        shutdown: None, // GUI-брокер по сокету не гасится
     });
     tauri::async_runtime::spawn(broker::serve(listener, state.clone(), hooks));
 }

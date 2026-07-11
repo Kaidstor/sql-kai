@@ -1,5 +1,5 @@
-//! `kai sessions` — живые сессии запущенного GUI: его собственные и
-//! cli-сессии брокера.
+//! `kai sessions` — живые сессии обоих серверов: GUI (его собственные и
+//! cli-сессии брокера) и holder'а (origin=holder).
 
 use std::process::ExitCode;
 
@@ -15,17 +15,37 @@ pub struct SessionsArgs {
     fmt: FormatArgs,
 }
 
-/// Живые сессии запущенного GUI: собственные (origin=gui) и cli-сессии
-/// брокера (origin=cli, с простоем).
+/// Живые сессии GUI (origin=gui — собственные, origin=cli — брокерские) и
+/// holder'а (origin=holder); у cli/holder показан простой.
 pub async fn run(a: SessionsArgs) -> Result<ExitCode, AppError> {
-    let Some(mut b) = broker_client::connect().await else {
-        eprintln!("GUI не запущен — брокер недоступен (kai работает автономно)");
+    let gui = broker_client::connect().await;
+    let holder = broker_client::connect_holder().await;
+    if gui.is_none() && holder.is_none() {
+        eprintln!("ни GUI, ни holder не запущены — kai работает автономно");
         return Ok(ExitCode::FAILURE);
-    };
-    let list = b
-        .sessions()
-        .await
-        .map_err(|e| AppError::Msg(e.to_string()))?;
+    }
+    let mut sources = Vec::new();
+    let mut list = Vec::new();
+    if let Some(mut b) = gui {
+        list.extend(
+            b.sessions()
+                .await
+                .map_err(|e| AppError::Msg(e.to_string()))?,
+        );
+        sources.push(format!("gui {}", b.hello.server_version));
+    }
+    if let Some(mut b) = holder {
+        let mut hs = b
+            .sessions()
+            .await
+            .map_err(|e| AppError::Msg(e.to_string()))?;
+        // сервер шлёт origin=cli — помечаем, что держит их фоновый holder
+        for s in &mut hs {
+            s.origin = "holder".into();
+        }
+        list.extend(hs);
+        sources.push(format!("holder {}", b.hello.server_version));
+    }
     let fmt = a.fmt.pick();
     // --json отдаёт полные объекты (profileId и т.п.), не табличную проекцию
     if fmt == Format::Json {
@@ -36,7 +56,7 @@ pub async fn run(a: SessionsArgs) -> Result<ExitCode, AppError> {
         return Ok(ExitCode::SUCCESS);
     }
     if list.is_empty() && fmt == Format::Table {
-        println!("живых сессий нет (gui {})", b.hello.server_version);
+        println!("живых сессий нет ({})", sources.join(", "));
         return Ok(ExitCode::SUCCESS);
     }
     let rows: Vec<Vec<Option<String>>> = list

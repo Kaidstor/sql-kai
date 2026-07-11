@@ -6,5 +6,7 @@ mod pw;
 mod resolve;
 
 pub use connect::{mux_ttl, open_for};
-pub use pw::{read_new_password, unlock_vault, PwSource};
+pub use pw::{
+    headless_unlock_possible, read_new_password, unlock_vault, unlock_vault_headless, PwSource,
+};
 pub use resolve::{filter_profiles, resolve_profile};

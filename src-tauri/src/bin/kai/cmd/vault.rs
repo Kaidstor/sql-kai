@@ -21,7 +21,7 @@ pub enum VaultCmd {
     Revoke,
 }
 
-pub fn run(cmd: VaultCmd) -> Result<ExitCode, AppError> {
+pub async fn run(cmd: VaultCmd) -> Result<ExitCode, AppError> {
     match cmd {
         VaultCmd::Status => {
             println!("vault:     {}", if vault::exists() { "есть" } else { "нет" });
@@ -52,6 +52,8 @@ pub fn run(cmd: VaultCmd) -> Result<ExitCode, AppError> {
         }
         VaultCmd::Revoke => {
             vault::disable_cli_trust();
+            // holder уже держит DEK в памяти — отзыв тихого доступа гасит и его
+            sql_kai_lib::broker::shutdown_holder().await;
             println!("cli trust отозван");
         }
     }
