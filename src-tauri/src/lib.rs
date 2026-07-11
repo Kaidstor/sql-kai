@@ -97,6 +97,48 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Показывает главное окно (после скрытия по close / клика в трей или Dock).
+#[cfg(target_os = "macos")]
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Иконка в menu bar: приложение живёт в трее, даже когда окно закрыто
+/// (close прячет окно, см. on_window_event ниже).
+#[cfg(target_os = "macos")]
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let handle = app.handle();
+    let open = MenuItemBuilder::with_id("tray-open", "Open sql-kai").build(handle)?;
+    let quit = MenuItemBuilder::with_id("tray-quit", "Quit sql-kai").build(handle)?;
+    let menu = MenuBuilder::new(handle)
+        .item(&open)
+        .separator()
+        .item(&quit)
+        .build()?;
+    TrayIconBuilder::with_id("main-tray")
+        .icon(
+            app.default_window_icon()
+                .cloned()
+                .expect("bundled app icon"),
+        )
+        .tooltip("sql-kai")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-open" => show_main_window(app),
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
 /// Поднимает брокер-сокет для kai: GUI-процесс выполняет его запросы своими
 /// сессиями/vault'ом. Ошибка бинда не мешает приложению — kai просто пойдёт
 /// автономным путём.
@@ -153,10 +195,23 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             set_app_menu(app)?;
+            #[cfg(target_os = "macos")]
+            setup_tray(app)?;
             #[cfg(unix)]
             start_broker(app, &broker_state);
             let _ = &app;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close (red button / Close Window) прячет окно — приложение
+            // остаётся жить в трее, сессии и туннели не рвутся.
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             commands::vault_status,
@@ -208,19 +263,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // Make sure ssh tunnel children (incl. the broker's) die with the app.
-            if let tauri::RunEvent::Exit = event {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    state.sessions.lock().unwrap().clear();
+            match event {
+                // Клик по иконке в Dock, когда окно спрятано в трей.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => show_main_window(app_handle),
+                // Make sure ssh tunnel children (incl. the broker's) die with the app.
+                tauri::RunEvent::Exit => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.sessions.lock().unwrap().clear();
+                    }
+                    if let Some(broker) =
+                        app_handle.try_state::<std::sync::Arc<broker::BrokerState>>()
+                    {
+                        broker.clear();
+                    }
+                    if let Ok(path) = broker::socket_path() {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
-                if let Some(broker) =
-                    app_handle.try_state::<std::sync::Arc<broker::BrokerState>>()
-                {
-                    broker.clear();
-                }
-                if let Ok(path) = broker::socket_path() {
-                    let _ = std::fs::remove_file(path);
-                }
+                _ => {}
             }
         });
 }
