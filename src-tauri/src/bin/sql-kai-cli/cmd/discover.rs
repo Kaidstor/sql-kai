@@ -1,4 +1,4 @@
-//! `kai discover <ssh-alias>` — найти postgres-контейнер на хосте, достать
+//! `sql-kai discover <ssh-alias>` — найти postgres-контейнер на хосте, достать
 //! креды из env контейнера и завести/обновить профиль (пароль — в vault).
 //! Заменяет кеш-дискавери старого prod-db: результат — обычный профиль,
 //! общий с GUI.
@@ -122,7 +122,7 @@ fn discover_host(alias: &str, container: Option<&str>) -> Result<Discovered, App
         (ip, 5432)
     } else {
         return Err(AppError::Msg(
-            "у контейнера нет ни опубликованного порта, ни IP — используй `kai exec`".into(),
+            "у контейнера нет ни опубликованного порта, ни IP — используй `sql-kai exec`".into(),
         ));
     };
 
@@ -195,7 +195,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
                     sec::meta(&key, Some("90d"), Some(&format!("DB пароль {}", profile.name)));
                     println!("пароль сохранён в sec: {key}");
                 }
-                None => eprintln!("kai: --to-sec задан, но пароль в env контейнера не найден"),
+                None => eprintln!("sql-kai: --to-sec задан, но пароль в env контейнера не найден"),
             }
         }
         // 2) пароль в vault (если не --no-vault)
@@ -205,7 +205,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
                 Ok(()) => Some(pw.clone()),
                 Err(e) => {
                     eprintln!(
-                        "kai: пароль найден, но в vault не сохранён ({e}); \
+                        "sql-kai: пароль найден, но в vault не сохранён ({e}); \
                          подключение потребует --password-env{}",
                         if to_sec { " или --from-sec" } else { "" }
                     );
@@ -219,7 +219,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         crate::broker_client::notify_profiles_changed().await;
         if a.no_vault && to_sec {
             println!(
-                "прод-режим: пароль только в sec — запускай `kai {} -c \"…\" --from-sec` \
+                "прод-режим: пароль только в sec — запускай `sql-kai {} -c \"…\" --from-sec` \
                  или `sec run {} -- …`",
                 profile.name, profile.name
             );
@@ -241,9 +241,9 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            eprintln!("kai: подключение не удалось: {e}");
+            eprintln!("sql-kai: подключение не удалось: {e}");
             eprintln!(
-                "hint: если порт закрыт и IP контейнера недоступен — `kai exec {} -c \"...\"`",
+                "hint: если порт закрыт и IP контейнера недоступен — `sql-kai exec {} -c \"...\"`",
                 a.alias
             );
             Ok(ExitCode::FAILURE)

@@ -14,7 +14,7 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
     }
     if !vault::exists() {
         return Err(AppError::Msg(
-            "vault не создан — `kai vault setup` (или первый запуск GUI)".into(),
+            "vault не создан — `sql-kai vault setup` (или первый запуск GUI)".into(),
         ));
     }
     if vault::unlock_cli_trust().is_ok() {
@@ -26,14 +26,14 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
         }
     }
     Err(AppError::Msg(
-        "vault заблокирован — настрой `kai vault trust`, задай KAI_VAULT_PASSWORD \
+        "vault заблокирован — настрой `sql-kai vault trust`, задай KAI_VAULT_PASSWORD \
          или используй --password-env"
             .into(),
     ))
 }
 
 /// Спавнить holder имеет смысл, только если он сможет тихо разлочить vault —
-/// иначе каждый `kai q` плодил бы мгновенно умирающий процесс.
+/// иначе каждый `sql-kai q` плодил бы мгновенно умирающий процесс.
 pub fn headless_unlock_possible() -> bool {
     vault::is_unlocked()
         || std::env::var("KAI_VAULT_PASSWORD").map(|v| !v.is_empty()).unwrap_or(false)

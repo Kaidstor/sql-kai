@@ -1,4 +1,4 @@
-//! `kai vault` — vault с паролями БД: статус, создание, тихий доступ CLI
+//! `sql-kai vault` — vault с паролями БД: статус, создание, тихий доступ CLI
 //! (trust через keychain) и его отзыв.
 
 use std::process::ExitCode;
@@ -46,8 +46,8 @@ pub async fn run(cmd: VaultCmd) -> Result<ExitCode, AppError> {
             session::unlock_vault()?;
             vault::enable_cli_trust()?;
             println!(
-                "cli trust включён: kai будет читать пароли без запроса \
-                 (копия ключа в login keychain; отозвать — `kai vault revoke`)"
+                "cli trust включён: sql-kai будет читать пароли без запроса \
+                 (копия ключа в login keychain; отозвать — `sql-kai vault revoke`)"
             );
         }
         VaultCmd::Revoke => {

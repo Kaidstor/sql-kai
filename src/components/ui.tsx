@@ -163,11 +163,11 @@ export function ProdBadge({ className }: { className?: string }) {
   );
 }
 
-/** Chip shown while kai holds a live broker session for the profile. */
+/** Chip shown while sql-kai holds a live broker session for the profile. */
 export function CliBadge({ idleSec }: { idleSec?: number | null }) {
   return (
     <span
-      title={`Live kai (CLI) session owned by the app${
+      title={`Live sql-kai (CLI) session owned by the app${
         idleSec != null ? ` — idle ${idleSec}s` : ""
       }`}
       className={cn(

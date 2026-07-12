@@ -1,6 +1,6 @@
-//! `kai rotate <alias>` — ротация пароля роли Postgres, где sec и kai
+//! `sql-kai rotate <alias>` — ротация пароля роли Postgres, где sec и sql-kai
 //! складываются в то, чего не умеет ни один в одиночку: sec «сгенерировать +
-//! сохранить + отследить срок + оставить старое в истории», kai «применить в
+//! сохранить + отследить срок + оставить старое в истории», sql-kai «применить в
 //! БД». sec здесь ещё и страховка от локаута — прежнее значение уходит в
 //! `sec history`, так что сорванную ротацию можно откатить `sec undo`.
 //!
@@ -115,7 +115,7 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
         db::quote_literal(&verifier)
     );
     if let Err(e) = db::execute(&connected.session.client, &alter, 1).await {
-        eprintln!("kai: ALTER ROLE не прошёл: {e}");
+        eprintln!("sql-kai: ALTER ROLE не прошёл: {e}");
         eprintln!("sec уже содержит новый пароль, а в БД он не применён — откати: sec undo {key}");
         return Ok(ExitCode::FAILURE);
     }
@@ -132,7 +132,7 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
     )
     .await;
     if let Err(e) = check {
-        eprintln!("kai: пароль сменён, но проверка коннекта не прошла: {e}");
+        eprintln!("sql-kai: пароль сменён, но проверка коннекта не прошла: {e}");
         eprintln!("новый пароль в sec ({key}); восстановить старый — sec undo {key} (и повторно ALTER)");
         return Ok(ExitCode::FAILURE);
     }

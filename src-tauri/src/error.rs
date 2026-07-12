@@ -44,7 +44,7 @@ impl AppError {
         }
     }
 
-    /// Сессия read-only (SQLSTATE 25006) — kai подсказывает `--write`.
+    /// Сессия read-only (SQLSTATE 25006) — sql-kai подсказывает `--write`.
     pub fn is_read_only(&self) -> bool {
         self.sqlstate() == Some(SqlState::READ_ONLY_SQL_TRANSACTION.code())
     }

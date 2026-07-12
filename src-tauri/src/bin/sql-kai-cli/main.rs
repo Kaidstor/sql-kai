@@ -1,6 +1,6 @@
-//! kai — CLI к sql-kai: выполняет SQL в базах из профилей приложения (общие
+//! sql-kai — CLI к sql-kai: выполняет SQL в базах из профилей приложения (общие
 //! profiles.json / vault / история с GUI), заводит профили дискавери по ssh
-//! (`kai discover`) и умеет прямой fallback через ssh+docker exec (`kai exec`).
+//! (`sql-kai discover`) и умеет прямой fallback через ssh+docker exec (`sql-kai exec`).
 //!
 //! Сессия по умолчанию read-only (`SET default_transaction_read_only = on`);
 //! запись — только с явным `--write`. Чувствительные колонки (password/
@@ -38,16 +38,19 @@ use cmd::vault::VaultCmd;
 
 #[derive(Parser)]
 #[command(
-    name = "kai",
+    name = "sql-kai",
+    // без bin_name usage показывал бы argv[0] — «sql-kai-cli» при прямом
+    // запуске sidecar-файла; команда для пользователя всегда sql-kai
+    bin_name = "sql-kai",
     version,
     about = "SQL к Postgres по профилям sql-kai (ssh-туннели, vault, история)",
     after_help = "Примеры:\n  \
-        kai domainator -c \"SELECT count(*) FROM domains\"\n  \
-        echo \"SELECT now()\" | kai orchestrator --json\n  \
-        kai discover coordinator       # ssh-хост -> профиль (+ пароль в vault)\n  \
-        kai exec coordinator -c \"SELECT 1\"   # fallback: ssh + docker exec psql\n  \
-        kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
-        kai vault trust                # тихий доступ CLI к паролям vault"
+        sql-kai domainator -c \"SELECT count(*) FROM domains\"\n  \
+        echo \"SELECT now()\" | sql-kai orchestrator --json\n  \
+        sql-kai discover coordinator       # ssh-хост -> профиль (+ пароль в vault)\n  \
+        sql-kai exec coordinator -c \"SELECT 1\"   # fallback: ssh + docker exec psql\n  \
+        sql-kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
+        sql-kai vault trust                # тихий доступ CLI к паролям vault"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,7 +59,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Выполнить SQL в базе профиля (kai <alias> — то же самое)
+    /// Выполнить SQL в базе профиля (sql-kai <alias> — то же самое)
     #[command(name = "q", alias = "query")]
     Query(QueryArgs),
     /// Прямой режим без профиля: ssh <alias> -> docker exec psql
@@ -101,8 +104,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
-    /// Фоновый держатель cli-сессий (спавнится сам при `kai q`, когда GUI
-    /// не запущен) — скрыт: руками нужен разве что `kai holder stop`
+    /// Фоновый держатель cli-сессий (спавнится сам при `sql-kai q`, когда GUI
+    /// не запущен) — скрыт: руками нужен разве что `sql-kai holder stop`
     #[command(hide = true)]
     Holder {
         #[command(subcommand)]
@@ -110,7 +113,7 @@ enum Cmd {
     },
 }
 
-/// `kai <alias> -c ...` — шорткат для `kai q <alias> -c ...`: если первый
+/// `sql-kai <alias> -c ...` — шорткат для `sql-kai q <alias> -c ...`: если первый
 /// аргумент не подкоманда и не флаг, считаем его алиасом профиля.
 fn preprocess_args() -> Vec<OsString> {
     use clap::CommandFactory;
@@ -145,7 +148,7 @@ fn main() -> ExitCode {
     match rt.block_on(dispatch(cli)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("kai: {e}");
+            eprintln!("sql-kai: {e}");
             ExitCode::FAILURE
         }
     }

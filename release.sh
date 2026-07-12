@@ -62,7 +62,7 @@ tmp=$(mktemp)
 jq --arg v "$NEW_VER" '.version = $v' src-tauri/tauri.conf.json > "$tmp" \
   && mv "$tmp" src-tauri/tauri.conf.json
 
-# CLI kai показывает версию из Cargo.toml (clap `version`) — бампаем и его
+# CLI sql-kai показывает версию из Cargo.toml (clap `version`) — бампаем и его
 # (+ Cargo.lock, чтобы дерево осталось чистым после сборки)
 perl -0pi -e "s/(\[package\][^\[]*?version = \")[^\"]+/\${1}$NEW_VER/s" src-tauri/Cargo.toml
 perl -0pi -e "s/(name = \"sql-kai\"\nversion = \")[^\"]+/\${1}$NEW_VER/" src-tauri/Cargo.lock
@@ -103,24 +103,26 @@ echo "  ✓ Релиз создан"
 if [[ -z "${SKIP_BUILD:-}" ]]; then
   echo "> Устанавливаем deps и собираем…"
   pnpm install
-  echo "> Собираем CLI kai…"
-  (cd src-tauri && cargo build --release --features cli --bin kai)
+  echo "> Собираем CLI sql-kai…"
+  (cd src-tauri && cargo build --release --features cli --bin sql-kai-cli)
   # cargo даёт ad-hoc подпись (меняется при каждой сборке → keychain-промпты
   # у vault trust); переподписываем тем же сертификатом, что и приложение
   SIGN_ID=$(jq -r '.bundle.macOS.signingIdentity // empty' src-tauri/tauri.conf.json)
   if [[ -n "$SIGN_ID" ]]; then
-    codesign --force --sign "$SIGN_ID" src-tauri/target/release/kai
+    codesign --force --sign "$SIGN_ID" src-tauri/target/release/sql-kai-cli
   fi
-  # kai едет внутрь .app как sidecar (externalBin) → обновляется вместе с
-  # приложением через updater; ~/.cargo/bin/kai — симлинк в бандл
+  # CLI едет внутрь .app как sidecar (externalBin) → обновляется вместе с
+  # приложением через updater; команда `sql-kai` — симлинк в бандл
   # (scripts/install-cli.sh). externalBin добавляем только здесь через
   # --config-override, чтобы tauri dev / cargo check не требовали binaries/.
   TRIPLE=$(rustc -Vv | awk '/^host:/{print $2}')
   mkdir -p src-tauri/binaries
-  cp src-tauri/target/release/kai "src-tauri/binaries/kai-$TRIPLE"
-  # app — для updater-архива, dmg — для ручной установки со страницы релиза
-  pnpm tauri build --ci --bundles app,dmg \
-    --config '{"bundle":{"externalBin":["binaries/kai"]}}'
+  cp src-tauri/target/release/sql-kai-cli "src-tauri/binaries/sql-kai-cli-$TRIPLE"
+  # app — для updater-архива, dmg — для ручной установки со страницы релиза.
+  # CI=true → bundle_dmg.sh идёт с --skip-jenkins: AppleScript-оформление окна
+  # требует permission Automation→Finder, которого нет у headless-запуска.
+  CI=true pnpm tauri build --ci --bundles app,dmg \
+    --config '{"bundle":{"externalBin":["binaries/sql-kai-cli"]}}'
   echo "✔️  Сборка готова"
 else
   echo "> SKIP_BUILD задан — пропускаем стадию сборки."
@@ -130,8 +132,8 @@ fi
 BUNDLE_DIR=src-tauri/target/release/bundle
 
 echo "> Генерируем latest.json..."
-# найдём первый tar.gz архив для подписи
-TAR_ARCHIVE=$(find "$BUNDLE_DIR" -type f -name "*.tar.gz" | head -n1)
+# updater-архив приложения (не CLI-архив, который тоже *.tar.gz)
+TAR_ARCHIVE=$(find "$BUNDLE_DIR" -type f -name "*.app.tar.gz" | head -n1)
 SIG_FILE="$TAR_ARCHIVE.sig"
 # читаем подпись, удаляя переводы строк
 SIG=$(tr -d '\n' < "$SIG_FILE")
@@ -145,9 +147,15 @@ jq -n --arg v "$NEW_VER" --arg notes "$RELEASE_NOTES" \
     platforms: {"darwin-aarch64": {url: $url, signature: $sig}}}' \
   > "$BUNDLE_DIR/latest.json"
 
-echo "> Пакуем CLI kai…"
-# имя без версии — стабильная ссылка через permalink/latest/downloads/
-tar -czf "$BUNDLE_DIR/kai-darwin-aarch64.tar.gz" -C src-tauri/target/release kai
+echo "> Пакуем CLI sql-kai…"
+# имя без версии — стабильная ссылка через permalink/latest/downloads/;
+# внутри архива бинарь лежит под финальным именем команды: sql-kai
+CLI_STAGE=$(mktemp -d)
+cp src-tauri/target/release/sql-kai-cli "$CLI_STAGE/sql-kai"
+tar -czf "$BUNDLE_DIR/sql-kai-cli-darwin-aarch64.tar.gz" -C "$CLI_STAGE" sql-kai
+rm -rf "$CLI_STAGE"
+# легаси-архив старого имени не переупаковываем: пусть в bundle не валяется
+rm -f "$BUNDLE_DIR/kai-darwin-aarch64.tar.gz"
 
 echo "> Собираем список артефактов текущей версии…"
 
@@ -156,7 +164,12 @@ BUNDLE_FILES=()
 # что содержат номер текущей версии $NEW_VER или latest.json
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
-  if [[ "$name" == *"$NEW_VER"* ]] || [[ "$name" == "latest.json" ]] || [[ "$name" == *.app.tar.gz ]] || [[ "$name" == *.app.tar.gz.sig ]] || [[ "$name" == kai-*.tar.gz ]]; then
+  # rw.*.dmg — промежуточные образы bundle_dmg.sh после упавших прогонов:
+  # в имени есть версия, но в релиз им нельзя
+  if [[ "$name" == rw.* ]]; then
+    continue
+  fi
+  if [[ "$name" == *"$NEW_VER"* ]] || [[ "$name" == "latest.json" ]] || [[ "$name" == *.app.tar.gz ]] || [[ "$name" == *.app.tar.gz.sig ]] || [[ "$name" == sql-kai-cli-*.tar.gz ]]; then
     BUNDLE_FILES+=("$file")
   fi
 done < <(find "$BUNDLE_DIR" -type f \( \

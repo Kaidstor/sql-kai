@@ -196,7 +196,7 @@ function App() {
         try {
           const path = await invoke<string>("install_cli");
           await message(
-            `kai установлен: ${path}\n\nОткройте новый терминал и проверьте: kai -V`,
+            `sql-kai установлен: ${path}\n\nОткройте новый терминал и проверьте: sql-kai -V`,
             { title: "Install CLI", kind: "info" },
           );
         } catch (e) {
@@ -217,11 +217,11 @@ function App() {
             .getState()
             .markSessionLost(e.payload.sessionId, e.payload.profileId),
       ),
-      // брокер: kai открыл/закрыл cli-сессию — обновить бейджи
+      // брокер: sql-kai открыл/закрыл cli-сессию — обновить бейджи
       listen("broker://changed", () =>
         void useApp.getState().refreshCliSessions(),
       ),
-      // kai discover/rm изменил состав профилей или обновилась отметка
+      // sql-kai discover/rm изменил состав профилей или обновилась отметка
       // last connected (cli-коннект) — перечитать список
       listen("profiles://changed", () =>
         void useApp.getState().reloadProfiles(),

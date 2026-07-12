@@ -215,7 +215,7 @@ pub fn vault_lock(
     drop(drained); // teardown ssh-туннелей — вне лока
     broker.clear();
     vault::lock();
-    // Holder (фоновый держатель cli-сессий kai) тоже держит DEK в памяти —
+    // Holder (фоновый держатель cli-сессий sql-kai) тоже держит DEK в памяти —
     // lock гасит и его. Best-effort: не запущен — тишина.
     #[cfg(unix)]
     tauri::async_runtime::spawn(crate::broker::shutdown_holder());
@@ -343,7 +343,7 @@ pub async fn connect_profile(
     profile_id: String,
 ) -> Result<SessionInfo, AppError> {
     let profile = store::profile_by_id(&profile_id)?;
-    // Same ControlMaster sockets as kai: whoever connects first pays for the
+    // Same ControlMaster sockets as sql-kai: whoever connects first pays for the
     // ssh auth, later tunnels from either side attach to the live master.
     let connected = db::connect(
         &profile,
@@ -864,14 +864,14 @@ pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
     set.text(text).map_err(|e| AppError::Msg(e.to_string()))
 }
 
-/// Installs the `kai` CLI into the system PATH, "big-company" style
-/// (Zed / VS Code): symlinks the `kai` sidecar bundled next to the running
-/// app into `/usr/local/bin` — which is always on PATH via `/etc/paths`. The
-/// symlink points into the .app, so future app updates carry the CLI along.
-/// Tries a direct symlink first (writable Homebrew setups) and falls back to
-/// an admin prompt (password / Touch ID) when the dir is root-owned. Returns
-/// the created path; the sentinel error `"cancelled"` means the user
-/// dismissed the auth dialog.
+/// Installs the `sql-kai` CLI into the system PATH, "big-company" style
+/// (Zed / VS Code): symlinks the `sql-kai-cli` sidecar bundled next to the
+/// running app into `/usr/local/bin` — which is always on PATH via
+/// `/etc/paths`. The symlink points into the .app, so future app updates
+/// carry the CLI along. Tries a direct symlink first (writable Homebrew
+/// setups) and falls back to an admin prompt (password / Touch ID) when the
+/// dir is root-owned. Returns the created path; the sentinel error
+/// `"cancelled"` means the user dismissed the auth dialog.
 #[tauri::command]
 pub fn install_cli() -> Result<String, AppError> {
     #[cfg(target_os = "macos")]
@@ -882,16 +882,26 @@ pub fn install_cli() -> Result<String, AppError> {
         let exe = std::env::current_exe()?;
         let src = exe
             .parent()
-            .map(|p| p.join("kai"))
+            .map(|p| p.join("sql-kai-cli"))
             .ok_or_else(|| AppError::Msg("не удалось определить путь к бандлу".into()))?;
         if !src.exists() {
             return Err(AppError::Msg(format!(
                 "CLI-бинарь не найден рядом с приложением: {}\n\
-                 Нужна версия sql-kai со встроенным kai (sidecar).",
+                 Нужна версия sql-kai со встроенным sql-kai-cli (sidecar).",
                 src.display()
             )));
         }
-        let target = Path::new("/usr/local/bin/kai");
+        let target = Path::new("/usr/local/bin/sql-kai");
+
+        // Легаси-симлинк времён команды `sql-kai`: убираем, только если он вёл
+        // в бандл sql-kai (чужой sql-kai не трогаем).
+        let legacy = Path::new("/usr/local/bin/sql-kai");
+        let legacy_ours = std::fs::read_link(legacy)
+            .map(|d| d.to_string_lossy().contains("sql-kai.app"))
+            .unwrap_or(false);
+        if legacy_ours {
+            let _ = std::fs::remove_file(legacy);
+        }
 
         // Fast path: recreate the symlink directly when /usr/local/bin is
         // writable (e.g. Homebrew) — no password prompt needed.
@@ -902,8 +912,13 @@ pub fn install_cli() -> Result<String, AppError> {
 
         // Slow path: the dir is root-owned. Escalate via the native auth
         // dialog; `ln -sf` handles a pre-existing root-owned symlink.
+        let cleanup = if legacy_ours && legacy.exists() {
+            format!("rm -f '{}' && ", legacy.display())
+        } else {
+            String::new()
+        };
         let script = format!(
-            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
+            "do shell script \"{cleanup}mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
              with administrator privileges",
             src.display(),
             target.display()

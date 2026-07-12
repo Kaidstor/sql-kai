@@ -1,4 +1,4 @@
-//! `kai tables/columns/ddl/indexes` — интроспекция базы профиля: список
+//! `sql-kai tables/columns/ddl/indexes` — интроспекция базы профиля: список
 //! таблиц/вьюх, колонки, DDL и индексы таблицы.
 
 use std::process::ExitCode;

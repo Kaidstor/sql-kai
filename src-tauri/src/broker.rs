@@ -1,4 +1,4 @@
-//! Локальный брокер сессий: unix-сокет, через который kai работает с базами
+//! Локальный брокер сессий: unix-сокет, через который sql-kai работает с базами
 //! силами GUI-процесса (vault уже разблокирован, туннели уже подняты).
 //!
 //! Модуль намеренно не знает про Tauri — хост отдаёт ему [`BrokerHooks`]
@@ -49,7 +49,7 @@ pub fn socket_path() -> Result<PathBuf, AppError> {
 }
 
 /// Сокет holder'а — фонового держателя cli-сессий на то время, когда GUI не
-/// запущен (`kai holder run`). Тот же протокол, что и у GUI-брокера.
+/// запущен (`sql-kai holder run`). Тот же протокол, что и у GUI-брокера.
 pub fn holder_socket_path() -> Result<PathBuf, AppError> {
     fsio::config_path("holder.sock")
 }
@@ -131,7 +131,7 @@ pub enum Method {
     /// Все живые сессии: GUI-шные и cli-шные.
     Sessions,
     /// Выполнить SQL на cli-сессии профиля (открывается лениво, переживает
-    /// выход kai). `write` временно снимает session-wide read-only.
+    /// выход sql-kai). `write` временно снимает session-wide read-only.
     Query {
         #[serde(rename = "profileId")]
         profile_id: String,
@@ -140,7 +140,7 @@ pub enum Method {
         max_rows: usize,
         #[serde(default)]
         write: bool,
-        /// Вернуть и типы колонок (Parse) — для типизированного --json в kai.
+        /// Вернуть и типы колонок (Parse) — для типизированного --json в sql-kai.
         #[serde(default, rename = "withTypes")]
         with_types: bool,
     },
@@ -149,7 +149,7 @@ pub enum Method {
         #[serde(rename = "profileId")]
         profile_id: String,
     },
-    /// kai изменил состав профилей (discover/rm) — GUI перечитывает список.
+    /// sql-kai изменил состав профилей (discover/rm) — GUI перечитывает список.
     ProfilesChanged,
     /// Погасить сервер: закрыть сессии и выйти (holder). GUI-брокер отвергает.
     Shutdown,
@@ -166,7 +166,7 @@ pub struct BrokerSessionInfo {
     pub profile_id: String,
     pub profile_name: String,
     /// "gui" — сессия открыта пользователем в приложении, "cli" — брокером
-    /// по запросу kai.
+    /// по запросу sql-kai.
     pub origin: String,
     pub server_version: String,
     pub tunnel_port: Option<u16>,
@@ -200,7 +200,7 @@ pub struct HelloReply {
     pub vault_unlocked: bool,
 }
 
-/// Колонки одного стейтмента как (имя, oid типа) — kai восстанавливает
+/// Колонки одного стейтмента как (имя, oid типа) — sql-kai восстанавливает
 /// `Type::from_oid` на своей стороне.
 pub type WireColumnTypes = Vec<Option<Vec<(String, u32)>>>;
 
@@ -208,7 +208,7 @@ pub type WireColumnTypes = Vec<Option<Vec<(String, u32)>>>;
 
 pub struct CliEntry {
     pub session: db::Session,
-    /// Сериализует запросы к одной сессии (двум kai одновременно нельзя).
+    /// Сериализует запросы к одной сессии (двум sql-kai одновременно нельзя).
     busy: tokio::sync::Mutex<()>,
     last_used: Mutex<Instant>,
 }
@@ -311,7 +311,7 @@ impl BrokerState {
 pub struct BrokerHooks {
     pub gui_sessions: Box<dyn Fn() -> Vec<BrokerSessionInfo> + Send + Sync>,
     pub changed: Box<dyn Fn() + Send + Sync>,
-    /// kai сообщил об изменении профилей — интерфейс перечитывает список.
+    /// sql-kai сообщил об изменении профилей — интерфейс перечитывает список.
     pub profiles_changed: Box<dyn Fn() + Send + Sync>,
     /// Обработчик `shutdown`: holder закрывает сессии и завершается.
     /// None (GUI-брокер) — метод отвергается: приложение так не гасят.
@@ -389,7 +389,7 @@ async fn handle_conn(
 struct MethodError {
     code: &'static str,
     message: String,
-    /// SQLSTATE серверной ошибки (например 25006 read-only) — kai по нему
+    /// SQLSTATE серверной ошибки (например 25006 read-only) — sql-kai по нему
     /// показывает hint, не разбирая текст. Старые клиенты поле игнорируют.
     sqlstate: Option<String>,
 }
@@ -412,7 +412,7 @@ async fn dispatch(
                 logging::log(
                     "broker",
                     &format!(
-                        "hello from kai {client_version} (gui {})",
+                        "hello from sql-kai {client_version} (gui {})",
                         env!("CARGO_PKG_VERSION")
                     ),
                 );
@@ -473,7 +473,7 @@ async fn do_query(
     with_types: bool,
 ) -> Result<Value, MethodError> {
     if !vault::is_unlocked() {
-        // kai по этому коду откатывается на автономный путь со своей
+        // sql-kai по этому коду откатывается на автономный путь со своей
         // цепочкой разблокировки
         return Err(method_err("vault_locked", "vault заблокирован в GUI"));
     }
@@ -566,7 +566,7 @@ async fn get_or_open(
     });
     let (winner, ours_won) = {
         let mut map = state.cli.lock().unwrap();
-        // гонка двух kai: если параллельный открыватель успел раньше и его
+        // гонка двух sql-kai: если параллельный открыватель успел раньше и его
         // сессия жива — наша лишняя, отдаём его
         match map.get(profile_id) {
             Some(existing) if !existing.session.client.is_closed() => (existing.clone(), false),
@@ -583,7 +583,7 @@ async fn get_or_open(
     }
     logging::log(
         "broker",
-        &format!("\"{}\": cli-сессия открыта по запросу kai", profile.name),
+        &format!("\"{}\": cli-сессия открыта по запросу sql-kai", profile.name),
     );
     // отметка «подключались по cli» + profiles_changed, чтобы лаунчер
     // перечитал профили и обновил "last connected" сразу
@@ -595,7 +595,7 @@ async fn get_or_open(
 
 /// Смерть провода cli-сессии (см. Session::closed_rx) — выкинуть её сразу и
 /// дёрнуть `changed`, чтобы бейдж в GUI погас мгновенно, а не через sweep
-/// (до 60 с) или следующий запрос kai. Держим Weak: сильная ссылка не дала бы
+/// (до 60 с) или следующий запрос sql-kai. Держим Weak: сильная ссылка не дала бы
 /// vault_lock/clear() до конца снести сессию (её туннель) — Drop сработал бы
 /// только после этого watcher'а, который сам ждёт Drop.
 #[cfg(unix)]
@@ -707,7 +707,7 @@ mod tests {
     }
 
     /// profiles_changed дёргает хук и отвечает без ошибки — контракт для
-    /// notify_profiles_changed() в kai (discover/rm).
+    /// notify_profiles_changed() в sql-kai (discover/rm).
     #[cfg(unix)]
     #[tokio::test]
     async fn profiles_changed_fires_hook() {
@@ -739,7 +739,7 @@ mod tests {
     }
 
     /// shutdown: с хуком (holder) — ok и хук дёрнут; без хука (GUI) — ошибка
-    /// unsupported. Контракт для vault_lock / kai holder stop.
+    /// unsupported. Контракт для vault_lock / sql-kai holder stop.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_dispatch_by_hook() {

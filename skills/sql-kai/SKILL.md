@@ -1,36 +1,36 @@
 ---
 name: sql-kai
-description: Выполнить SQL в PostgreSQL через CLI `kai` из sql-kai — профили с ssh-туннелями, vault с паролями, история запросов, авто-дискавери postgres-контейнера по ssh. Использовать когда пользователь просит выполнить SQL или заглянуть в базу на удалённом сервере/проде, упоминает kai или sql-kai, хочет завести профиль подключения к Postgres за ssh, посмотреть таблицы/колонки/DDL/индексы удалённой базы или проверить здоровье сохранённых подключений.
-compatibility: Требует установленный CLI kai (симлинк из бандла sql-kai.app или cargo install из этого репозитория) и ssh-доступ к хостам для туннелей/discover
+description: Выполнить SQL в PostgreSQL через CLI `sql-kai` из sql-kai — профили с ssh-туннелями, vault с паролями, история запросов, авто-дискавери postgres-контейнера по ssh. Использовать когда пользователь просит выполнить SQL или заглянуть в базу на удалённом сервере/проде, упоминает sql-kai или sql-kai, хочет завести профиль подключения к Postgres за ssh, посмотреть таблицы/колонки/DDL/индексы удалённой базы или проверить здоровье сохранённых подключений.
+compatibility: Требует установленный CLI sql-kai (симлинк из бандла sql-kai.app или cargo install из этого репозитория) и ssh-доступ к хостам для туннелей/discover
 ---
 
-# kai — SQL в Postgres по профилям sql-kai
+# sql-kai — SQL в Postgres по профилям sql-kai
 
-`kai` — CLI десктопного клиента sql-kai: профили подключений, vault с паролями
+`sql-kai` — CLI десктопного клиента sql-kai: профили подключений, vault с паролями
 и история запросов общие с GUI. Если GUI запущен, запрос выполняется через его
 сессию (брокер); без GUI первый запрос сам поднимает фоновый holder, и сессия
 с ssh-туннелем живут между вызовами (серия запросов не платит за connect).
 Одиночный вызов без фоновых процессов: `--local` (одноразовая сессия мимо
 GUI/holder) или `--no-mux` (то же + свежий ssh без ControlMaster);
-`kai holder stop` гасит держатель вместе с его сессиями.
+`sql-kai holder stop` гасит держатель вместе с его сессиями.
 
 Установка бинаря:
 
 ```bash
 # из бандла приложения (обновляется вместе с ним):
-ln -sf /Applications/sql-kai.app/Contents/MacOS/kai ~/.local/bin/kai
+ln -sf /Applications/sql-kai.app/Contents/MacOS/sql-kai-cli ~/.local/bin/sql-kai
 # или из исходников:
-cargo install --path src-tauri --features cli --bin kai
+cargo install --path src-tauri --features cli --bin sql-kai
 ```
 
 ## Быстрый старт
 
 ```bash
-kai <alias> -c "SELECT ..."          # alias = имя профиля, id или группа
-echo "SELECT now()" | kai <alias>    # SQL со stdin; или -f query.sql
-kai <alias> -c "..." --json          # структурный вывод, значения типизированы
-kai <alias> -c "..." -t              # tuples-only (значения через |); есть и --csv
-kai profiles list                    # какие профили уже есть
+sql-kai <alias> -c "SELECT ..."          # alias = имя профиля, id или группа
+echo "SELECT now()" | sql-kai <alias>    # SQL со stdin; или -f query.sql
+sql-kai <alias> -c "..." --json          # структурный вывод, значения типизированы
+sql-kai <alias> -c "..." -t              # tuples-only (значения через |); есть и --csv
+sql-kai profiles list                    # какие профили уже есть
 ```
 
 - **Сессия по умолчанию read-only** (`SET default_transaction_read_only = on`).
@@ -52,7 +52,7 @@ kai profiles list                    # какие профили уже есть
 `~/.ssh/config`):
 
 ```bash
-kai discover <ssh-alias>
+sql-kai discover <ssh-alias>
 ```
 
 Дискавери найдёт postgres-контейнер на хосте, достанет user/db/пароль из env
@@ -64,23 +64,23 @@ kai discover <ssh-alias>
 профилю своё имя, иначе upsert по имени перезапишет профиль `<ssh-alias>`:
 
 ```bash
-kai discover <ssh-alias> --container <имя-контейнера> --name <alias>-app
+sql-kai discover <ssh-alias> --container <имя-контейнера> --name <alias>-app
 ```
 
-Тот же флаг есть у `kai exec` (`--container`).
+Тот же флаг есть у `sql-kai exec` (`--container`).
 
 ## Vault
 
 Чтобы CLI читал пароли без вопросов, один раз (интерактивно):
 
 ```bash
-kai vault trust      # копия ключа в login keychain; отзыв: kai vault revoke
-kai vault status
+sql-kai vault trust      # копия ключа в login keychain; отзыв: sql-kai vault revoke
+sql-kai vault status
 ```
 
 Обход vault: `--password-env VAR` (пароль БД из env) или `KAI_VAULT_PASSWORD`
 (мастер-пароль из env). Ротация и хранение паролей во внешнем сторе — команды
-`kai rotate` / `--from-sec` — требуют отдельного CLI `sec` в PATH.
+`sql-kai rotate` / `--from-sec` — требуют отдельного CLI `sec` в PATH.
 
 ## Fallback: exec-режим
 
@@ -88,8 +88,8 @@ kai vault status
 недоступен) или профиль не нужен — прямой режим без пароля:
 
 ```bash
-kai exec <ssh-alias> -c "SELECT 1"   # ssh -> docker exec psql; тоже read-only, --write для записи
-kai exec <ssh-alias> --dry-run       # показать команду, не заходя на хост
+sql-kai exec <ssh-alias> -c "SELECT 1"   # ssh -> docker exec psql; тоже read-only, --write для записи
+sql-kai exec <ssh-alias> --dry-run       # показать команду, не заходя на хост
 ```
 
 Вывод — сырой текст psql (`-t`, `--csv` поддерживаются), маскирования колонок
@@ -98,14 +98,14 @@ kai exec <ssh-alias> --dry-run       # показать команду, не з�
 ## Интроспекция и здоровье
 
 ```bash
-kai tables <alias> [--counts]        # таблицы/вьюхи (+ примерное число строк)
-kai columns <alias> [schema.]table
-kai ddl <alias> [schema.]table       # CREATE TABLE / VIEW
-kai indexes <alias> [schema.]table
-kai history [-n 20] [<alias>]        # история запросов (общая с GUI)
-kai saved list <alias> | kai saved run <alias> <имя>
-kai doctor [<alias>]                 # сохранённые пароли ещё аутентифицируются?
-kai sessions                         # живые сессии GUI-брокера и holder'а
+sql-kai tables <alias> [--counts]        # таблицы/вьюхи (+ примерное число строк)
+sql-kai columns <alias> [schema.]table
+sql-kai ddl <alias> [schema.]table       # CREATE TABLE / VIEW
+sql-kai indexes <alias> [schema.]table
+sql-kai history [-n 20] [<alias>]        # история запросов (общая с GUI)
+sql-kai saved list <alias> | sql-kai saved run <alias> <имя>
+sql-kai doctor [<alias>]                 # сохранённые пароли ещё аутентифицируются?
+sql-kai sessions                         # живые сессии GUI-брокера и holder'а
 ```
 
 ## Правила безопасности
@@ -120,6 +120,6 @@ kai sessions                         # живые сессии GUI-брокер�
 
 ## Ссылки
 
-- Полная документация CLI: `docs/kai.html` в этом репозитории.
+- Полная документация CLI: `docs/sql-kai.html` в этом репозитории.
 - Внешний managed-Postgres (не в docker на хосте) discover не найдёт — профиль
   для него заводится вручную в GUI.

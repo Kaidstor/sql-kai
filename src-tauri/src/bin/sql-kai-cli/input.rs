@@ -1,4 +1,4 @@
-//! Сбор SQL-текста запроса для `kai q` / `kai exec`.
+//! Сбор SQL-текста запроса для `sql-kai q` / `sql-kai exec`.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;

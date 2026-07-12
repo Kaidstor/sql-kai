@@ -1,4 +1,4 @@
-//! `kai sessions` — живые сессии обоих серверов: GUI (его собственные и
+//! `sql-kai sessions` — живые сессии обоих серверов: GUI (его собственные и
 //! cli-сессии брокера) и holder'а (origin=holder).
 
 use std::process::ExitCode;
@@ -21,7 +21,7 @@ pub async fn run(a: SessionsArgs) -> Result<ExitCode, AppError> {
     let gui = broker_client::connect().await;
     let holder = broker_client::connect_holder().await;
     if gui.is_none() && holder.is_none() {
-        eprintln!("ни GUI, ни holder не запущены — kai работает автономно");
+        eprintln!("ни GUI, ни holder не запущены — sql-kai работает автономно");
         return Ok(ExitCode::FAILURE);
     }
     let mut sources = Vec::new();

@@ -1,7 +1,7 @@
-//! Клиент серверов сессий kai — GUI-брокера и holder'а (общий протокол).
-//! Если жив unix-сокет одного из них, kai выполняет запросы его силами:
+//! Клиент серверов сессий sql-kai — GUI-брокера и holder'а (общий протокол).
+//! Если жив unix-сокет одного из них, sql-kai выполняет запросы его силами:
 //! vault уже разблокирован, туннель уже поднят, cli-сессия переживает выход
-//! kai и переиспользуется следующим запуском. Когда GUI не запущен, holder
+//! sql-kai и переиспользуется следующим запуском. Когда GUI не запущен, holder
 //! спавнится по требованию (см. connect_any). Любая транспортная проблема —
 //! тихий откат на автономный путь.
 
@@ -20,7 +20,7 @@ use crate::session;
 pub enum Via {
     /// Брокер запущенного GUI-приложения.
     Gui,
-    /// Фоновый holder (`kai holder run`).
+    /// Фоновый holder (`sql-kai holder run`).
     Holder,
 }
 
@@ -40,7 +40,7 @@ pub struct BrokerQuery {
 pub enum BrokerError {
     /// Транспорт/протокол умер — уходим на автономный путь.
     Transport(String),
-    /// Vault в GUI заблокирован — kai разблокирует сам (автономный путь).
+    /// Vault в GUI заблокирован — sql-kai разблокирует сам (автономный путь).
     VaultLocked,
     /// Сервер выполнил запрос и вернул ошибку (SQL и т.п.) — финальный ответ.
     /// `sqlstate` — код ошибки Postgres (например 25006 read-only), если есть.
@@ -86,7 +86,7 @@ pub async fn connect_any() -> Option<BrokerClient> {
         return Some(b);
     }
     if let Some(b) = connect_holder().await {
-        // Holder от прежнего бинаря (kai обновился) — гасим и поднимаем свежий.
+        // Holder от прежнего бинаря (sql-kai обновился) — гасим и поднимаем свежий.
         if b.hello.server_version == env!("CARGO_PKG_VERSION") {
             return Some(b);
         }
@@ -121,7 +121,7 @@ pub async fn connect_any() -> Option<BrokerClient> {
 }
 
 /// Запускает holder тем же бинарём в фоне: своя process group и без stdio,
-/// чтобы он пережил выход kai и не ловил сигналы его терминала.
+/// чтобы он пережил выход sql-kai и не ловил сигналы его терминала.
 fn spawn_holder() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);

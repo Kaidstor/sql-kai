@@ -1,4 +1,4 @@
-//! `kai history` — история выполненных запросов (общая с GUI) и её проверка
+//! `sql-kai history` — история выполненных запросов (общая с GUI) и её проверка
 //! на утёкшие секреты (`--scan` через `sec scan`).
 
 use std::process::ExitCode;
@@ -30,7 +30,7 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
     }
     let mut entries = store::load_history()?;
     if let Some(alias) = &a.alias {
-        // Как в `kai q`: alias матчит id, имя и группу; плюс имя из самой
+        // Как в `sql-kai q`: alias матчит id, имя и группу; плюс имя из самой
         // записи — чтобы история удалённых профилей оставалась доступной.
         let ids: std::collections::HashSet<String> =
             session::filter_profiles(&store::load_profiles().unwrap_or_default(), alias)
@@ -67,7 +67,7 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
 }
 
 /// Прогоняет history.json через `sec scan` — не осел ли где секрет в открытом
-/// виде (kai редактирует пароли при записи, но старые записи или неожиданные
+/// виде (sql-kai редактирует пароли при записи, но старые записи или неожиданные
 /// литералы мог поймать sec).
 fn history_scan() -> Result<ExitCode, AppError> {
     sec::available()?;

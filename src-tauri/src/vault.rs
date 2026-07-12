@@ -324,7 +324,7 @@ pub fn unlock_cli_trust() -> Result<(), AppError> {
         Ok(v) => v,
         Err(BioError::Stale) => {
             return Err(AppError::Msg(
-                "CLI trust is not set up — run `kai vault trust` first".into(),
+                "CLI trust is not set up — run `sql-kai vault trust` first".into(),
             ))
         }
         Err(e) => return Err(bio_err(e)),
@@ -343,7 +343,7 @@ pub fn unlock_cli_trust() -> Result<(), AppError> {
 fn stale_cli_trust() -> AppError {
     disable_cli_trust();
     AppError::Msg(
-        "the CLI trust key was stale and has been reset — run `kai vault trust` again".into(),
+        "the CLI trust key was stale and has been reset — run `sql-kai vault trust` again".into(),
     )
 }
 

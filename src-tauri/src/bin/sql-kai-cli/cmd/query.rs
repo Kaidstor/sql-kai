@@ -1,4 +1,4 @@
-//! `kai q <alias>` — выполнить SQL в базе профиля (`kai <alias>` — то же
+//! `sql-kai q <alias>` — выполнить SQL в базе профиля (`sql-kai <alias>` — то же
 //! самое). Живой GUI обслуживает запрос через брокер, иначе — автономная
 //! сессия.
 
@@ -64,7 +64,7 @@ fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(Str
         let masked = redact::redact_exec(&mut exec);
         if !masked.is_empty() {
             eprintln!(
-                "⚠ kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
+                "⚠ sql-kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
                 masked.join(", ")
             );
         }
@@ -74,7 +74,7 @@ fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(Str
         let untyped = output::print_exec_json(&exec, types);
         if untyped > 0 {
             eprintln!(
-                "⚠ kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
+                "⚠ sql-kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
             );
         }
     } else {
@@ -130,7 +130,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             if let Some(mut c) = broker_client::reconnect(b.via).await {
                 let _ = c.cancel(&profile.id).await;
             }
-            eprintln!("kai: отменено");
+            eprintln!("sql-kai: отменено");
             return Ok(Some(ExitCode::FAILURE));
         }
     };
@@ -155,7 +155,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
         }
         Err(broker_client::BrokerError::Query { message, sqlstate }) => {
             record(false);
-            eprintln!("kai: {message}");
+            eprintln!("sql-kai: {message}");
             // 25006 read_only_sql_transaction — код, а не поиск по тексту
             if sqlstate.as_deref() == Some("25006") {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
@@ -175,10 +175,10 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             // write-SQL автономным путём нельзя: риск двойного применения.
             if a.write {
                 record(false);
-                eprintln!("kai: связь с брокером оборвалась во время запроса ({e})");
+                eprintln!("sql-kai: связь с брокером оборвалась во время запроса ({e})");
                 eprintln!(
                     "hint: запрос мог успеть выполниться — проверь состояние данных; \
-                     выполнить мимо брокера: kai q --local …"
+                     выполнить мимо брокера: sql-kai q --local …"
                 );
                 return Ok(Some(ExitCode::FAILURE));
             }
@@ -241,7 +241,7 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            eprintln!("kai: {e}");
+            eprintln!("sql-kai: {e}");
             if e.is_read_only() {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
             }

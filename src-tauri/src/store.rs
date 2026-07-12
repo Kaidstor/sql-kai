@@ -221,7 +221,7 @@ pub fn delete_profile(id: &str) -> Result<(), AppError> {
 
 // --- Last-connected marks -------------------------------------------------
 // Per-profile "when did I last connect" timestamps, split by client (GUI
-// window vs kai). Local usage state, deliberately outside profiles.json so
+// window vs sql-kai). Local usage state, deliberately outside profiles.json so
 // the portable config never churns on every connect.
 
 const LAST_CONNECTED_FILE: &str = "last_connected.json";

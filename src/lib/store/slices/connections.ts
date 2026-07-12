@@ -39,7 +39,7 @@ export interface ConnectionsSlice {
   /** User functions for the symbols palette, fetched on first open. */
   schemaFunctions: Record<string, FunctionInfo[]>;
   activeProfileId: string | null;
-  /** Broker-owned kai sessions by profileId — the "cli" badges. */
+  /** Broker-owned sql-kai sessions by profileId — the "cli" badges. */
   cliSessions: Record<string, CliSessionInfo>;
   /** Lazy-loaded columns for the sidebar tree, keyed `profileId|schema|table`. */
   tableColumns: Record<string, ColumnInfo[]>;
@@ -72,7 +72,7 @@ export interface ConnectionsSlice {
   undoDeleteProfile: (id: string) => void;
   deleteProfile: (id: string) => Promise<void>;
   duplicateProfile: (id: string) => Promise<void>;
-  /** Re-reads the profile list from disk — kai discover/rm changed it
+  /** Re-reads the profile list from disk — sql-kai discover/rm changed it
    *  (triggered by the profiles://changed broker event). */
   reloadProfiles: () => Promise<void>;
   loadTableColumns: (

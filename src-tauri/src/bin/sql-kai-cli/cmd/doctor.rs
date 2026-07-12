@@ -1,4 +1,4 @@
-//! `kai doctor` — здоровье соединений: для каждого профиля проверяет, что
+//! `sql-kai doctor` — здоровье соединений: для каждого профиля проверяет, что
 //! сохранённый пароль ещё аутентифицируется, и, если пароль дублируется в sec,
 //! ловит дрейф (в vault одно, в sec другое, в БД работает третье).
 
@@ -46,7 +46,7 @@ async fn can_connect(profile: &Profile, password: Option<String>) -> Result<(), 
 pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
     let mut profiles = store::load_profiles()?;
     if let Some(alias) = &a.alias {
-        // Единый резолв с `kai q`: id, имя или группа.
+        // Единый резолв с `sql-kai q`: id, имя или группа.
         profiles = session::filter_profiles(&profiles, alias);
         if profiles.is_empty() {
             return Err(AppError::Msg(format!("профиль '{alias}' не найден")));

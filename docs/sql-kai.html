@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kai — CLI к sql-kai</title>
+<title>sql-kai — CLI к sql-kai</title>
 <style>
   :root {
     --bg: #ffffff; --fg: #1a1d23; --muted: #6b7280; --accent: #0d7490;
@@ -57,69 +57,70 @@
 </head>
 <body>
 
-<h1><code>kai</code> — CLI к sql-kai</h1>
+<h1><code>sql-kai</code> — CLI к sql-kai</h1>
 <p class="lead">Консольный клиент поверх того же Rust-ядра, что и приложение sql-kai:
 общие профили подключений, ssh-туннели, vault с паролями и история запросов.
 Собирается из этого же репозитория (<code>src-tauri</code>, cargo-фича <code>cli</code>).</p>
 
 <h2 id="quickstart">Быстрый старт</h2>
-<pre><code>kai profiles list                       # какие профили уже есть (общие с GUI)
-kai domainator -c "SELECT count(*) FROM domains"
-echo "SELECT now()" | kai orchestrator  # SQL со stdin; или -f query.sql
-kai coordinator -c "..." --json         # структурный вывод: числа/bool/null/json типизированы
-kai tables coordinator --counts         # таблицы + примерное число строк</code></pre>
-<p><code>kai &lt;alias&gt; …</code> — сокращение для <code>kai q &lt;alias&gt; …</code>.
+<pre><code>sql-kai profiles list                       # какие профили уже есть (общие с GUI)
+sql-kai domainator -c "SELECT count(*) FROM domains"
+echo "SELECT now()" | sql-kai orchestrator  # SQL со stdin; или -f query.sql
+sql-kai coordinator -c "..." --json         # структурный вывод: числа/bool/null/json типизированы
+sql-kai tables coordinator --counts         # таблицы + примерное число строк</code></pre>
+<p><code>sql-kai &lt;alias&gt; …</code> — сокращение для <code>sql-kai q &lt;alias&gt; …</code>.
 <em>alias</em> — имя, id или группа профиля.</p>
 
 <h2 id="install">Установка</h2>
 <h3>С этой машины (из репозитория)</h3>
-<pre><code>cd ~/Projects/own/sql-tauri
+<pre><code>cd ~/Projects/own/sql-kai
 pnpm install &amp;&amp; pnpm build     # dist нужен для сборки (generate_context!)
-cargo install --path src-tauri --features cli --bin kai   # → ~/.cargo/bin/kai
+cargo install --path src-tauri --features cli --bin sql-kai-cli
+mv ~/.cargo/bin/sql-kai-cli ~/.cargo/bin/sql-kai   # команда — sql-kai
 # переподписать стабильным сертификатом, чтобы vault trust не переспрашивал keychain:
-codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/kai</code></pre>
+codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/sql-kai</code></pre>
 
 <h3>Другим пользователям (готовый бинарь из релиза)</h3>
 <p>Начиная с первого релиза после добавления CLI, <code>release.sh</code> кладёт
-<code>kai-darwin-aarch64.tar.gz</code> в assets GitLab-релиза:</p>
-<pre><code>curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/kai-darwin-aarch64.tar.gz \
+<code>sql-kai-cli-darwin-aarch64.tar.gz</code> в assets GitLab-релиза:</p>
+<pre><code>curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/sql-kai-cli-darwin-aarch64.tar.gz \
   | tar xz -C /usr/local/bin        # или ~/.local/bin, если он в PATH
-kai --version</code></pre>
+sql-kai --version</code></pre>
 <div class="note">Бинарь только для macOS arm64 (собирается локально на машине мейнтейнера).
 Intel-мак или Linux — собирать из исходников (раздел выше; понадобятся Rust, pnpm и системные
 зависимости Tauri). Скачивание через <code>curl</code> не ставит quarantine-атрибут; если файл
-скачан браузером — <code>xattr -d com.apple.quarantine kai</code>.</div>
-<p>У нового пользователя свой vault и пустой список профилей: <code>kai vault setup</code>,
-затем <code>kai discover &lt;ssh-alias&gt;</code> для каждого сервиса.</p>
+скачан браузером — <code>xattr -d com.apple.quarantine sql-kai</code>.</div>
+<p>У нового пользователя свой vault и пустой список профилей: <code>sql-kai vault setup</code>,
+затем <code>sql-kai discover &lt;ssh-alias&gt;</code> для каждого сервиса.</p>
 
 <h2 id="commands">Команды</h2>
 <table>
 <tr><th>Команда</th><th>Что делает</th></tr>
-<tr><td><code>kai &lt;alias&gt; -c "SQL"</code></td><td>Выполнить SQL в базе профиля (= <code>kai q</code>). SQL: <code>-c</code> (повторяемо), <code>-f file.sql</code>, stdin</td></tr>
-<tr><td><code>kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
-<tr><td><code>kai import [--file f.json]</code></td><td>Массовый импорт профилей из JSON-массива (stdin/файл): пароли и ssh-passphrase → vault. Флаги <code>--dry-run</code>, <code>--replace</code> (перезаписать по имени)</td></tr>
-<tr><td><code>kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
-<tr><td><code>kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
-<tr><td><code>kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
-<tr><td><code>kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
-<tr><td><code>kai saved list [&lt;alias&gt;]</code> / <code>kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
-<tr><td><code>kai rotate &lt;alias&gt;</code></td><td>Ротация пароля роли Postgres через sec (см. «Интеграция с sec»)</td></tr>
-<tr><td><code>kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются</td></tr>
-<tr><td><code>kai history --scan</code></td><td>Прогнать history.json через <code>sec scan</code></td></tr>
-<tr><td><code>kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
-<tr><td><code>kai sessions</code></td><td>Живые сессии GUI-брокера и holder'а (origin: gui / cli / holder, простой)</td></tr>
-<tr><td><code>kai holder stop</code></td><td>Погасить фоновый держатель сессий (см. «Holder»); поднимается он сам</td></tr>
-<tr><td><code>kai profiles list|show|rm</code></td><td>Профили</td></tr>
-<tr><td><code>kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
+<tr><td><code>sql-kai &lt;alias&gt; -c "SQL"</code></td><td>Выполнить SQL в базе профиля (= <code>sql-kai q</code>). SQL: <code>-c</code> (повторяемо), <code>-f file.sql</code>, stdin</td></tr>
+<tr><td><code>sql-kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
+<tr><td><code>sql-kai import [--file f.json]</code></td><td>Массовый импорт профилей из JSON-массива (stdin/файл): пароли и ssh-passphrase → vault. Флаги <code>--dry-run</code>, <code>--replace</code> (перезаписать по имени)</td></tr>
+<tr><td><code>sql-kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
+<tr><td><code>sql-kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
+<tr><td><code>sql-kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
+<tr><td><code>sql-kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
+<tr><td><code>sql-kai saved list [&lt;alias&gt;]</code> / <code>sql-kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
+<tr><td><code>sql-kai rotate &lt;alias&gt;</code></td><td>Ротация пароля роли Postgres через sec (см. «Интеграция с sec»)</td></tr>
+<tr><td><code>sql-kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются</td></tr>
+<tr><td><code>sql-kai history --scan</code></td><td>Прогнать history.json через <code>sec scan</code></td></tr>
+<tr><td><code>sql-kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
+<tr><td><code>sql-kai sessions</code></td><td>Живые сессии GUI-брокера и holder'а (origin: gui / cli / holder, простой)</td></tr>
+<tr><td><code>sql-kai holder stop</code></td><td>Погасить фоновый держатель сессий (см. «Holder»); поднимается он сам</td></tr>
+<tr><td><code>sql-kai profiles list|show|rm</code></td><td>Профили</td></tr>
+<tr><td><code>sql-kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
 </table>
-<p><code>kai &lt;команда&gt; --help</code> — все флаги.</p>
+<p><code>sql-kai &lt;команда&gt; --help</code> — все флаги.</p>
 
 <h2 id="query">Запросы</h2>
 <h3>Read-only по умолчанию</h3>
 <p>Каждая сессия сразу выполняет <code>SET default_transaction_read_only = on</code>.
 <code>INSERT/UPDATE/DELETE/DDL</code> упадут с ошибкой сервера — это защита от случайной записи
 в прод. Запись — явным флагом:</p>
-<pre><code>kai domainator -c "UPDATE domains SET status='ok' WHERE id=42" --write</code></pre>
+<pre><code>sql-kai domainator -c "UPDATE domains SET status='ok' WHERE id=42" --write</code></pre>
 
 <h3>Транзакции</h3>
 <p>Несколько стейтментов (повторные <code>-c</code>, файл, stdin) уходят одним батчем —
@@ -143,17 +144,17 @@ truncated. <code>-v</code> печатает в stderr, куда именно п�
 passphrase/credential</code>, суффикс <code>token/_key/apikey/_salt/_jwt</code>, точное
 <code>salt/jwt</code>), во всех форматах вывода заменяются на <code>[redacted]</code> —
 вывод CLI оседает в логах агентских сессий, и <code>SELECT *</code> не должен туда ронять
-argon2-хэши и токены. NULL остаётся NULL. О факте маскирования kai предупреждает в stderr;
+argon2-хэши и токены. NULL остаётся NULL. О факте маскирования sql-kai предупреждает в stderr;
 посмотреть реальные значения — флаг <code>--no-redact</code>:</p>
-<pre><code>kai domainator -c "SELECT * FROM admins"              # password_hash → [redacted] (+ ⚠ в stderr)
-kai domainator -c "SELECT * FROM admins" --no-redact  # как есть</code></pre>
-<div class="note">Маскирование работает в <code>kai q</code> / <code>kai saved run</code>.
-Вывод <code>kai exec</code> (сырой psql через ssh) не маскируется.</div>
+<pre><code>sql-kai domainator -c "SELECT * FROM admins"              # password_hash → [redacted] (+ ⚠ в stderr)
+sql-kai domainator -c "SELECT * FROM admins" --no-redact  # как есть</code></pre>
+<div class="note">Маскирование работает в <code>sql-kai q</code> / <code>sql-kai saved run</code>.
+Вывод <code>sql-kai exec</code> (сырой psql через ssh) не маскируется.</div>
 
 <h2 id="discover">Профили и discover</h2>
 <p>Профиль — это host/port/база/юзер + опциональный ssh-туннель; хранится в
 <code>profiles.json</code> (общий с GUI: заведённое в CLI сразу видно в приложении и наоборот).</p>
-<p><code>kai discover &lt;ssh-alias&gt;</code> автоматизирует заведение профиля для типового
+<p><code>sql-kai discover &lt;ssh-alias&gt;</code> автоматизирует заведение профиля для типового
 rebrandy-сервиса (postgres в docker-compose на хосте):</p>
 <ol>
   <li>Идёт по ssh на хост (алиас из <code>~/.ssh/config.d/*</code>, аутентификация ключами/agent).</li>
@@ -164,11 +165,11 @@ rebrandy-сервиса (postgres в docker-compose на хосте):</p>
   <li>Сохраняет профиль (имя = алиас, ssh-туннель на алиас), пароль — в vault, и проверяет подключение.</li>
 </ol>
 <p>Подключение потом идёт как в GUI: <code>ssh -N -L</code> локальный порт → точка из шага 4.
-Если контейнер пересоздали и IP «уехал» — просто повтори <code>kai discover</code>.
+Если контейнер пересоздали и IP «уехал» — просто повтори <code>sql-kai discover</code>.
 <code>--dry-run</code> покажет найденное без сохранения, <code>--name</code> задаст имя профиля.</p>
 
 <h2 id="exec">Exec-режим (fallback)</h2>
-<p><code>kai exec &lt;ssh-alias&gt;</code> — прямой режим без профиля и vault, как у старого
+<p><code>sql-kai exec &lt;ssh-alias&gt;</code> — прямой режим без профиля и vault, как у старого
 prod-db: ssh на хост → найти контейнер → <code>docker exec psql</code>. Пароль не нужен
 (psql внутри контейнера ходит по trust/peer). Вывод — сырой текст psql
 (<code>-t</code>, <code>--csv</code> прокидываются в psql). Тот же read-only guard: без
@@ -179,46 +180,46 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 
 <h2 id="sec">Интеграция с sec</h2>
 <p><a href="https://go.dev">sec</a> — отдельный агент-безопасный менеджер секретов
-(значения не попадают в argv/историю/чат). kai и sec <strong>не сливают хранилища</strong>:
+(значения не попадают в argv/историю/чат). sql-kai и sec <strong>не сливают хранилища</strong>:
 vault остаётся для GUI, sec — канал для CLI/агента и источник, где у пароля БД
-появляются аудит, версии и трекинг ротации. kai зовёт <code>sec</code> из PATH
+появляются аудит, версии и трекинг ротации. sql-kai зовёт <code>sec</code> из PATH
 (или <code>KAI_SEC_BIN</code>); ключ пароля по конвенции — <code>&lt;имя-профиля&gt;/DB_PASSWORD</code>.</p>
 <div class="warn">Нужен <strong>свежий</strong> sec (с командами <code>scan</code>/<code>meta</code>).
-Если <code>kai</code> ругается «sec в PATH устарел» — пересобери его
+Если <code>sql-kai</code> ругается «sec в PATH устарел» — пересобери его
 (<code>just install</code> в каталоге sec, или <code>go build -o ~/go/bin/sec .</code>).</div>
 
 <h3>Пароль БД в sec вместо vault (прод-политика)</h3>
-<p>Для прод-баз пароль можно вообще не хранить в kai, а держать только в sec —
+<p>Для прод-баз пароль можно вообще не хранить в sql-kai, а держать только в sec —
 аудируемо и ротируемо:</p>
-<pre><code>kai discover gidcaf --to-sec --no-vault    # пароль → sec (gidcaf/DB_PASSWORD), не в vault
-kai gidcaf -c "SELECT …" --from-sec        # берём пароль из sec на лету
-# эквивалент без флага: sec run gidcaf -- kai gidcaf -c "…" --password-env DB_PASSWORD</code></pre>
+<pre><code>sql-kai discover gidcaf --to-sec --no-vault    # пароль → sec (gidcaf/DB_PASSWORD), не в vault
+sql-kai gidcaf -c "SELECT …" --from-sec        # берём пароль из sec на лету
+# эквивалент без флага: sec run gidcaf -- sql-kai gidcaf -c "…" --password-env DB_PASSWORD</code></pre>
 <p><code>--to-sec</code> кладёт найденный пароль в sec и проставляет
 <code>meta --rotate-every 90d</code>; <code>--sec-key proj/KEY</code> задаёт ключ явно.
-<code>--from-sec</code> (и <code>--sec-key</code>) на <code>kai &lt;alias&gt;</code> / <code>saved run</code>
+<code>--from-sec</code> (и <code>--sec-key</code>) на <code>sql-kai &lt;alias&gt;</code> / <code>saved run</code>
 берёт пароль из sec.</p>
 
 <h3>Ротация пароля роли</h3>
-<p><code>kai rotate</code> — то, чего не делает ни один инструмент в одиночку: sec
-генерирует/хранит/версионирует, kai применяет в БД. sec здесь ещё и страховка от
+<p><code>sql-kai rotate</code> — то, чего не делает ни один инструмент в одиночку: sec
+генерирует/хранит/версионирует, sql-kai применяет в БД. sec здесь ещё и страховка от
 локаута — прежнее значение уходит в историю sec.</p>
-<pre><code>kai rotate gidcaf --from-sec --yes    # роль по умолчанию = пользователь профиля</code></pre>
+<pre><code>sql-kai rotate gidcaf --from-sec --yes    # роль по умолчанию = пользователь профиля</code></pre>
 <p>Порядок безопасный: <em>сохранить новый пароль в sec</em> (старое → история sec)
 → <code>ALTER ROLE … PASSWORD</code> → <em>проверить свежим коннектом</em> → только
 потом обновить vault. Если <code>ALTER</code> не прошёл — новый пароль ещё не в БД,
 откат: <code>sec undo &lt;key&gt;</code>. Флаги: <code>--role</code>,
 <code>--sec-key</code>, <code>--length</code>, <code>--rotate-every</code>, <code>--yes</code>.</p>
 <div class="warn">Если ролью ходит сам сервис — после ротации он сломается, пока не
-обновишь его секрет (<code>sec push</code> → передеплой). kai предупреждает и требует
+обновишь его секрет (<code>sec push</code> → передеплой). sql-kai предупреждает и требует
 подтверждение (<code>--yes</code> в неинтерактиве).</div>
 
 <h3>Гигиена и проверка</h3>
 <ul>
-  <li><strong>История:</strong> kai сам маскирует литералы после <code>PASSWORD</code>/<code>IDENTIFIED BY</code>
+  <li><strong>История:</strong> sql-kai сам маскирует литералы после <code>PASSWORD</code>/<code>IDENTIFIED BY</code>
       при записи (<code>… PASSWORD '***'</code>), поэтому пароль не оседает в history.json.
-      <code>kai history --scan</code> дополнительно проверяет файл через <code>sec scan</code>
+      <code>sql-kai history --scan</code> дополнительно проверяет файл через <code>sec scan</code>
       (не осел ли где известный секрет).</li>
-  <li><strong>Дрейф:</strong> <code>kai doctor</code> по каждому профилю проверяет, что
+  <li><strong>Дрейф:</strong> <code>sql-kai doctor</code> по каждому профилю проверяет, что
       сохранённый пароль ещё аутентифицируется, и ловит расхождение
       «в vault одно, в sec другое, в БД работает третье». <code>fail</code> = хранимый
       пароль не подходит (ненулевой exit); <code>sec stale</code> подскажет, что пора крутить по срокам.</li>
@@ -226,9 +227,9 @@ kai gidcaf -c "SELECT …" --from-sec        # берём пароль из sec 
 
 <h2 id="mux">Переиспользование ssh (быстрее запросы)</h2>
 <p>Медленная часть подключения через ssh — не форвард, а рукопожатие и
-аутентификация ssh (~1–2 с). Каждый <code>kai</code> — короткий процесс, поэтому
+аутентификация ssh (~1–2 с). Каждый <code>sql-kai</code> — короткий процесс, поэтому
 без переиспользования каждый запрос платил бы за авторизацию заново.</p>
-<p>Для профилей с ssh <code>kai</code> держит <strong>персистентный
+<p>Для профилей с ssh <code>sql-kai</code> держит <strong>персистентный
 ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый вызов проходит
 аутентификацию и оставляет фоновый мастер-коннект, последующие цепляют свой
 <code>-L</code> форвард к нему за ~один round-trip — без повторной авторизации.
@@ -245,7 +246,7 @@ ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый в�
       <code>KAI_SSH_MUX_TTL=&lt;сек&gt;</code> — сколько мастер живёт после простоя.</li>
   <li>Управляющие сокеты — в <code>/tmp/kai-ssh-mux-&lt;user&gt;/</code> (0700),
       имя сокета = <code>[user@]host:port</code>.</li>
-  <li><code>kai tunnel list</code> — живые мастера; <code>kai tunnel close &lt;host&gt;</code>
+  <li><code>sql-kai tunnel list</code> — живые мастера; <code>sql-kai tunnel close &lt;host&gt;</code>
       или <code>--all</code> — закрыть (<code>ssh -O exit</code>).</li>
   <li>Мастер поднимается best-effort: если не удался, форвард просто откатывается
       к обычному прямому соединению (медленнее, но работает).</li>
@@ -253,27 +254,27 @@ ssh-мастер</strong> (OpenSSH <code>ControlMaster</code>): первый в�
 </ul>
 
 <h2 id="holder">Holder: сессии между запусками</h2>
-<p>Mux избавляет от повторной ssh-аутентификации, но каждый <code>kai</code> — короткий
+<p>Mux избавляет от повторной ssh-аутентификации, но каждый <code>sql-kai</code> — короткий
 процесс: он всё равно платил бы за pg-connect, а сессия (и открытая транзакция) умирала бы
 с ним. Поэтому запросы обслуживает <strong>сервер сессий</strong>:</p>
 <div class="scheme"><pre>
-kai q ──► брокер GUI        (GUI запущен: сессию держит приложение)
-      └─► holder            (иначе: фоновый `kai holder run`, спавнится сам)
+sql-kai q ──► брокер GUI        (GUI запущен: сессию держит приложение)
+      └─► holder            (иначе: фоновый `sql-kai holder run`, спавнится сам)
       └─► автономно         (--local / --no-mux / vault не разлочить тихо)
 </pre></div>
 <p>Holder — тот же broker-протокол, что у GUI, но фоновым процессом: pg-сессии и
-ssh-туннели живут между запусками kai, повторные запросы идут в уже открытую сессию
+ssh-туннели живут между запусками sql-kai, повторные запросы идут в уже открытую сессию
 (быстрее даже mux-пути), а транзакция одного вызова доживает до следующего —
-<code>BEGIN</code> в одном <code>kai q</code>, <code>COMMIT</code> в следующем.</p>
+<code>BEGIN</code> в одном <code>sql-kai q</code>, <code>COMMIT</code> в следующем.</p>
 <ul>
-  <li><strong>Жизненный цикл:</strong> спавнится первым <code>kai q</code>, только если vault
-      разлочивается тихо (keychain-trust / <code>KAI_VAULT_PASSWORD</code>) — иначе kai молча
+  <li><strong>Жизненный цикл:</strong> спавнится первым <code>sql-kai q</code>, только если vault
+      разлочивается тихо (keychain-trust / <code>KAI_VAULT_PASSWORD</code>) — иначе sql-kai молча
       работает автономно. Сессии живут 15&nbsp;мин простоя (с открытой транзакцией — 180&nbsp;с:
       висящий BEGIN держит блокировки); сам holder гаснет через ~2&nbsp;мин без сессий и
       обращений.</li>
-  <li><strong>Погасить немедленно:</strong> <code>kai holder stop</code>; vault lock в GUI и
-      <code>kai vault revoke</code> гасят его автоматически (DEK не должен переживать отзыв).</li>
-  <li><strong>Обновление kai:</strong> holder от прежней версии бинаря гасится и поднимается
+  <li><strong>Погасить немедленно:</strong> <code>sql-kai holder stop</code>; vault lock в GUI и
+      <code>sql-kai vault revoke</code> гасят его автоматически (DEK не должен переживать отзыв).</li>
+  <li><strong>Обновление sql-kai:</strong> holder от прежней версии бинаря гасится и поднимается
       свежий (сверка версии при рукопожатии).</li>
   <li><strong>Безопасность:</strong> сокет <code>holder.sock</code> — 0600; DEK только в памяти
       процесса; <code>KAI_VAULT_PASSWORD</code> вычищается из окружения holder'а сразу после
@@ -293,16 +294,16 @@ ssh-туннели живут между запусками kai, повторн�
 DEK можно получить тремя путями:
   1. мастер-пароль          — всегда работает (GUI и CLI)
   2. Touch ID (GUI)         — копия DEK в keychain, чтение гейтится биометрией
-  3. cli trust (kai)        — копия DEK в login keychain, чтение БЕЗ промпта
+  3. cli trust (sql-kai)        — копия DEK в login keychain, чтение БЕЗ промпта
 </pre></div>
 <p>GUI спрашивает мастер-пароль один раз и держит DEK в памяти процесса до выхода.
 CLI-процесс живёт доли секунды — «держать в памяти» негде, и без trust каждый запуск
-требовал бы мастер-пароль. <code>kai vault trust</code> решает это так:</p>
+требовал бы мастер-пароль. <code>sql-kai vault trust</code> решает это так:</p>
 <ol>
   <li>Разлочивает vault (спросит мастер-пароль — единственный интерактивный шаг).</li>
   <li>Кладёт <em>копию DEK</em> в login keychain macOS обычной записью
       (service <code>com.kaidstor.sql-kai.vault</code>, account <code>dek-cli</code>).</li>
-  <li>Дальше каждый запуск <code>kai</code> молча читает эту запись: macOS разрешает читать
+  <li>Дальше каждый запуск <code>sql-kai</code> молча читает эту запись: macOS разрешает читать
       keychain-запись без подтверждения тому бинарю, который её создал (ACL по подписи кода).
       Любому другому приложению система покажет диалог.</li>
 </ol>
@@ -310,18 +311,18 @@ CLI-процесс живёт доли секунды — «держать в п
 <ul>
   <li>На диске копия DEK защищена шифрованием login keychain — он расшифровывается паролем
       пользователя при входе в macOS.</li>
-  <li>Пока сессия пользователя разблокирована, <code>kai</code> читает пароли без вопросов —
+  <li>Пока сессия пользователя разблокирована, <code>sql-kai</code> читает пароли без вопросов —
       тот же trade-off, что у <code>ssh-agent</code> с добавленным ключом.</li>
   <li>Touch ID-копия GUI — отдельная запись: её чтение приложение дополнительно гейтит
       биометрией. Для CLI биометрию не ставим сознательно: агент, шлющий десяток запросов,
       дёргал бы палец на каждый.</li>
-  <li><code>kai vault revoke</code> удаляет запись — остаётся путь через мастер-пароль.</li>
+  <li><code>sql-kai vault revoke</code> удаляет запись — остаётся путь через мастер-пароль.</li>
   <li>Если vault пересоздали, старая копия DEK перестаёт подходить (GCM-аутентификация
-      падает) — kai сам удалит протухшую запись и попросит сделать trust заново.</li>
+      падает) — sql-kai сам удалит протухшую запись и попросит сделать trust заново.</li>
 </ul>
 
 <h3>Разлок без trust (скрипты, CI)</h3>
-<p>Полная цепочка, которую kai пробует по порядку, когда профилю нужен секрет из vault:</p>
+<p>Полная цепочка, которую sql-kai пробует по порядку, когда профилю нужен секрет из vault:</p>
 <ol>
   <li>keychain-trust (тихо);</li>
   <li>env <code>KAI_VAULT_PASSWORD</code> — мастер-пароль из окружения;</li>
@@ -333,7 +334,7 @@ env-переменной, vault не трогается вовсе.</p>
 <h2 id="env">Переменные окружения</h2>
 <table>
 <tr><th>Переменная</th><th>Назначение</th></tr>
-<tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>kai vault setup</code>); holder вычищает её из своего окружения после разлока</td></tr>
+<tr><td><code>KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>sql-kai vault setup</code>); holder вычищает её из своего окружения после разлока</td></tr>
 <tr><td><code>KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-kai</code>) — изолированные окружения и тесты</td></tr>
@@ -343,39 +344,39 @@ env-переменной, vault не трогается вовсе.</p>
 <table>
 <tr><th>Код</th><th>Значение</th></tr>
 <tr><td>0</td><td>Успех</td></tr>
-<tr><td>1</td><td>Ошибка SQL / подключения / kai (текст в stderr)</td></tr>
+<tr><td>1</td><td>Ошибка SQL / подключения / sql-kai (текст в stderr)</td></tr>
 <tr><td>2</td><td>Ошибка аргументов (clap)</td></tr>
-<tr><td>прочие</td><td><code>kai exec</code> пробрасывает код psql/ssh с хоста</td></tr>
+<tr><td>прочие</td><td><code>sql-kai exec</code> пробрасывает код psql/ssh с хоста</td></tr>
 </table>
 
 <h2 id="trouble">Troubleshooting</h2>
 <table>
 <tr><th>Симптом</th><th>Что делать</th></tr>
-<tr><td>Системный диалог «kai wants to access …» после обновления бинаря</td>
+<tr><td>Системный диалог «sql-kai wants to access …» после обновления бинаря</td>
     <td>Подпись бинаря сменилась, keychain перепроверяет ACL — «Always Allow» один раз,
-        либо заново <code>kai vault trust</code>. Релизный бинарь подписывается стабильным
+        либо заново <code>sql-kai vault trust</code>. Релизный бинарь подписывается стабильным
         сертификатом, у него таких промптов нет.</td></tr>
 <tr><td><code>the CLI trust key was stale and has been reset</code></td>
-    <td>Vault был пересоздан — <code>kai vault trust</code> заново.</td></tr>
+    <td>Vault был пересоздан — <code>sql-kai vault trust</code> заново.</td></tr>
 <tr><td><code>vault заблокирован…</code> в скрипте без TTY</td>
-    <td><code>kai vault trust</code> (один раз интерактивно), либо <code>KAI_VAULT_PASSWORD</code>, либо <code>--password-env</code>.</td></tr>
+    <td><code>sql-kai vault trust</code> (один раз интерактивно), либо <code>KAI_VAULT_PASSWORD</code>, либо <code>--password-env</code>.</td></tr>
 <tr><td>discover: «нет ни опубликованного порта, ни IP» / подключение по туннелю не проходит</td>
-    <td>Использовать <code>kai exec &lt;alias&gt;</code> — работает через docker exec без открытых портов.</td></tr>
+    <td>Использовать <code>sql-kai exec &lt;alias&gt;</code> — работает через docker exec без открытых портов.</td></tr>
 <tr><td><code>cannot execute … in a read-only transaction</code></td>
     <td>Так и задумано: добавь <code>--write</code>, если запись действительно согласована.</td></tr>
 <tr><td>Внешний managed-Postgres (не в docker на хосте)</td>
     <td>discover его не найдёт — завести профиль руками в GUI (или найти DSN в .env/Infisical).</td></tr>
 <tr><td>ssh-мастер держит коннект к хосту после работы</td>
     <td>Это ожидаемо — он гаснет сам после простоя (<code>KAI_SSH_MUX_TTL</code>, 5 мин).
-        Закрыть сразу: <code>kai tunnel close --all</code>; разовый запрос без мастера — <code>--no-mux</code>.</td></tr>
-<tr><td>Фоновый процесс <code>kai holder run</code> после запросов</td>
+        Закрыть сразу: <code>sql-kai tunnel close --all</code>; разовый запрос без мастера — <code>--no-mux</code>.</td></tr>
+<tr><td>Фоновый процесс <code>sql-kai holder run</code> после запросов</td>
     <td>Это держатель сессий (см. «Holder») — гаснет сам через ~2 мин после закрытия
-        сессий; немедленно — <code>kai holder stop</code>. Не поднимать вовсе —
+        сессий; немедленно — <code>sql-kai holder stop</code>. Не поднимать вовсе —
         <code>--local</code> / <code>--no-mux</code>.</td></tr>
 </table>
 
-<p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/kai/</code> ·
-пересборка: <code>cargo install --path src-tauri --features cli --bin kai</code></p>
+<p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/sql-kai/</code> ·
+пересборка: <code>cargo install --path src-tauri --features cli --bin sql-kai</code></p>
 
 </body>
 </html>

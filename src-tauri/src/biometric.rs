@@ -38,7 +38,7 @@ mod imp {
     /// под новое имя при первом обращении.
     const SERVICE_LEGACY: &str = "com.kaidstor.sql-tauri.vault";
     const ACCOUNT: &str = "dek";
-    /// DEK copy for the `kai` CLI: same login keychain, but read without a
+    /// DEK copy for the `sql-kai` CLI: same login keychain, but read without a
     /// biometry gate — the keychain's per-app ACL is the only guard, so short
     /// CLI invocations stay prompt-free after a one-time "Always Allow".
     const ACCOUNT_CLI: &str = "dek-cli";

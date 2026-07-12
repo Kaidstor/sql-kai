@@ -202,10 +202,10 @@ fn apply_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppErro
 // a persistent ControlMaster the first run pays for auth and leaves a
 // background master alive (ControlPersist); later runs attach their `-L`
 // forward to it in ~1 RTT — no re-auth. The forward client is still held by the
-// process and dies on Drop; only the master persists. GUI and kai share the
+// process and dies on Drop; only the master persists. GUI and sql-kai share the
 // same control sockets, so either side rides on a master the other opened.
 
-/// Default ControlPersist TTL used by the GUI and the broker (kai has its own
+/// Default ControlPersist TTL used by the GUI and the broker (sql-kai has its own
 /// env-tunable copy, same value).
 pub const DEFAULT_MUX_TTL: u32 = 300;
 
@@ -293,7 +293,7 @@ fn ensure_master(ssh: &SshConfig, passphrase: Option<&str>, ttl: u32, ctl: &Path
     let _ = cmd.status();
 }
 
-/// One live ssh master, for `kai tunnel list`.
+/// One live ssh master, for `sql-kai tunnel list`.
 pub struct MasterInfo {
     pub target: String,
     pub alive: bool,

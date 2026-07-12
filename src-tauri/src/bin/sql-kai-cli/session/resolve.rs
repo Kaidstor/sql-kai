@@ -43,7 +43,7 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
     }
     if by_name.len() > 1 {
         return Err(AppError::Msg(format!(
-            "несколько профилей с именем '{alias}' — укажи id (kai profiles list)"
+            "несколько профилей с именем '{alias}' — укажи id (sql-kai profiles list)"
         )));
     }
     let by_group: Vec<&Profile> = all
@@ -60,7 +60,7 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
         0 => {
             let known = all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
             Err(AppError::Msg(format!(
-                "профиль '{alias}' не найден (есть: {known}); для нового прод-хоста: kai discover {alias}"
+                "профиль '{alias}' не найден (есть: {known}); для нового прод-хоста: sql-kai discover {alias}"
             )))
         }
         _ => {

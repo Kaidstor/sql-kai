@@ -1,4 +1,4 @@
-//! `kai exec <ssh-alias>` — fallback без профиля и vault (наследник prod-db):
+//! `sql-kai exec <ssh-alias>` — fallback без профиля и vault (наследник prod-db):
 //! ssh на хост -> найти postgres-контейнер -> docker exec psql. Работает даже
 //! когда порт наружу не открыт и пароль неизвестен (psql внутри контейнера
 //! ходит по trust/peer). Вывод — сырой текст psql.

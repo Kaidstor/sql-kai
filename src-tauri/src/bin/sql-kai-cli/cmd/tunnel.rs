@@ -1,4 +1,4 @@
-//! `kai tunnel` — персистентные ssh-туннели (ControlMaster), переиспользуемые
+//! `sql-kai tunnel` — персистентные ssh-туннели (ControlMaster), переиспользуемые
 //! между вызовами: список живых мастеров и их закрытие.
 
 use std::process::ExitCode;

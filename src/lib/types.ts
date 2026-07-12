@@ -86,7 +86,7 @@ export interface SessionInfo {
   pid?: number | null;
 }
 
-/** One broker-owned CLI (kai) session — drives the "cli" badges. */
+/** One broker-owned CLI (sql-kai) session — drives the "cli" badges. */
 export interface CliSessionInfo {
   profileId: string;
   profileName: string;

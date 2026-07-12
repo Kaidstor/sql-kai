@@ -1,4 +1,4 @@
-//! `kai saved` — сохранённые запросы (общие с GUI): список видимых профилю и
+//! `sql-kai saved` — сохранённые запросы (общие с GUI): список видимых профилю и
 //! запуск по имени.
 
 use std::process::ExitCode;
@@ -105,7 +105,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 .find(|q| q.name.eq_ignore_ascii_case(&name))
                 .ok_or_else(|| {
                     AppError::Msg(format!(
-                        "сохранённый запрос '{name}' не найден (см. `kai saved list {alias}`)"
+                        "сохранённый запрос '{name}' не найден (см. `sql-kai saved list {alias}`)"
                     ))
                 })?;
             query::run(QueryArgs {

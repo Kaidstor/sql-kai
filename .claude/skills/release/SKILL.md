@@ -1,6 +1,6 @@
 ---
 name: release
-description: Выпустить релиз sql-kai — бамп версии, тег, GitLab-релиз с changelog, сборка .app/dmg/kai и артефакты автообновления (latest.json). Использовать когда пользователь просит «сделай релиз», «выпусти версию», «зарелизь», «бампни версию» в этом репозитории.
+description: Выпустить релиз sql-kai — бамп версии, тег, GitLab-релиз с changelog, сборка .app/dmg/sql-kai и артефакты автообновления (latest.json). Использовать когда пользователь просит «сделай релиз», «выпусти версию», «зарелизь», «бампни версию» в этом репозитории.
 compatibility: Требует .env с GITLAB_TOKEN и ключами подписи Tauri, pnpm/jq/curl/rust в PATH; сборка и загрузка идут с этой машины (локальное «CI», GitLab CI не участвует)
 ---
 
@@ -8,7 +8,7 @@ compatibility: Требует .env с GITLAB_TOKEN и ключами подпи�
 
 Всё делает `./release.sh` из корня репо: бамп версий (package.json,
 tauri.conf.json, Cargo.toml/lock) → коммит `release: vX.Y.Z` → тег → push →
-GitLab-релиз с changelog → сборка (.app + dmg + CLI kai sidecar'ом) →
+GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sidecar'ом) →
 `latest.json` → загрузка артефактов и линковка к релизу.
 
 ## Предусловия
@@ -23,7 +23,7 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI kai sidecar'о
 ## Порядок
 
 1. Проверить, что всё собирается (не обязательно, если только что собирали):
-   `pnpm build` и `(cd src-tauri && cargo build --release --features cli --bin kai)`.
+   `pnpm build` и `(cd src-tauri && cargo build --release --features cli --bin sql-kai-cli)`.
 2. Закоммитить рабочее дерево осмысленными коммитами (Conventional Commits,
    на русском) — **сообщения этих коммитов станут changelog'ом релиза**.
 3. Выбрать версию: без аргумента — автобамп patch; новые фичи — минор явно:
@@ -69,6 +69,6 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI kai sidecar'о
 
 ## После релиза
 
-- Обновлённый CLI kai приезжает внутри .app (externalBin);
-  `~/.cargo/bin/kai` — симлинк в бандл, обновится вместе с приложением.
+- Обновлённый CLI sql-kai приезжает внутри .app (externalBin);
+  `~/.cargo/bin/sql-kai` — симлинк в бандл, обновится вместе с приложением.
 - Запущенные GUI-клиенты подхватят обновление по permalink `latest.json`.
