@@ -72,8 +72,23 @@ git commit -m "release: ${TAG}"
 
 echo "> Создаём Git-тег $TAG"
 git tag "$TAG"
-git push origin HEAD
-git push origin "$TAG"
+
+# gitlab.com бывает флапает: curl'ы ниже ретраят сами, а голый git push при
+# зависшем banner exchange висит бесконечно и валит релиз в неудобном
+# состоянии (коммит запушен, тег — нет). Жёсткие ssh-таймауты + ретраи.
+export GIT_SSH_COMMAND=${GIT_SSH_COMMAND:-"ssh -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=2"}
+git_push_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    git push origin "$@" && return 0
+    echo "  … push $* не прошёл (попытка $attempt/5), ждём 10с" >&2
+    sleep 10
+  done
+  echo "ERROR: git push origin $* не прошёл после 5 попыток" >&2
+  return 1
+}
+git_push_retry HEAD
+git_push_retry "$TAG"
 
 echo "> Создаём релиз $TAG"
 # Сеть до gitlab.com бывает флапает — все curl'ы релиза ретраят транспортные

@@ -49,10 +49,21 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sideca
 
 ## Если что-то пошло не так
 
-- **`git push` упал (сеть/ssh до gitlab.com)** — release-коммит и тег остались
-  только локально, релиза на GitLab ещё нет. Проверить связь
-  (`ssh -T git@gitlab.com`), затем `git tag -d vX.Y.Z`,
-  `git reset --hard HEAD~1` и перезапустить скрипт начисто.
+- **`git push` упал (сеть/ssh до gitlab.com)** — скрипт пушит с ретраями и
+  ssh-таймаутами, но если всё равно упало, сначала выяснить, что успело
+  улететь: `git ls-remote origin refs/heads/main "refs/tags/vX.Y.Z"`.
+  - *Ни ветка, ни тег не запушены* — release-коммит и тег только локальные,
+    релиза на GitLab нет: `git tag -d vX.Y.Z`, `git reset --hard HEAD~1`
+    и перезапустить скрипт начисто.
+  - *Ветка запушилась, тег — нет* — **не делать `reset --hard`** (разведёт
+    локальную main с remote). Допушить тег: `git push origin vX.Y.Z`
+    (при флапе — в цикле с `GIT_SSH_COMMAND="ssh -o ConnectTimeout=8
+    -o ServerAliveInterval=5 -o ServerAliveCountMax=2"`). Затем выполнить
+    хвост скрипта: вырезать из release.sh всё от `echo "> Создаём релиз…"`
+    до конца в отдельный скрипт, задать в нём `NEW_VER`, `TAG`,
+    `RELEASE_NOTES` (**явно**: авто-changelog уже не собрать — тег стоит на
+    HEAD и `git log <тег>..HEAD` пуст), `DEBUG=0`, `SKIP_BUILD=`,
+    подгрузить `.env` — и запустить.
 - **HTTP != 201 при создании релиза** — чаще всего тег/релиз уже существует
   (повторный запуск). Скрипт к этому моменту уже закоммитил бамп и запушил
   тег: либо продолжить с `SKIP_BUILD=1` не выйдет (создание релиза стоит до
