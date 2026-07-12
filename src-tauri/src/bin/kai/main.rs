@@ -26,6 +26,7 @@ use cmd::doctor::DoctorArgs;
 use cmd::exec::ExecArgs;
 use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
+use cmd::import::ImportArgs;
 use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
 use cmd::profiles::ProfilesCmd;
 use cmd::query::QueryArgs;
@@ -62,6 +63,8 @@ enum Cmd {
     Exec(ExecArgs),
     /// Найти postgres на ssh-хосте и создать/обновить профиль
     Discover(DiscoverArgs),
+    /// Массовый импорт профилей из JSON (stdin/файл), пароли — в vault
+    Import(ImportArgs),
     /// Профили (общие с GUI)
     Profiles {
         #[command(subcommand)]
@@ -153,6 +156,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Query(a) => cmd::query::run(a).await,
         Cmd::Exec(a) => cmd::exec::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
+        Cmd::Import(a) => cmd::import::run(a).await,
         Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { fmt: Default::default() })).await,
         Cmd::Tables(a) => cmd::introspect::tables(a).await,
         Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
