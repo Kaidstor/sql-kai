@@ -29,10 +29,27 @@ pub enum ProfilesCmd {
     },
 }
 
+/// Компактное «сколько назад» для колонки last: 45s / 12m / 5h / 3d / 2mo / 1y.
+fn fmt_ago(ts_ms: i64) -> String {
+    let s = ((store::now_ms() - ts_ms) / 1000).max(0);
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3_599 => format!("{}m", s / 60),
+        3_600..=86_399 => format!("{}h", s / 3_600),
+        86_400..=2_591_999 => format!("{}d", s / 86_400),
+        2_592_000..=31_535_999 => format!("{}mo", s / 2_592_000),
+        _ => format!("{}y", s / 31_536_000),
+    }
+}
+
 pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
     match cmd {
         ProfilesCmd::List { fmt } => {
-            let profiles = store::load_profiles()?;
+            let mut profiles = store::load_profiles()?;
+            let marks = store::load_last_connected().unwrap_or_default();
+            for p in &mut profiles {
+                p.last_connected = marks.get(&p.id).copied();
+            }
             // --json отдаёт полные объекты профилей, не табличную проекцию
             if fmt.pick() == Format::Json {
                 println!("{}", serde_json::to_string_pretty(&profiles).unwrap());
@@ -49,17 +66,24 @@ pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
                         Some(p.user.clone()),
                         p.ssh.as_ref().map(|s| s.host.clone()),
                         Some(if p.has_password { "yes" } else { "no" }.into()),
+                        p.last_connected
+                            .as_ref()
+                            .and_then(|lc| lc.latest())
+                            .map(|(ts, via)| format!("{} ({via})", fmt_ago(ts))),
                     ]
                 })
                 .collect();
             output::print_rows(
-                &["name", "group", "host", "db", "user", "ssh", "pw"],
+                &["name", "group", "host", "db", "user", "ssh", "pw", "last"],
                 &rows,
                 fmt.pick(),
             );
         }
         ProfilesCmd::Show { alias } => {
-            let p = session::resolve_profile(&alias)?;
+            let mut p = session::resolve_profile(&alias)?;
+            p.last_connected = store::load_last_connected()
+                .unwrap_or_default()
+                .remove(&p.id);
             println!("{}", serde_json::to_string_pretty(&p).unwrap());
         }
         ProfilesCmd::Rm { alias, yes } => {

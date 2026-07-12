@@ -585,6 +585,10 @@ async fn get_or_open(
         "broker",
         &format!("\"{}\": cli-сессия открыта по запросу kai", profile.name),
     );
+    // отметка «подключались по cli» + profiles_changed, чтобы лаунчер
+    // перечитал профили и обновил "last connected" сразу
+    let _ = store::record_last_connected(profile_id, store::ConnectVia::Cli);
+    (hooks.profiles_changed)();
     (hooks.changed)();
     Ok(winner)
 }

@@ -20,6 +20,7 @@ fn test_profile() -> Profile {
         production: false,
         has_password: false,
         has_ssh_passphrase: false,
+        last_connected: None,
     }
 }
 

@@ -24,6 +24,15 @@ export interface Profile {
   production?: boolean;
   hasPassword?: boolean;
   hasSshPassphrase?: boolean;
+  /** Last successful connection per client, attached by the backend from
+   *  last_connected.json (display-only, not part of the saved profile). */
+  lastConnected?: LastConnected | null;
+}
+
+/** Epoch-ms marks of a profile's last successful connection per client. */
+export interface LastConnected {
+  gui?: number | null;
+  cli?: number | null;
 }
 
 /** Contents of settings.json — portable app preferences. The backend only

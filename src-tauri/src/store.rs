@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,11 @@ pub struct Profile {
     /// Whether an SSH key passphrase is stored in the vault for this profile.
     #[serde(default)]
     pub has_ssh_passphrase: bool,
+    /// When this profile was last successfully connected, per client. Local
+    /// usage marks living in last_connected.json (not in the portable
+    /// profiles.json) — attached for display only, never persisted here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_connected: Option<LastConnected>,
 }
 
 impl Profile {
@@ -59,6 +65,7 @@ impl Profile {
         let mut p = self.clone();
         p.has_password = vault::has_secret(&p.id);
         p.has_ssh_passphrase = vault::has_secret(&ssh_secret_key(&p.id));
+        p.last_connected = load_last_connected().unwrap_or_default().remove(&p.id);
         p
     }
 }
@@ -124,6 +131,8 @@ pub fn upsert_profile(
     password: Option<String>,
     ssh_passphrase: Option<String>,
 ) -> Result<Profile, AppError> {
+    // display-only mark the frontend may echo back — keep profiles.json clean
+    profile.last_connected = None;
     if profile.id.is_empty() {
         profile.id = uuid::Uuid::new_v4().to_string();
     }
@@ -203,7 +212,79 @@ pub fn delete_profile(id: &str) -> Result<(), AppError> {
     save_profiles(&all)?;
     let _ = vault::remove_secret(id);
     let _ = vault::remove_secret(&ssh_secret_key(id));
+    let mut marks = load_last_connected().unwrap_or_default();
+    if marks.remove(id).is_some() {
+        let _ = save_last_connected(&marks);
+    }
     Ok(())
+}
+
+// --- Last-connected marks -------------------------------------------------
+// Per-profile "when did I last connect" timestamps, split by client (GUI
+// window vs kai). Local usage state, deliberately outside profiles.json so
+// the portable config never churns on every connect.
+
+const LAST_CONNECTED_FILE: &str = "last_connected.json";
+
+/// Epoch-ms timestamps of a profile's last successful connection per client.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastConnected {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<i64>,
+}
+
+impl LastConnected {
+    /// The most recent mark with its source label ("gui"/"cli").
+    pub fn latest(&self) -> Option<(i64, &'static str)> {
+        match (self.gui, self.cli) {
+            (Some(g), Some(c)) => Some(if c > g { (c, "cli") } else { (g, "gui") }),
+            (Some(g), None) => Some((g, "gui")),
+            (None, Some(c)) => Some((c, "cli")),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Which client opened the connection — the [`LastConnected`] field to bump.
+#[derive(Debug, Clone, Copy)]
+pub enum ConnectVia {
+    Gui,
+    Cli,
+}
+
+pub fn load_last_connected() -> Result<HashMap<String, LastConnected>, AppError> {
+    let path = config_path(LAST_CONNECTED_FILE)?;
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let raw = fs::read_to_string(&path)?;
+    if raw.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    serde_json::from_str(&raw)
+        .map_err(|e| AppError::Msg(format!("{LAST_CONNECTED_FILE} is corrupted: {e}")))
+}
+
+fn save_last_connected(map: &HashMap<String, LastConnected>) -> Result<(), AppError> {
+    let path = config_path(LAST_CONNECTED_FILE)?;
+    write_atomic(&path, serde_json::to_string_pretty(map).unwrap().as_bytes())?;
+    Ok(())
+}
+
+/// Marks "connected now via gui/cli". Best-effort at call sites (`let _ = …`):
+/// a failed mark must never fail the connection itself. A corrupted marks file
+/// self-heals — it is replaced by a fresh map on the next write.
+pub fn record_last_connected(profile_id: &str, via: ConnectVia) -> Result<(), AppError> {
+    let mut map = load_last_connected().unwrap_or_default();
+    let slot = map.entry(profile_id.to_string()).or_default();
+    match via {
+        ConnectVia::Gui => slot.gui = Some(now_ms()),
+        ConnectVia::Cli => slot.cli = Some(now_ms()),
+    }
+    save_last_connected(&map)
 }
 
 // --- Saved queries ----------------------------------------------------------

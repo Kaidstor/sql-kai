@@ -353,6 +353,7 @@ pub async fn connect_profile(
         },
     )
     .await?;
+    let _ = store::record_last_connected(&profile_id, store::ConnectVia::Gui);
     let session_id = uuid::Uuid::new_v4().to_string();
     let info = SessionInfo {
         session_id: session_id.clone(),

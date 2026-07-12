@@ -15,7 +15,7 @@ import {
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { isMac } from "../lib/platform";
-import { profileAddr } from "../lib/profile";
+import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
 import { useApp } from "../lib/store";
 import { UNDO_DELETE_MS } from "../lib/store/slices/connections";
 import type { Profile } from "../lib/types";
@@ -60,6 +60,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
           : "idle";
   const retry = state === "lost" || state === "refused";
   const color = accentColor(profile.color);
+  const last = lastConnectedOf(profile);
 
   const open = () => {
     if (busy) return;
@@ -174,7 +175,9 @@ function ProfileCard({ profile }: { profile: Profile }) {
               ? "connection lost"
               : err
                 ? "connection failed"
-                : " "}
+                : last
+                  ? `last: ${timeAgo(last.at)} · ${last.via}`
+                  : " "}
       </div>
 
       <div

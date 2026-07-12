@@ -221,7 +221,8 @@ function App() {
       listen("broker://changed", () =>
         void useApp.getState().refreshCliSessions(),
       ),
-      // kai discover/rm изменил состав профилей — перечитать список
+      // kai discover/rm изменил состав профилей или обновилась отметка
+      // last connected (cli-коннект) — перечитать список
       listen("profiles://changed", () =>
         void useApp.getState().reloadProfiles(),
       ),

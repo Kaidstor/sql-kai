@@ -2,7 +2,7 @@
 
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
-use sql_kai_lib::store::Profile;
+use sql_kai_lib::store::{self, Profile};
 
 use super::pw::{ensure_vault, resolve_override, PwSource};
 use super::resolve::resolve_profile;
@@ -34,6 +34,7 @@ async fn open(
         },
     )
     .await?;
+    let _ = store::record_last_connected(&profile.id, store::ConnectVia::Cli);
     if !write {
         db::execute(
             &connected.session.client,
@@ -74,5 +75,8 @@ pub async fn open_for(
     let over = resolve_override(&profile, &pw)?;
     ensure_vault(&profile, over.is_some())?;
     let connected = open(&profile, over, write, verbose, mux).await?;
+    // живой GUI (запертый vault / кастомный пароль): пусть лаунчер перечитает
+    // профили и обновит "last connected"; без GUI — мгновенный no-op
+    crate::broker_client::notify_profiles_changed().await;
     Ok((profile, connected))
 }

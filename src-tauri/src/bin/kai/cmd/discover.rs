@@ -174,6 +174,7 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
             .as_ref()
             .map(|e| e.has_ssh_passphrase)
             .unwrap_or(false),
+        last_connected: None,
     };
 
     let to_sec = a.to_sec || a.sec_key.is_some();

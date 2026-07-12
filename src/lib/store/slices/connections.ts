@@ -154,6 +154,12 @@ export function createConnectionsSlice(
         set((s) => {
           return {
             sessions: { ...s.sessions, [profileId]: info },
+            // mirror the backend's last-connected mark without a reload
+            profiles: s.profiles.map((p) =>
+              p.id === profileId
+                ? { ...p, lastConnected: { ...p.lastConnected, gui: Date.now() } }
+                : p,
+            ),
             activeProfileId: profileId,
             launcherOpen: false,
             lost: without(s.lost, profileId),

@@ -130,6 +130,7 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
             production: imp.production,
             has_password: false,
             has_ssh_passphrase: false,
+            last_connected: None,
         };
 
         let pw = some_nonempty(imp.password);
