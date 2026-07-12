@@ -177,7 +177,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
                 ? "connection failed"
                 : last
                   ? `last: ${timeAgo(last.at)} · ${last.via}`
-                  : " "}
+                  : "never connected"}
       </div>
 
       <div
