@@ -97,6 +97,7 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><th>Команда</th><th>Что делает</th></tr>
 <tr><td><code>kai &lt;alias&gt; -c "SQL"</code></td><td>Выполнить SQL в базе профиля (= <code>kai q</code>). SQL: <code>-c</code> (повторяемо), <code>-f file.sql</code>, stdin</td></tr>
 <tr><td><code>kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
+<tr><td><code>kai import [--file f.json]</code></td><td>Массовый импорт профилей из JSON-массива (stdin/файл): пароли и ssh-passphrase → vault. Флаги <code>--dry-run</code>, <code>--replace</code> (перезаписать по имени)</td></tr>
 <tr><td><code>kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
 <tr><td><code>kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
 <tr><td><code>kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>

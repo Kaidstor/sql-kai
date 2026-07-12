@@ -44,7 +44,7 @@ npx skills add https://gitlab.com/kaidstor/sql-kai --skill sql-kai
 - Лимит строк на выборку (100 … 50 000), индикатор обрезки.
 - Выделение строк в гриде: клик — одна, ⌘/Ctrl+клик — точечно, Shift+клик — диапазон. ПКМ — контекстное меню (Base UI): копировать ячейку / строки через пробел (⌘C) / TSV / JSON / всё с заголовком.
 - Кастомная шапка окна: нативный titlebar скрыт (`titleBarStyle: Overlay`), traffic lights поверх приложения, окно таскается за верхнюю полосу (сайдбар + таббар).
-- Живёт в menu bar (macOS): закрытие окна (красная кнопка / Close Window) прячет его, а приложение — вместе с сессиями, туннелями и брокером для `kai` — остаётся в трее. Вернуть окно: клик по иконке в трее или в Dock. Полный выход — ⌘Q / Quit (в меню приложения или трея).
+- Живёт в menu bar (macOS): закрытие окна (красная кнопка / Close Window) прячет его и убирает иконку из Dock и Cmd-Tab (activation policy → Accessory), а приложение — вместе с сессиями, туннелями и брокером для `kai` — остаётся в трее. Вернуть окно: клик по иконке в трее или повторный запуск из Finder/Spotlight (policy возвращается в Regular). Полный выход — ⌘Q / Quit (в меню приложения или трея).
 
 ## SSH: как это работает
 
@@ -63,6 +63,7 @@ npx skills add https://gitlab.com/kaidstor/sql-kai --skill sql-kai
 ```bash
 kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/--json/--csv/-t
 kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
+kai import [--file f.json]      # массовый импорт профилей из JSON (пароли → vault)
 kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
 kai tables|columns|ddl|indexes <alias> [schema.]table
 kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
