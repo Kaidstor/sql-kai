@@ -97,9 +97,12 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Показывает главное окно (после скрытия по close / клика в трей или Dock).
+/// Показывает главное окно (после скрытия по close / клика в трей).
+/// Возвращает Regular-политику: без неё окно не получает фокус,
+/// а приложения нет в Dock и Cmd-Tab.
 #[cfg(target_os = "macos")]
 fn show_main_window(app: &tauri::AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.set_focus();
@@ -204,10 +207,14 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // Close (red button / Close Window) прячет окно — приложение
-            // остаётся жить в трее, сессии и туннели не рвутся.
+            // остаётся жить в трее, сессии и туннели не рвутся. Accessory
+            // убирает иконку из Dock и Cmd-Tab, пока окно скрыто.
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
+                let _ = window
+                    .app_handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
                 api.prevent_close();
             }
             #[cfg(not(target_os = "macos"))]
