@@ -124,12 +124,12 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .separator()
         .item(&quit)
         .build()?;
+    // Template-иконка (чёрная + альфа): macOS сам перекрашивает её под
+    // светлую/тёмную строку меню.
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     TrayIconBuilder::with_id("main-tray")
-        .icon(
-            app.default_window_icon()
-                .cloned()
-                .expect("bundled app icon"),
-        )
+        .icon(icon)
+        .icon_as_template(true)
         .tooltip("sql-kai")
         .menu(&menu)
         .show_menu_on_left_click(true)
