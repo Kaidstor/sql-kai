@@ -893,16 +893,6 @@ pub fn install_cli() -> Result<String, AppError> {
         }
         let target = Path::new("/usr/local/bin/sql-kai");
 
-        // Легаси-симлинк времён команды `sql-kai`: убираем, только если он вёл
-        // в бандл sql-kai (чужой sql-kai не трогаем).
-        let legacy = Path::new("/usr/local/bin/sql-kai");
-        let legacy_ours = std::fs::read_link(legacy)
-            .map(|d| d.to_string_lossy().contains("sql-kai.app"))
-            .unwrap_or(false);
-        if legacy_ours {
-            let _ = std::fs::remove_file(legacy);
-        }
-
         // Fast path: recreate the symlink directly when /usr/local/bin is
         // writable (e.g. Homebrew) — no password prompt needed.
         let _ = std::fs::remove_file(target); // ignore "not found" / "denied"
@@ -912,13 +902,8 @@ pub fn install_cli() -> Result<String, AppError> {
 
         // Slow path: the dir is root-owned. Escalate via the native auth
         // dialog; `ln -sf` handles a pre-existing root-owned symlink.
-        let cleanup = if legacy_ours && legacy.exists() {
-            format!("rm -f '{}' && ", legacy.display())
-        } else {
-            String::new()
-        };
         let script = format!(
-            "do shell script \"{cleanup}mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
+            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
              with administrator privileges",
             src.display(),
             target.display()
