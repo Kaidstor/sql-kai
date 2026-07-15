@@ -19,6 +19,11 @@ import type {
   VaultStatus,
 } from "./types";
 
+export interface TrayConnection {
+  profileId: string;
+  name: string;
+}
+
 export const api = {
   vaultStatus: () => invoke<VaultStatus>("vault_status"),
 
@@ -90,6 +95,12 @@ export const api = {
   listSessions: () => invoke<SessionInfo[]>("list_sessions"),
 
   listCliSessions: () => invoke<CliSessionInfo[]>("list_cli_sessions"),
+
+  syncTrayConnections: (
+    connections: TrayConnection[],
+    activeProfileId: string | null,
+  ) =>
+    invoke<void>("sync_tray_connections", { connections, activeProfileId }),
 
   testProfile: (
     profile: Profile,

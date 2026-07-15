@@ -19,6 +19,7 @@ import { TabsBar } from "./components/TabsBar";
 import { UpdateToast } from "./components/UpdateToast";
 import { VaultGate } from "./components/VaultGate";
 import { isMac } from "./lib/platform";
+import { api } from "./lib/api";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
 import { initUpdater, useUpdater } from "./lib/updater";
@@ -32,6 +33,7 @@ function App() {
   const activeTabId = useApp((s) => s.activeTabId);
   const activeProfileId = useApp((s) => s.activeProfileId);
   const sessions = useApp((s) => s.sessions);
+  const profiles = useApp((s) => s.profiles);
   const lost = useApp((s) => s.lost);
   const launcherOpen = useApp((s) => s.launcherOpen);
   const sidebarOpen = useApp((s) => s.sidebarOpen);
@@ -55,6 +57,19 @@ function App() {
 
   // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘⌥O connection
   // palette, ⌘P saved-queries palette, ⌘S save query, ⌘R refresh table/
+  // The native menu-bar switcher mirrors the live connections shown in the
+  // status bar. Rebuilding it also updates the checkmark when selection moves.
+  useEffect(() => {
+    const connections = connectedProfiles(profiles, sessions).map((profile) => ({
+      profileId: profile.id,
+      name: profile.name,
+    }));
+    void api.syncTrayConnections(connections, activeProfileId).catch(() => {
+      // Non-macOS builds and an app that is already shutting down have no tray
+      // to update; neither case should affect the workspace.
+    });
+  }, [activeProfileId, profiles, sessions]);
+
   // structure view, ⌘W/⌘⇧T close/reopen tab. Grid/editor hotkeys stay local.
   useEffect(() => {
     // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
@@ -214,6 +229,18 @@ function App() {
         "session://lost",
         (e) =>
           useApp
+      listen<string>("tray://select-connection", async (e) => {
+        const profileId = e.payload;
+        const s = useApp.getState();
+        if (s.sessions[profileId]) {
+          s.selectProfile(profileId);
+        } else if (s.lost[profileId]) {
+          await s.reconnect(profileId);
+        } else {
+          // Handles a click from a stale native menu snapshot gracefully.
+          await s.connect(profileId);
+        }
+      }),
             .getState()
             .markSessionLost(e.payload.sessionId, e.payload.profileId),
       ),

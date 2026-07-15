@@ -112,18 +112,48 @@ fn show_main_window(app: &tauri::AppHandle) {
 /// Иконка в menu bar: приложение живёт в трее, даже когда окно закрыто
 /// (close прячет окно, см. on_window_event ниже).
 #[cfg(target_os = "macos")]
-fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    connections: &[TrayConnection],
+    active_profile_id: Option<&str>,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
     use tauri::tray::TrayIconBuilder;
 
+    let open = MenuItemBuilder::with_id("tray-open", "Open sql-kai").build(app)?;
+    let quit = MenuItemBuilder::with_id("tray-quit", "Quit sql-kai").build(app)?;
+    let mut menu = MenuBuilder::new(app).item(&open);
+    if !connections.is_empty() {
+        menu = menu.separator();
+        for connection in connections {
+            // `&` is a native-menu mnemonic marker; double it to preserve
+            // profile names verbatim.
+            let name = connection.name.replace('&', "&&");
+            // A normal item with a stable mark is used instead of a native
+            // checkbox: checkbox items toggle themselves off when the already
+            // active connection is clicked.
+            let label = if active_profile_id == Some(connection.profile_id.as_str()) {
+                format!("✓ {name}")
+            } else {
+                format!("  {name}")
+            };
+            let item = MenuItemBuilder::with_id(
+                format!("tray-connection:{}", connection.profile_id),
+                label,
+            )
+            .build(app)?;
+            menu = menu.item(&item);
+        }
+    }
+    menu.separator().item(&quit).build()
+}
+
+#[cfg(target_os = "macos")]
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+
+    use tauri::Emitter;
     let handle = app.handle();
-    let open = MenuItemBuilder::with_id("tray-open", "Open sql-kai").build(handle)?;
-    let quit = MenuItemBuilder::with_id("tray-quit", "Quit sql-kai").build(handle)?;
-    let menu = MenuBuilder::new(handle)
-        .item(&open)
-        .separator()
-        .item(&quit)
-        .build()?;
+    let menu = build_tray_menu(handle, &[], None)?;
     // Template-иконка (чёрная + альфа): macOS сам перекрашивает её под
     // светлую/тёмную строку меню.
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -133,16 +163,59 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .tooltip("sql-kai")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray-open" => show_main_window(app),
-            "tray-quit" => app.exit(0),
-            _ => {}
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            match id {
+                "tray-open" => show_main_window(app),
+                "tray-quit" => app.exit(0),
+                _ => {
+                    if let Some(profile_id) = id.strip_prefix("tray-connection:") {
+                        show_main_window(app);
+                        let _ = app.emit("tray://select-connection", profile_id.to_owned());
+                    }
+                }
+            }
         })
         .build(app)?;
     Ok(())
 }
 
 /// Поднимает брокер-сокет для sql-kai: GUI-процесс выполняет его запросы своими
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrayConnection {
+    profile_id: String,
+    name: String,
+}
+
+/// Keeps the native menu-bar connection switcher in lockstep with the
+/// frontend store. The command is a no-op on platforms without this tray.
+#[tauri::command]
+fn sync_tray_connections(
+    app: tauri::AppHandle,
+    connections: Vec<TrayConnection>,
+    active_profile_id: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let menu = build_tray_menu(&app, &connections, active_profile_id.as_deref())
+            .map_err(|e| e.to_string())?;
+        let tray = app
+            .tray_by_id("main-tray")
+            .ok_or_else(|| "main tray is not available".to_string())?;
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+        let tooltip = match connections.len() {
+            0 => "sql-kai".to_string(),
+            1 => "sql-kai — 1 active connection".to_string(),
+            count => format!("sql-kai — {count} active connections"),
+        };
+        tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, connections, active_profile_id);
+    Ok(())
+}
+
 /// сессиями/vault'ом. Ошибка бинда не мешает приложению — sql-kai просто пойдёт
 /// автономным путём.
 #[cfg(unix)]

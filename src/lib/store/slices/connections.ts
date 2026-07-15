@@ -46,7 +46,7 @@ export interface ConnectionsSlice {
   /** Lazy-loaded foreign keys per relation (FK navigation), same keying. */
   tableRelations: Record<string, RelationInfo[]>;
 
-  connect: (profileId: string) => Promise<void>;
+  connect: (profileId: string, activate?: boolean) => Promise<void>;
   disconnect: (profileId: string) => Promise<void>;
   /** Пуш с бэкенда (session://lost): соединение умерло — сразу убрать сессию
    *  и зажечь Reconnect, не дожидаясь, пока следующий запрос наткнётся на
@@ -54,7 +54,7 @@ export interface ConnectionsSlice {
   markSessionLost: (sessionId: string, profileId: string) => void;
   /** Re-dials the profile in place: tabs survive (unlike disconnect→connect),
    *  and tabs that errored with the dead session reload once connected. */
-  reconnect: (profileId: string) => Promise<void>;
+  reconnect: (profileId: string, activate?: boolean) => Promise<void>;
   selectProfile: (profileId: string) => void;
   refreshTables: (profileId: string) => Promise<void>;
   /** Re-pulls broker cli-sessions (on load and broker://changed events). */
@@ -137,7 +137,7 @@ export function createConnectionsSlice(
     tableColumns: {},
     tableRelations: {},
 
-    connect: async (profileId) => {
+    connect: async (profileId, activate = true) => {
       // повторный вход (двойной Enter в палитре/лаунчере) — открыл бы вторую
       // сессию и ssh-туннель, а первая повисла бы навсегда
       if (get().connecting[profileId]) return;
@@ -160,8 +160,9 @@ export function createConnectionsSlice(
                 ? { ...p, lastConnected: { ...p.lastConnected, gui: Date.now() } }
                 : p,
             ),
-            activeProfileId: profileId,
-            launcherOpen: false,
+            ...(activate
+              ? { activeProfileId: profileId, launcherOpen: false }
+              : {}),
             lost: without(s.lost, profileId),
             // Tabs that errored with the dead session: clear the error (and the
             // stale payload) in the same commit the session appears, so their
@@ -205,7 +206,8 @@ export function createConnectionsSlice(
         await get().refreshTables(profileId);
         if (
           !get().tabs.some((t) => t.profileId === profileId) &&
-          !ctx.restoreProfileTabs(profileId)
+          !ctx.restoreProfileTabs(profileId) &&
+          activate
         ) {
           get().openQueryTab(profileId);
         }
@@ -246,6 +248,10 @@ export function createConnectionsSlice(
       }));
       const name = s.profiles.find((p) => p.id === profileId)?.name ?? profileId;
       get().showToast(`"${name}": connection lost`);
+      // A CLI session may already be alive for this profile. Refreshing here
+      // covers that ordering too (the broker's creation event may have arrived
+      // before the GUI wire died).
+      void get().refreshCliSessions();
     },
 
     disconnect: async (profileId) => {
@@ -281,7 +287,7 @@ export function createConnectionsSlice(
       });
     },
 
-    reconnect: async (profileId) => {
+    reconnect: async (profileId, activate = true) => {
       if (get().connecting[profileId]) return;
       const session = get().sessions[profileId];
       if (session) {
@@ -296,7 +302,7 @@ export function createConnectionsSlice(
       // isolated connections died with the tunnel; clear them so isolated tabs
       // reopen lazily on the fresh connection
       dropProfileIsolatedSessions(profileId);
-      await get().connect(profileId);
+      await get().connect(profileId, activate);
     },
 
     selectProfile: (profileId) =>
@@ -342,6 +348,21 @@ export function createConnectionsSlice(
         const cliSessions: Record<string, CliSessionInfo> = {};
         for (const s of list) cliSessions[s.profileId] = s;
         set({ cliSessions });
+
+        // GUI and CLI own separate PostgreSQL sessions. When the CLI has
+        // successfully reopened a profile whose GUI session was lost, redial
+        // the GUI session through the shared SSH ControlMaster as well. Keep it
+        // in the background so another active workspace is not stolen.
+        const state = get();
+        const recovered = list.filter(
+          (s) =>
+            state.lost[s.profileId] &&
+            !state.sessions[s.profileId] &&
+            !state.connecting[s.profileId],
+        );
+        await Promise.all(
+          recovered.map((s) => get().reconnect(s.profileId, false)),
+        );
       } catch {
         // брокера нет (не-unix сборка) — бейджи просто не показываются
       }
