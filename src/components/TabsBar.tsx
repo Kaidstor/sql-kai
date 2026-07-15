@@ -1,5 +1,5 @@
-import { Activity, Plus, SquareTerminal, Table2, Wrench, X } from "lucide-react";
-import { useRef, useState, type PointerEvent } from "react";
+import { Activity, Plus, SquareTerminal, Wrench, X } from "lucide-react";
+import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { PROD_RED, tint } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { isQueryTabDirty, useApp } from "../lib/store";
@@ -11,7 +11,7 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "./ContextMenu";
-import { cn } from "./ui";
+import { cn, RelIcon } from "./ui";
 
 // Pointer-based tab reorder. HTML5 DnD is not an option here: Tauri's
 // dragDropEnabled (needed for native file drop) makes wry swallow drag
@@ -29,12 +29,22 @@ export function TabsBar() {
   const openQueryTab = useApp((s) => s.openQueryTab);
   const queries = useApp((s) => s.queries);
   const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const tables = useApp((s) => s.tables);
   const production = Boolean(
     profiles.find((p) => p.id === activeProfileId)?.production,
   );
   // Only the active connection's tabs are shown; other connections keep
   // theirs in the background until selected again.
   const visible = tabs.filter((t) => t.profileId === activeProfileId);
+  // Table-tab icons follow the catalog kind (view vs table), so a lookup map —
+  // the bar re-renders on every pointermove while a tab is being dragged.
+  const kinds = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of tables[activeProfileId ?? ""] ?? []) {
+      m.set(`${t.schema}.${t.name}`, t.kind);
+    }
+    return m;
+  }, [tables, activeProfileId]);
   /** Tab under the last right-click (null = empty bar area). */
   const [menuTabId, setMenuTabId] = useState<string | null>(null);
 
@@ -159,7 +169,10 @@ export function TabsBar() {
           ) : tab.state.kind === "activity" ? (
             <Activity size={12} className="text-rose-400/80 shrink-0" />
           ) : (
-            <Table2 size={12} className="text-sky-500/80 shrink-0" />
+            <RelIcon
+              kind={kinds.get(`${tab.state.schema}.${tab.state.table}`)}
+              className="opacity-80"
+            />
           )}
           {tab.title}
           {/* Dirty mark sits in the close button's slot; hover swaps it for ✕. */}

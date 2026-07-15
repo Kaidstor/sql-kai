@@ -125,6 +125,12 @@ export interface TableInfo {
   kind: string;
 }
 
+/** Relation kinds that have no storage of their own: read-only in the grid,
+ *  DDL'd as CREATE VIEW. Undefined kind (catalog not loaded yet) is not a view. */
+export function isViewKind(kind: string | undefined): boolean {
+  return kind === "view" || kind === "matview";
+}
+
 /** Column names of one relation, for editor schema autocomplete. */
 export interface TableColumns {
   schema: string;

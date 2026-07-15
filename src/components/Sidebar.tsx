@@ -3,7 +3,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Eye,
   FileCode2,
   FilePlus2,
   KeyRound,
@@ -18,7 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { columnsKey, useApp } from "../lib/store";
-import type { TableInfo } from "../lib/types";
+import { isViewKind, type TableInfo } from "../lib/types";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -27,7 +26,7 @@ import {
   ContextMenuTrigger,
 } from "./ContextMenu";
 import { ReconnectButton } from "./ReconnectButton";
-import { CliBadge, cn, IconButton, Input, ProdBadge } from "./ui";
+import { CliBadge, cn, IconButton, Input, ProdBadge, RelIcon } from "./ui";
 
 function shortType(t: string): string {
   return t
@@ -41,12 +40,6 @@ function shortType(t: string): string {
     .replace("integer", "int4")
     .replace("bigint", "int8")
     .replace("smallint", "int2");
-}
-
-function TableIcon({ kind }: { kind: string }) {
-  if (kind === "view" || kind === "matview")
-    return <Eye size={12} className="text-violet-400 shrink-0" />;
-  return <Table2 size={12} className="text-sky-500 shrink-0" />;
 }
 
 function TableNode({ profileId, table }: { profileId: string; table: TableInfo }) {
@@ -101,7 +94,7 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
               onDoubleClick={toggle}
               title={`${table.schema}.${table.name} (${table.kind})`}
             >
-              <TableIcon kind={table.kind} />
+              <RelIcon kind={table.kind} />
               <span className="truncate">{table.name}</span>
             </button>
           </div>
@@ -127,10 +120,7 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
             Copy name
           </ContextMenuItem>
           <ContextMenuItem icon={FileCode2} onClick={() => void copyDdl()}>
-            Copy CREATE{" "}
-            {table.kind === "view" || table.kind === "matview"
-              ? "VIEW"
-              : "TABLE"}
+            Copy CREATE {isViewKind(table.kind) ? "VIEW" : "TABLE"}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

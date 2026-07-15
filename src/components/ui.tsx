@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, Eye, Loader2, RefreshCw, Table2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type {
   ButtonHTMLAttributes,
@@ -8,8 +8,32 @@ import type {
   ReactNode,
   SelectHTMLAttributes,
 } from "react";
+import { isViewKind } from "../lib/types";
 
 export const cn = clsx;
+
+/** Relation icon by catalog kind — keeps the sidebar tree and the tab bar
+ *  telling the same story about what a relation is. */
+export function RelIcon({
+  kind,
+  className,
+}: {
+  kind: string | undefined;
+  className?: string;
+}) {
+  const view = isViewKind(kind);
+  const Icon = view ? Eye : Table2;
+  return (
+    <Icon
+      size={12}
+      className={cn(
+        view ? "text-violet-400" : "text-sky-500",
+        "shrink-0",
+        className,
+      )}
+    />
+  );
+}
 
 /** Full-screen dimmed backdrop; a mousedown on it (not its content) closes.
  *  Opt into `closeOnEsc` for dialogs that should also dismiss on Escape —

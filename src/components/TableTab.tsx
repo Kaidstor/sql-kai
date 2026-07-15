@@ -9,7 +9,12 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
-import type { ColumnInfo, RelationInfo, SortSpec } from "../lib/types";
+import {
+  isViewKind,
+  type ColumnInfo,
+  type RelationInfo,
+  type SortSpec,
+} from "../lib/types";
 import { ReconnectButton } from "./ReconnectButton";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
@@ -146,7 +151,7 @@ export function TableTab({ tab }: { tab: Tab }) {
   const relKind = (tables[tab.profileId] ?? []).find(
     (t) => t.schema === state.schema && t.name === state.table,
   )?.kind;
-  const isView = relKind === "view" || relKind === "matview";
+  const isView = isViewKind(relKind);
   const disabledReason = isView
     ? `Read-only: ${relKind}s cannot be edited`
     : !cols
