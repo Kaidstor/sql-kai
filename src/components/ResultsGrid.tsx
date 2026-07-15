@@ -8,6 +8,7 @@ import {
   Fragment,
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,11 @@ import { useColumnLayout } from "./grid/useColumnLayout";
 import { useGridSelection } from "./grid/useGridSelection";
 
 export type { GridEditing } from "./grid/types";
+
+/** Scroll offsets per result object — same lifetime as the selection
+ *  snapshots in useGridSelection: survive the unmount on tab switch, gone
+ *  with a new result. */
+const scrollPos = new WeakMap<StatementResult, { top: number; left: number }>();
 
 interface Props {
   result: StatementResult;
@@ -82,9 +88,35 @@ function ResultsGridImpl({
   // is inside it — clicks outside the grid naturally deactivate them.
   const gridRef = useRef<HTMLDivElement>(null);
   const focusGrid = () => gridRef.current?.focus();
+  /** The vertical scroller (body only — the header sits outside it). */
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
 
   const layout = useColumnLayout(result, onHiddenColsChange);
   const { hiddenCols } = layout;
+  const headTableRef = layout.tableRef;
+
+  /** Slides the frozen header to match the body's horizontal scroll. Done with
+   *  a transform rather than scrollLeft on the header pane: the pane has no
+   *  scrollbar, so its scroll range is shorter than the body's and would clamp
+   *  (misaligning the columns) at the far right. */
+  const syncHeader = (left: number) => {
+    const t = headTableRef.current;
+    if (t) t.style.transform = `translateX(${-left}px)`;
+  };
+
+  // Coming back to the tab lands where the user left off, not at row 1.
+  useLayoutEffect(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    const pos = scrollPos.get(result);
+    if (pos) {
+      el.scrollTop = pos.top;
+      el.scrollLeft = pos.left;
+    }
+    // Always re-sync: a new result keeps the DOM node (and its transform), but
+    // its scrollLeft may clamp to narrower content without firing a scroll.
+    syncHeader(el.scrollLeft);
+  }, [result]);
 
   const sel = useGridSelection(result, { hiddenCols, focusGrid });
   const {
@@ -402,6 +434,25 @@ function ResultsGridImpl({
     closeDialog();
   };
 
+  // Header and body are two separate tables (see the header pane below), so
+  // both get the same width + colgroup to keep their columns lined up.
+  const tableStyle = layout.sized
+    ? { tableLayout: "fixed" as const, width: layout.totalW }
+    : undefined;
+  const tableClass = "border-separate border-spacing-0 text-[12px] font-mono";
+  const colgroup = (
+    <colgroup>
+      <col style={layout.sized ? { width: layout.colWidths[-1] } : undefined} />
+      {result.columns.map((_c, i) =>
+        hiddenCols.has(i) ? null : (
+          <col
+            key={i}
+            style={layout.sized ? { width: layout.colWidths[i] } : undefined}
+          />
+        ),
+      )}
+    </colgroup>
+  );
   return (
     <>
     <ContextMenu>
@@ -423,18 +474,16 @@ function ResultsGridImpl({
           if (!el.closest?.("td")) setMenuCell(null);
           if (!el.closest?.("th")) setMenuCol(null);
         }}
-        className="block h-full overflow-auto outline-none"
+        className="flex h-full flex-col outline-none"
       >
-        <table
-          ref={layout.tableRef}
-          style={
-            layout.sized
-              ? { tableLayout: "fixed", width: layout.totalW }
-              : undefined
-          }
-          className="border-separate border-spacing-0 text-[12px] font-mono"
-        >
-          <thead className="sticky top-0 z-10">
+        {/* The header lives outside the scroller instead of being a sticky
+         *  thead inside it: WebKit (WKWebView) lets rows bleed past a pinned
+         *  element in an overflow container on retina, which showed up as a
+         *  ghost row at the header's edge while scrolling. */}
+        <div className="shrink-0 overflow-hidden">
+          <table ref={headTableRef} style={tableStyle} className={tableClass}>
+            {colgroup}
+            <thead>
             <tr>
               <th
                 style={layout.sized ? { width: layout.colWidths[-1] } : undefined}
@@ -526,8 +575,26 @@ function ResultsGridImpl({
                 );
               })}
             </tr>
-          </thead>
-          <tbody>
+            </thead>
+          </table>
+        </div>
+
+        <div
+          ref={bodyScrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            syncHeader(el.scrollLeft);
+            scrollPos.set(result, { top: el.scrollTop, left: el.scrollLeft });
+          }}
+          className="min-h-0 flex-1 overflow-auto"
+        >
+          <table
+            ref={layout.bodyTableRef}
+            style={tableStyle}
+            className={tableClass}
+          >
+            {colgroup}
+            <tbody>
             {result.rows.map((row, ri) => {
               const isSelected = selected.has(ri);
               const isDeleted = deletedRows.has(ri);
@@ -762,6 +829,7 @@ function ResultsGridImpl({
         {result.rows.length === 0 && (
           <div className="px-3 py-2 text-[12px] text-zinc-500">no rows</div>
         )}
+        </div>
       </ContextMenuTrigger>
 
       <ContextMenuContent>

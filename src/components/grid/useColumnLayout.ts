@@ -18,7 +18,11 @@ export function useColumnLayout(
   result: StatementResult,
   onHiddenColsChange?: (hidden: ReadonlySet<number>) => void,
 ) {
+  /** Header table (holds the thead) — also the font source for fitWidth. */
   const tableRef = useRef<HTMLTableElement>(null);
+  /** Body table (holds the tbody); header and body are separate tables so the
+   *  header can sit outside the scroller — see ResultsGrid. */
+  const bodyTableRef = useRef<HTMLTableElement>(null);
   const [colWidths, setColWidths] = useState<Record<number, number>>({});
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
   const [sizedFor, setSizedFor] = useState<string | null>(null);
@@ -34,9 +38,18 @@ export function useColumnLayout(
     if (sized) return;
     const ths = tableRef.current?.querySelectorAll("thead th");
     if (!ths || ths.length === 0) return;
+    // Header and body are separate tables, so each auto-sizes to its own
+    // content (header → column names, body → values). Take the wider of the
+    // two per column, which is what the single auto-layout table used to give.
+    // Cell index 0 is the row-number gutter, stored under key -1.
     const widths: Record<number, number> = {};
     ths.forEach((th, i) => {
       widths[i - 1] = Math.ceil(th.getBoundingClientRect().width);
+    });
+    const tds = bodyTableRef.current?.querySelectorAll("tbody tr:first-child td");
+    tds?.forEach((td, i) => {
+      const w = Math.ceil(td.getBoundingClientRect().width);
+      if (w > (widths[i - 1] ?? 0)) widths[i - 1] = w;
     });
     setColWidths(widths);
     changeHiddenCols(new Set());
@@ -123,6 +136,7 @@ export function useColumnLayout(
 
   return {
     tableRef,
+    bodyTableRef,
     colWidths,
     hiddenCols,
     sized,

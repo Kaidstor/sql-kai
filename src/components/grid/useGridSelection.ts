@@ -2,26 +2,54 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { StatementResult } from "../../lib/types";
 import type { CellRange, CellRef } from "./types";
 
+/** Selection state of one result object. Tabs unmount on switch (the tab
+ *  components are keyed by tab id), which used to drop the selection — the
+ *  snapshot survives the unmount and is restored while the store still holds
+ *  the same result object. A new result (re-run, page change, local sort)
+ *  isn't in the map, so it starts clean exactly like before. */
+interface SelectionSnapshot {
+  selected: ReadonlySet<number>;
+  anchor: number | null;
+  selCols: ReadonlySet<number>;
+  colAnchor: number | null;
+  focused: CellRef | null;
+  cellSel: CellRange | null;
+}
+const snapshots = new WeakMap<StatementResult, SelectionSnapshot>();
+
 /**
  * The grid's selection model: whole rows (number gutter), whole columns
  * (header click), a focused cell and a rectangular cell range — the three
  * kinds are mutually exclusive. Also owns the mouse-drag state: cell drags
  * anchor on mousedown and extend over hovered cells; gutter drags extend the
- * row range. Everything resets when the result object is swapped.
+ * row range. Everything resets when the result object is swapped and is
+ * restored across remounts of the same result (tab switches).
  */
 export function useGridSelection(
   result: StatementResult,
   opts: { hiddenCols: ReadonlySet<number>; focusGrid: () => void },
 ) {
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
-  const [anchor, setAnchor] = useState<number | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<number>>(
+    () => snapshots.get(result)?.selected ?? new Set(),
+  );
+  const [anchor, setAnchor] = useState<number | null>(
+    () => snapshots.get(result)?.anchor ?? null,
+  );
   /** Whole-column selection (header click; shift/⌘ extend), exclusive with
    *  row and cell selection. */
-  const [selCols, setSelCols] = useState<ReadonlySet<number>>(new Set());
-  const [colAnchor, setColAnchor] = useState<number | null>(null);
-  const [focused, setFocused] = useState<CellRef | null>(null);
+  const [selCols, setSelCols] = useState<ReadonlySet<number>>(
+    () => snapshots.get(result)?.selCols ?? new Set(),
+  );
+  const [colAnchor, setColAnchor] = useState<number | null>(
+    () => snapshots.get(result)?.colAnchor ?? null,
+  );
+  const [focused, setFocused] = useState<CellRef | null>(
+    () => snapshots.get(result)?.focused ?? null,
+  );
   /** Rectangular cell selection (shift+click extends from the anchor). */
-  const [cellSel, setCellSel] = useState<CellRange | null>(null);
+  const [cellSel, setCellSel] = useState<CellRange | null>(
+    () => snapshots.get(result)?.cellSel ?? null,
+  );
 
   // Mouse-drag cell selection: anchor on mousedown, extend while the button
   // is held over other cells; mouseup anywhere (incl. outside) ends it.
@@ -37,7 +65,12 @@ export function useGridSelection(
     return () => window.removeEventListener("mouseup", up);
   }, []);
 
+  // Mount restores via the lazy initializers above; this only reacts to the
+  // result being swapped while mounted (re-run / page change / local sort).
+  const lastResult = useRef(result);
   useEffect(() => {
+    if (lastResult.current === result) return;
+    lastResult.current = result;
     setSelected(new Set());
     setAnchor(null);
     setSelCols(new Set());
@@ -45,6 +78,20 @@ export function useGridSelection(
     setFocused(null);
     setCellSel(null);
   }, [result]);
+
+  useEffect(() => {
+    // Guard against the render right after a swap, where the state values
+    // still belong to the previous result.
+    if (lastResult.current !== result) return;
+    snapshots.set(result, {
+      selected,
+      anchor,
+      selCols,
+      colAnchor,
+      focused,
+      cellSel,
+    });
+  });
 
   const rect = cellSel
     ? {
