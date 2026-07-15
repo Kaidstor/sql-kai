@@ -116,10 +116,45 @@ pub fn triggers_sql(regclass: &str) -> String {
                   CASE WHEN (t.tgtype & 8) > 0 THEN 'DELETE' END,
                   CASE WHEN (t.tgtype & 16) > 0 THEN 'UPDATE' END,
                   CASE WHEN (t.tgtype & 32) > 0 THEN 'TRUNCATE' END),
-                pg_get_triggerdef(t.oid)
+                pg_get_triggerdef(t.oid),
+                (t.tgenabled <> 'D')::text
          FROM pg_trigger t
          WHERE t.tgrelid = {regclass}::regclass AND NOT t.tgisinternal
          ORDER BY t.tgname"
+    )
+}
+
+/// Every enum type with its labels, one row per label (ordered by
+/// enumsortorder — the frontend groups consecutive rows into types).
+pub const ENUMS_SQL: &str = "\
+SELECT n.nspname, t.typname, e.enumlabel
+FROM pg_enum e
+JOIN pg_type t ON t.oid = e.enumtypid
+JOIN pg_namespace n ON n.oid = t.typnamespace
+ORDER BY n.nspname, t.typname, e.enumsortorder";
+
+pub fn policies_sql(regclass: &str) -> String {
+    format!(
+        "SELECT pol.polname,
+                CASE pol.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT'
+                     WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END,
+                pol.polpermissive::text,
+                (SELECT string_agg(r.rolname, ', ' ORDER BY r.rolname)
+                   FROM pg_roles r WHERE r.oid = ANY(pol.polroles)),
+                pg_get_expr(pol.polqual, pol.polrelid),
+                pg_get_expr(pol.polwithcheck, pol.polrelid)
+         FROM pg_policy pol
+         WHERE pol.polrelid = {regclass}::regclass
+         ORDER BY pol.polname"
+    )
+}
+
+/// Row-level-security switches of the table itself (policies apply only
+/// while relrowsecurity is on).
+pub fn rls_sql(regclass: &str) -> String {
+    format!(
+        "SELECT c.relrowsecurity::text, c.relforcerowsecurity::text
+         FROM pg_class c WHERE c.oid = {regclass}::regclass"
     )
 }
 

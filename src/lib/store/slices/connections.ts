@@ -6,6 +6,7 @@ import { persistClosedTabs, persistWorkspace, removeWorkspace } from "../../pers
 import type {
   CliSessionInfo,
   ColumnInfo,
+  EnumTypeInfo,
   Profile,
   RelationInfo,
   SessionInfo,
@@ -38,6 +39,8 @@ export interface ConnectionsSlice {
   schemaColumns: Record<string, TableColumns[]>;
   /** User functions for the symbols palette, fetched on first open. */
   schemaFunctions: Record<string, FunctionInfo[]>;
+  /** Enum types with labels (filter-value suggestions), fetched on first use. */
+  schemaEnums: Record<string, EnumTypeInfo[]>;
   activeProfileId: string | null;
   /** Broker-owned sql-kai sessions by profileId — the "cli" badges. */
   cliSessions: Record<string, CliSessionInfo>;
@@ -61,6 +64,8 @@ export interface ConnectionsSlice {
   refreshCliSessions: () => Promise<void>;
   /** Fetches the profile's functions once (symbols palette data). */
   loadSchemaFunctions: (profileId: string) => Promise<void>;
+  /** Fetches the profile's enum types once (filter-value suggestions). */
+  loadSchemaEnums: (profileId: string) => Promise<void>;
   saveProfile: (
     profile: Profile,
     password: string | null,
@@ -132,6 +137,7 @@ export function createConnectionsSlice(
     tables: {},
     schemaColumns: {},
     schemaFunctions: {},
+    schemaEnums: {},
     activeProfileId: null,
     cliSessions: {},
     tableColumns: {},
@@ -275,6 +281,7 @@ export function createConnectionsSlice(
           tables: without(s.tables, profileId),
           schemaColumns: without(s.schemaColumns, profileId),
           schemaFunctions: without(s.schemaFunctions, profileId),
+          schemaEnums: without(s.schemaEnums, profileId),
           tableColumns: omitBy(s.tableColumns, byProfile),
           tableRelations: omitBy(s.tableRelations, byProfile),
           tabs,
@@ -388,6 +395,20 @@ export function createConnectionsSlice(
         }));
       } catch {
         // non-fatal: the palette just shows tables/columns only
+      }
+    },
+
+    loadSchemaEnums: async (profileId) => {
+      if (get().schemaEnums[profileId]) return;
+      const session = get().sessions[profileId];
+      if (!session) return;
+      try {
+        const enums = await api.listEnums(session.sessionId);
+        set((s) => ({
+          schemaEnums: { ...s.schemaEnums, [profileId]: enums },
+        }));
+      } catch {
+        // non-fatal: filter-value suggestions just stay off
       }
     },
 

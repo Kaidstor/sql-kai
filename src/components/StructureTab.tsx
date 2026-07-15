@@ -1,5 +1,5 @@
-import { Check, Plus, Undo2, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { Plus, Undo2, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import {
   useApp,
   type NewColumn,
@@ -7,8 +7,19 @@ import {
   type StructureTabState,
   type Tab,
 } from "../lib/store";
-import { relIdent } from "../lib/sql";
 import { TabError } from "./TabError";
+import { IndexesSection } from "./structure/IndexesSection";
+import { PoliciesSection } from "./structure/PoliciesSection";
+import { RelationsSection } from "./structure/RelationsSection";
+import { TriggersSection } from "./structure/TriggersSection";
+import {
+  BoolMark,
+  EditableCell,
+  SectionTable,
+  Td,
+  Th,
+  ZTr,
+} from "./structure/shared";
 import {
   Button,
   IconButton,
@@ -18,145 +29,13 @@ import {
   cn,
 } from "./ui";
 
-const SECTIONS: { key: StructureSection; label: string }[] = [
-  { key: "columns", label: "Columns" },
-  { key: "indexes", label: "Indexes" },
-  { key: "relations", label: "Relations" },
-  { key: "triggers", label: "Triggers" },
+const SECTIONS: { key: StructureSection; label: string; add: string }[] = [
+  { key: "columns", label: "Columns", add: "Add column" },
+  { key: "indexes", label: "Indexes", add: "Add index" },
+  { key: "relations", label: "Relations", add: "Add foreign key" },
+  { key: "triggers", label: "Triggers", add: "Add trigger" },
+  { key: "policies", label: "Policies", add: "Add policy" },
 ];
-
-/** Double-click-to-edit cell: Enter stages the change, Esc/blur cancels. */
-function EditableCell({
-  value,
-  placeholder,
-  className,
-  onCommit,
-}: {
-  value: string;
-  placeholder?: string;
-  className?: string;
-  onCommit: (next: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-
-  // Both states are exactly h-6 with text starting 6px from the cell edge,
-  // so toggling edit mode never shifts the row.
-  if (!editing) {
-    return (
-      <div
-        title="Double-click to edit · Enter stages"
-        onDoubleClick={() => {
-          setDraft(value);
-          setEditing(true);
-        }}
-        className={cn(
-          "h-6 leading-6 cursor-text truncate rounded px-1.5 -mx-1.5",
-          "hover:bg-zinc-800/70 hover:ring-1 hover:ring-zinc-700",
-          !value && "italic text-zinc-600",
-          className,
-        )}
-      >
-        {value || placeholder || "—"}
-      </div>
-    );
-  }
-  return (
-    <input
-      autoFocus
-      spellCheck={false}
-      autoCorrect="off"
-      autoCapitalize="off"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => setEditing(false)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          setEditing(false);
-          if (draft !== value) onCommit(draft);
-        }
-        if (e.key === "Escape") setEditing(false);
-      }}
-      className={cn(
-        "h-6 w-[calc(100%+0.75rem)] -mx-1.5 rounded border border-sky-600/70 bg-zinc-900",
-        "px-[5px] font-mono text-[12px] text-zinc-100 focus:outline-none",
-      )}
-    />
-  );
-}
-
-function Th({ children, className }: { children?: ReactNode; className?: string }) {
-  return (
-    <th
-      className={cn(
-        "px-3 py-2 text-left text-[11px] font-semibold tracking-wide text-zinc-500",
-        className,
-      )}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Td({
-  children,
-  className,
-  colSpan,
-}: {
-  children?: ReactNode;
-  className?: string;
-  colSpan?: number;
-}) {
-  return (
-    <td colSpan={colSpan} className={cn("px-3 py-1.5 align-middle", className)}>
-      {children}
-    </td>
-  );
-}
-
-/** Full-width monospace table with the sticky header row shared by all
- *  four structure sections. */
-function SectionTable({ head, children }: { head: ReactNode; children: ReactNode }) {
-  return (
-    <table className="w-full text-[12px] font-mono">
-      <thead className="sticky top-0 z-10 bg-zinc-950">
-        <tr className="border-b border-zinc-800">{head}</tr>
-      </thead>
-      <tbody>{children}</tbody>
-    </table>
-  );
-}
-
-/** Zebra-striped body row. */
-function ZTr({
-  index,
-  className,
-  children,
-}: {
-  index: number;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    <tr
-      className={cn(
-        "border-b border-zinc-800/50",
-        index % 2 === 1 && "bg-zinc-900/40",
-        className,
-      )}
-    >
-      {children}
-    </tr>
-  );
-}
-
-function BoolMark({ value }: { value: boolean }) {
-  return value ? (
-    <Check size={14} className="text-emerald-400" />
-  ) : (
-    <span className="inline-block size-3.5 rounded border border-zinc-700" />
-  );
-}
 
 function AddColumnRow({
   onAdd,
@@ -226,14 +105,12 @@ export function StructureTab({ tab }: { tab: Tab }) {
   const sessions = useApp((s) => s.sessions);
   const setStructureSection = useApp((s) => s.setStructureSection);
   const refreshStructure = useApp((s) => s.refreshStructure);
-  const runDdl = useApp((s) => s.runDdl);
   const stageColumnEdit = useApp((s) => s.stageColumnEdit);
   const toggleColumnDrop = useApp((s) => s.toggleColumnDrop);
   const stageColumnAdd = useApp((s) => s.stageColumnAdd);
   const unstageColumnAdd = useApp((s) => s.unstageColumnAdd);
   const discardStructureEdits = useApp((s) => s.discardStructureEdits);
   const applyStructureEdits = useApp((s) => s.applyStructureEdits);
-  const confirmDialog = useApp((s) => s.confirmDialog);
   const [adding, setAdding] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
 
@@ -245,11 +122,19 @@ export function StructureTab({ tab }: { tab: Tab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
-  const ddl = (sql: string) => void runDdl(tab.id, sql);
   const dirty =
     Object.keys(state.colEdits).length +
     state.colDrops.length +
     state.colAdds.length;
+
+  const sectionEmpty =
+    state.section === "columns"
+      ? false
+      : state.section === "policies"
+        ? state.policies?.policies.length === 0
+        : state[state.section]?.length === 0;
+
+  const sectionProps = { tab, adding, onCloseAdd: () => setAdding(false) };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -260,7 +145,10 @@ export function StructureTab({ tab }: { tab: Tab }) {
         {SECTIONS.map((s) => (
           <button
             key={s.key}
-            onClick={() => setStructureSection(tab.id, s.key)}
+            onClick={() => {
+              setAdding(false);
+              setStructureSection(tab.id, s.key);
+            }}
             className={cn(
               "rounded-md px-2.5 py-1 text-[12px] transition-colors",
               state.section === s.key
@@ -281,11 +169,12 @@ export function StructureTab({ tab }: { tab: Tab }) {
           />
         )}
         <div className="ml-auto flex items-center gap-0.5">
-          {state.section === "columns" && (
-            <IconButton title="Add column" onClick={() => setAdding(true)}>
-              <Plus size={14} />
-            </IconButton>
-          )}
+          <IconButton
+            title={SECTIONS.find((s) => s.key === state.section)?.add}
+            onClick={() => setAdding(true)}
+          >
+            <Plus size={14} />
+          </IconButton>
           <RefreshButton
             busy={state.loading}
             onClick={() => void refreshStructure(tab.id)}
@@ -474,108 +363,23 @@ export function StructureTab({ tab }: { tab: Tab }) {
         )}
 
         {!state.error && state.section === "indexes" && (
-          <SectionTable
-            head={
-              <>
-                <Th className="w-[30%]">Name</Th>
-                <Th className="w-16">Unique</Th>
-                <Th className="w-16">Primary</Th>
-                <Th>Columns</Th>
-                <Th className="w-10" />
-              </>
-            }
-          >
-              {state.indexes?.map((idx, i) => (
-                <ZTr key={idx.name} index={i}>
-                  <Td className="text-zinc-100" >
-                    <span title={idx.definition}>{idx.name}</span>
-                  </Td>
-                  <Td className="text-center">
-                    <BoolMark value={idx.unique} />
-                  </Td>
-                  <Td className="text-center">
-                    <BoolMark value={idx.primary} />
-                  </Td>
-                  <Td className="text-zinc-400">{idx.columns ?? "(expression)"}</Td>
-                  <Td>
-                    <IconButton
-                      title={idx.primary ? "Primary key — drop via constraint" : `Drop index ${idx.name}`}
-                      disabled={idx.primary}
-                      onClick={async () => {
-                        const ok = await confirmDialog({
-                          title: `Drop index "${idx.name}"?`,
-                          confirmLabel: "Drop",
-                          danger: true,
-                        });
-                        if (ok) ddl(`DROP INDEX ${relIdent(state.schema, idx.name)}`);
-                      }}
-                    >
-                      <X size={13} />
-                    </IconButton>
-                  </Td>
-                </ZTr>
-              ))}
-          </SectionTable>
+          <IndexesSection {...sectionProps} />
         )}
-
         {!state.error && state.section === "relations" && (
-          <SectionTable
-            head={
-              <>
-                <Th className="w-[26%]">Name</Th>
-                <Th>Columns</Th>
-                <Th>References</Th>
-                <Th>Ref. columns</Th>
-                <Th className="w-28">On update</Th>
-                <Th className="w-28">On delete</Th>
-              </>
-            }
-          >
-            {state.relations?.map((r, i) => (
-                <ZTr key={r.name} index={i}>
-                  <Td className="text-zinc-100">{r.name}</Td>
-                  <Td className="text-zinc-400">{r.columns}</Td>
-                  <Td className="text-sky-400">{r.refTable}</Td>
-                  <Td className="text-zinc-400">{r.refColumns}</Td>
-                  <Td className="text-zinc-500">{r.onUpdate}</Td>
-                  <Td className="text-zinc-500">{r.onDelete}</Td>
-                </ZTr>
-              ))}
-          </SectionTable>
+          <RelationsSection {...sectionProps} />
         )}
-
         {!state.error && state.section === "triggers" && (
-          <SectionTable
-            head={
-              <>
-                <Th className="w-[26%]">Name</Th>
-                <Th className="w-28">Timing</Th>
-                <Th className="w-44">Events</Th>
-                <Th>Definition</Th>
-              </>
-            }
-          >
-            {state.triggers?.map((t, i) => (
-                <ZTr key={t.name} index={i}>
-                  <Td className="text-zinc-100">{t.name}</Td>
-                  <Td className="text-zinc-400">{t.timing}</Td>
-                  <Td className="text-zinc-400">{t.events}</Td>
-                  <Td className="max-w-0 truncate text-zinc-500" >
-                    <span title={t.definition}>{t.definition}</span>
-                  </Td>
-                </ZTr>
-              ))}
-          </SectionTable>
+          <TriggersSection {...sectionProps} />
+        )}
+        {!state.error && state.section === "policies" && (
+          <PoliciesSection {...sectionProps} />
         )}
 
-        {!state.error &&
-          !state.loading &&
-          state.section !== "columns" &&
-          state[state.section]?.length === 0 && (
-            <div className="flex h-32 items-center justify-center text-[13px] text-zinc-600">
-              No {state.section}
-            </div>
-          )}
+        {!state.error && !state.loading && !adding && sectionEmpty && (
+          <div className="flex h-32 items-center justify-center text-[13px] text-zinc-600">
+            No {state.section}
+          </div>
+        )}
       </div>
     </div>
   );

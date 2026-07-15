@@ -106,7 +106,12 @@ export interface ActivityTabState {
   showIdle: boolean;
 }
 
-export type StructureSection = "columns" | "indexes" | "relations" | "triggers";
+export type StructureSection =
+  | "columns"
+  | "indexes"
+  | "relations"
+  | "triggers"
+  | "policies";
 
 /** Staged field changes for one column; only present keys are applied. */
 export interface ColumnPatch {
@@ -135,6 +140,7 @@ export interface StructureTabState {
   indexes?: import("../types").IndexInfo[];
   relations?: import("../types").RelationInfo[];
   triggers?: import("../types").TriggerInfo[];
+  policies?: import("../types").TablePolicies;
   loading: boolean;
   error?: string;
   /** См. QueryTabState.connectionLost. */

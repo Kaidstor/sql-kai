@@ -336,6 +336,8 @@ pub fn run() {
             commands::list_indexes,
             commands::list_relations,
             commands::list_triggers,
+            commands::list_enums,
+            commands::list_policies,
             commands::get_table_page,
             commands::save_text_file,
             commands::copy_text_concealed,

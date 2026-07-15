@@ -169,6 +169,33 @@ export interface TriggerInfo {
   timing: string;
   events: string;
   definition: string;
+  /** false = ALTER TABLE … DISABLE TRIGGER (tgenabled = 'D'). */
+  enabled: boolean;
+}
+
+/** One enum type with its labels, for filter-value suggestions. */
+export interface EnumTypeInfo {
+  schema: string;
+  name: string;
+  labels: string[];
+}
+
+export interface PolicyInfo {
+  name: string;
+  /** ALL / SELECT / INSERT / UPDATE / DELETE. */
+  command: string;
+  permissive: boolean;
+  /** null = PUBLIC. */
+  roles?: string | null;
+  usingExpr?: string | null;
+  checkExpr?: string | null;
+}
+
+/** RLS switches + policies of one table. */
+export interface TablePolicies {
+  rlsEnabled: boolean;
+  rlsForced: boolean;
+  policies: PolicyInfo[];
 }
 
 export interface TablePage {

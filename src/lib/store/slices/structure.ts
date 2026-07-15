@@ -72,6 +72,9 @@ export function createStructureSlice(
         triggers: async () => ({
           triggers: await api.listTriggers(session.sessionId, schema, table),
         }),
+        policies: async () => ({
+          policies: await api.listPolicies(session.sessionId, schema, table),
+        }),
       };
       patchTab<StructureTabState>(tabId, {
         loading: true,

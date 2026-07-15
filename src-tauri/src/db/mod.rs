@@ -9,8 +9,8 @@ mod catalog;
 pub use tokio_postgres::types::Type;
 
 pub use catalog::{
-    columns_sql, indexes_sql, quote_ident, quote_literal, regclass_literal, relations_sql,
-    table_ddl, triggers_sql, TABLES_COUNTS_SQL, TABLES_SQL,
+    columns_sql, indexes_sql, policies_sql, quote_ident, quote_literal, regclass_literal,
+    relations_sql, rls_sql, table_ddl, triggers_sql, ENUMS_SQL, TABLES_COUNTS_SQL, TABLES_SQL,
 };
 pub use connect::{connect, ConnectOptions, Connected, Session};
 pub use exec::{

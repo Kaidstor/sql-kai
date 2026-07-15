@@ -15,10 +15,11 @@ import {
   type RelationInfo,
   type SortSpec,
 } from "../lib/types";
+import { FilterBar } from "./FilterBar";
 import { ReconnectButton } from "./ReconnectButton";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
-import { cn, IconButton, PendingChangesBar, RefreshButton, Select } from "./ui";
+import { IconButton, PendingChangesBar, RefreshButton, Select } from "./ui";
 
 function formatApprox(n: number): string {
   if (n < 0) return "~?";
@@ -68,13 +69,11 @@ export function TableTab({ tab }: { tab: Tab }) {
   // Hidden grid columns, mirrored from ResultsGrid — the "current view as
   // query" SQL leaves them out. Indices refer to state.data.result.columns.
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
-  // WHERE bar: draft until Enter applies it; auto-shown while a filter is on.
+  // WHERE bar (see FilterBar): auto-shown while a filter is on.
   const [showFilter, setShowFilter] = useState(Boolean(state.filter));
-  const [filterDraft, setFilterDraft] = useState(state.filter);
 
-  // External filter changes (FK navigation onto this tab) resync the bar.
+  // External filter changes (FK navigation onto this tab) pop the bar open.
   useEffect(() => {
-    setFilterDraft(state.filter);
     if (state.filter) setShowFilter(true);
   }, [state.filter]);
 
@@ -328,53 +327,14 @@ export function TableTab({ tab }: { tab: Tab }) {
       </div>
 
       {showFilter && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-3 py-1">
-          <span className="shrink-0 font-mono text-[11px] font-semibold text-zinc-500">
-            WHERE
-          </span>
-          <input
-            autoFocus={!state.filter}
-            value={filterDraft}
-            onChange={(e) => setFilterDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                void refreshTablePage(tab.id, {
-                  filter: filterDraft.trim(),
-                  page: 0,
-                });
-              } else if (e.key === "Escape") {
-                setFilterDraft(state.filter);
-                if (!state.filter) setShowFilter(false);
-              }
-            }}
-            placeholder="status = 'active' AND created_at > now() - interval '1 day'"
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            className={cn(
-              "min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-zinc-700",
-              filterDraft !== state.filter ? "text-amber-200" : "text-zinc-100",
-            )}
-          />
-          {filterDraft !== state.filter && (
-            <span className="shrink-0 text-[10px] text-amber-400/80">
-              ⏎ apply
-            </span>
-          )}
-          {(state.filter || filterDraft) && (
-            <IconButton
-              title="Clear filter"
-              onClick={() => {
-                setFilterDraft("");
-                if (state.filter) {
-                  void refreshTablePage(tab.id, { filter: "", page: 0 });
-                }
-              }}
-            >
-              <X size={12} />
-            </IconButton>
-          )}
-        </div>
+        <FilterBar
+          tabId={tab.id}
+          profileId={tab.profileId}
+          filter={state.filter}
+          columns={cols}
+          dataColumns={state.data?.result.columns ?? []}
+          onHide={() => setShowFilter(false)}
+        />
       )}
 
       {state.applyError && (

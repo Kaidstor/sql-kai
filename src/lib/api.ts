@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CliSessionInfo,
   ColumnInfo,
+  EnumTypeInfo,
   ExecResult,
   HistoryEntry,
   IndexInfo,
@@ -14,6 +15,7 @@ import type {
   TableColumns,
   TableInfo,
   TablePage,
+  TablePolicies,
   TriggerInfo,
   TxStatus,
   VaultStatus,
@@ -147,6 +149,12 @@ export const api = {
 
   listTriggers: (sessionId: string, schema: string, table: string) =>
     invoke<TriggerInfo[]>("list_triggers", { sessionId, schema, table }),
+
+  listEnums: (sessionId: string) =>
+    invoke<EnumTypeInfo[]>("list_enums", { sessionId }),
+
+  listPolicies: (sessionId: string, schema: string, table: string) =>
+    invoke<TablePolicies>("list_policies", { sessionId, schema, table }),
 
   getTablePage: (
     sessionId: string,

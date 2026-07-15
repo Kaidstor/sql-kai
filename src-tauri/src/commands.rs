@@ -727,6 +727,7 @@ pub struct TriggerInfo {
     pub timing: String,
     pub events: String,
     pub definition: String,
+    pub enabled: bool,
 }
 
 #[tauri::command]
@@ -745,8 +746,92 @@ pub async fn list_triggers(
             timing: cell(&row, 1),
             events: cell(&row, 2),
             definition: cell(&row, 3),
+            enabled: cell_bool(&row, 4),
         })
         .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnumTypeInfo {
+    pub schema: String,
+    pub name: String,
+    pub labels: Vec<String>,
+}
+
+/// Every enum type of the database with its labels — feeds filter-value
+/// suggestions; enums rarely change, the frontend caches per profile.
+#[tauri::command]
+pub async fn list_enums(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<EnumTypeInfo>, AppError> {
+    let rows = introspect_rows(&state, &session_id, db::ENUMS_SQL).await?;
+    let mut out: Vec<EnumTypeInfo> = Vec::new();
+    // Rows arrive ordered by schema+type, so grouping consecutively works.
+    for row in rows {
+        let schema = cell(&row, 0);
+        let name = cell(&row, 1);
+        let label = cell(&row, 2);
+        match out.last_mut() {
+            Some(last) if last.schema == schema && last.name == name => {
+                last.labels.push(label);
+            }
+            _ => out.push(EnumTypeInfo {
+                schema,
+                name,
+                labels: vec![label],
+            }),
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyInfo {
+    pub name: String,
+    pub command: String,
+    pub permissive: bool,
+    /// NULL = PUBLIC (pg_policy stores roles={0} for it).
+    pub roles: Option<String>,
+    pub using_expr: Option<String>,
+    pub check_expr: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TablePolicies {
+    pub rls_enabled: bool,
+    pub rls_forced: bool,
+    pub policies: Vec<PolicyInfo>,
+}
+
+#[tauri::command]
+pub async fn list_policies(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    table: String,
+) -> Result<TablePolicies, AppError> {
+    let regclass = db::regclass_literal(&schema, &table);
+    let rls = introspect_rows(&state, &session_id, &db::rls_sql(&regclass)).await?;
+    let rows = introspect_rows(&state, &session_id, &db::policies_sql(&regclass)).await?;
+    Ok(TablePolicies {
+        rls_enabled: rls.first().map(|r| cell_bool(r, 0)).unwrap_or(false),
+        rls_forced: rls.first().map(|r| cell_bool(r, 1)).unwrap_or(false),
+        policies: rows
+            .into_iter()
+            .map(|row| PolicyInfo {
+                name: cell(&row, 0),
+                command: cell(&row, 1),
+                permissive: cell_bool(&row, 2),
+                roles: row[3].clone(),
+                using_expr: row[4].clone(),
+                check_expr: row[5].clone(),
+            })
+            .collect(),
+    })
 }
 
 #[derive(Serialize)]
