@@ -54,6 +54,8 @@ export function CellDialog({
         <textarea
           autoFocus
           spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
           value={dialog.text}
           readOnly={!canEdit}
           onChange={(e) => onText(e.target.value)}

@@ -3,7 +3,7 @@ import { Check, ChevronDown, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type {
   ButtonHTMLAttributes,
-  InputHTMLAttributes,
+  ComponentProps,
   LabelHTMLAttributes,
   ReactNode,
   SelectHTMLAttributes,
@@ -264,9 +264,15 @@ export function PendingChangesBar({
 export function Input({
   className,
   ...props
-}: InputHTMLAttributes<HTMLInputElement>) {
+}: ComponentProps<"input">) {
   return (
     <input
+      // no macOS autocorrect/keychain popovers by default — every Input in
+      // the app holds technical values; callers can override via props
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+      autoComplete="off"
       className={cn(
         "w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[13px]",
         "text-zinc-100 placeholder:text-zinc-600",

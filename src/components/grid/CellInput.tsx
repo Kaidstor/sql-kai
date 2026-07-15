@@ -27,6 +27,9 @@ export function CellInput({
     <span className="flex h-[18px] w-full items-center gap-1">
       <input
         autoFocus
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onClick={(e) => e.stopPropagation()}

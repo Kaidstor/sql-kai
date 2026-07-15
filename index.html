@@ -7,7 +7,10 @@
     <title>Tauri + React + Typescript</title>
   </head>
 
-  <body>
+  <!-- kill macOS autocorrect/spellcheck popovers app-wide: every field here is
+       technical (SQL, hosts, identifiers); spellcheck is inherited by all
+       editable elements, per-element attrs cover the rest -->
+  <body spellcheck="false" autocorrect="off" autocapitalize="off">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

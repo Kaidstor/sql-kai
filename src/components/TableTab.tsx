@@ -344,6 +344,8 @@ export function TableTab({ tab }: { tab: Tab }) {
             }}
             placeholder="status = 'active' AND created_at > now() - interval '1 day'"
             spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
             className={cn(
               "min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:text-zinc-700",
               filterDraft !== state.filter ? "text-amber-200" : "text-zinc-100",

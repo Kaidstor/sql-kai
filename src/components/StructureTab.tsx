@@ -64,6 +64,9 @@ function EditableCell({
   return (
     <input
       autoFocus
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => setEditing(false)}

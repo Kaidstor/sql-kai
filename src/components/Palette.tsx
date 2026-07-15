@@ -79,6 +79,9 @@ function PaletteModal({
       <div className="w-[34rem] max-w-[92vw] overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
         <input
           autoFocus
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
           value={query}
           placeholder={placeholder}
           onChange={(e) => setQuery(e.target.value)}
