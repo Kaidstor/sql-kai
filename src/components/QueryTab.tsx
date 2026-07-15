@@ -2,11 +2,32 @@ import { PostgreSQL, sql, type SQLNamespace } from "@codemirror/lang-sql";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { CircleStop, Play, Route, Split, X } from "lucide-react";
+import {
+  AlignLeft,
+  CircleStop,
+  ClipboardPaste,
+  Copy,
+  Play,
+  Route,
+  Scissors,
+  Split,
+  TextSelect,
+  X,
+} from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { format } from "sql-formatter";
+import { copyText, readClipboardText } from "../lib/clipboard";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes, themeById } from "../lib/themes";
 import type { SortSpec, StatementResult } from "../lib/types";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "./ContextMenu";
 import { ExplainView } from "./ExplainView";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
@@ -96,6 +117,72 @@ function selectionText(view: EditorView): string | undefined {
   return text || undefined;
 }
 
+/** Editor selection per tab id — the editor unmounts on a tab switch, which
+ *  used to silently drop "Run selection"; restored on remount. */
+const editorSelections = new Map<string, { anchor: number; head: number }>();
+
+/** Formats the selection (if any) or the whole document as PostgreSQL. */
+function formatInView(view: EditorView) {
+  const { from, to } = view.state.selection.main;
+  const sel = selectionText(view) !== undefined;
+  const src = sel ? view.state.sliceDoc(from, to) : view.state.doc.toString();
+  if (!src.trim()) return;
+  let pretty: string;
+  try {
+    pretty = format(src, {
+      language: "postgresql",
+      tabWidth: 2,
+      keywordCase: "upper",
+    });
+  } catch (e) {
+    useApp
+      .getState()
+      .showToast(`Format failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  const range = sel ? { from, to } : { from: 0, to: view.state.doc.length };
+  view.dispatch({
+    changes: { ...range, insert: pretty },
+    // a formatted selection stays selected, so ⌘⏎ still runs the same SQL
+    selection: sel
+      ? { anchor: range.from, head: range.from + pretty.length }
+      : { anchor: Math.min(view.state.selection.main.head, pretty.length) },
+  });
+  view.focus();
+}
+
+function cutSelection(view: EditorView) {
+  const { from, to } = view.state.selection.main;
+  if (from === to) return;
+  void copyText(view.state.sliceDoc(from, to));
+  view.dispatch({ changes: { from, to, insert: "" } });
+  view.focus();
+}
+
+function copySelection(view: EditorView) {
+  const { from, to } = view.state.selection.main;
+  if (from === to) return;
+  void copyText(view.state.sliceDoc(from, to));
+  view.focus();
+}
+
+function pasteClipboard(view: EditorView) {
+  void readClipboardText().then((text) => {
+    if (!text) return;
+    const { from, to } = view.state.selection.main;
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: from + text.length },
+    });
+    view.focus();
+  });
+}
+
+function selectAllInView(view: EditorView) {
+  view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+  view.focus();
+}
+
 /** Keep in sync with the connections list height in Sidebar.tsx (max-h-[40%]). */
 const DEFAULT_EDITOR_PCT = 40;
 /** Minimum pane height while dragging; below half of it the editor snaps shut. */
@@ -167,6 +254,8 @@ export function QueryTab({ tab }: { tab: Tab }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet || u.docChanged) {
           setHasSelection(selectionText(u.view) !== undefined);
+          const m = u.view.state.selection.main;
+          editorSelections.set(tab.id, { anchor: m.anchor, head: m.head });
         }
       }),
       Prec.highest(
@@ -175,6 +264,13 @@ export function QueryTab({ tab }: { tab: Tab }) {
             key: "Mod-Enter",
             run: (view) => {
               void useApp.getState().runQuery(tab.id, selectionText(view));
+              return true;
+            },
+          },
+          {
+            key: "Shift-Alt-f",
+            run: (view) => {
+              formatInView(view);
               return true;
             },
           },
@@ -370,23 +466,79 @@ export function QueryTab({ tab }: { tab: Tab }) {
           }
           style={{ height: `${editorPct}%` }}
         >
-          <CodeMirror
-            value={state.sql}
-            onChange={(value) => setTabSql(tab.id, value)}
-            onCreateEditor={(view) => {
-              viewRef.current = view;
-            }}
-            extensions={extensions}
-            theme={lightTheme ? editorThemes.light : editorThemes.dark}
-            height="100%"
-            style={{ height: "100%" }}
-            placeholder="SELECT * FROM …"
-            basicSetup={{
-              foldGutter: false,
-              autocompletion: true,
-              highlightActiveLine: true,
-            }}
-          />
+          <ContextMenu>
+            <ContextMenuTrigger className="block h-full">
+              <CodeMirror
+                value={state.sql}
+                onChange={(value) => setTabSql(tab.id, value)}
+                onCreateEditor={(view) => {
+                  viewRef.current = view;
+                  // an accidental tab hop keeps the selection (see editorSelections)
+                  const saved = editorSelections.get(tab.id);
+                  const len = view.state.doc.length;
+                  if (saved && saved.anchor <= len && saved.head <= len) {
+                    view.dispatch({ selection: saved });
+                  }
+                }}
+                extensions={extensions}
+                theme={lightTheme ? editorThemes.light : editorThemes.dark}
+                height="100%"
+                style={{ height: "100%" }}
+                placeholder="SELECT * FROM …"
+                basicSetup={{
+                  foldGutter: false,
+                  autocompletion: true,
+                  highlightActiveLine: true,
+                }}
+              />
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                icon={Play}
+                disabled={!connected || !state.sql.trim() || state.running}
+                onClick={run}
+              >
+                {hasSelection ? "Run selection" : "Run"}
+                <ContextMenuShortcut>⌘⏎</ContextMenuShortcut>
+              </ContextMenuItem>
+              <ContextMenuItem
+                icon={AlignLeft}
+                disabled={!state.sql.trim()}
+                onClick={() => viewRef.current && formatInView(viewRef.current)}
+              >
+                {hasSelection ? "Format selection" : "Format query"}
+                <ContextMenuShortcut>⇧⌥F</ContextMenuShortcut>
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                icon={Scissors}
+                disabled={!hasSelection}
+                onClick={() => viewRef.current && cutSelection(viewRef.current)}
+              >
+                Cut
+              </ContextMenuItem>
+              <ContextMenuItem
+                icon={Copy}
+                disabled={!hasSelection}
+                onClick={() => viewRef.current && copySelection(viewRef.current)}
+              >
+                Copy
+              </ContextMenuItem>
+              <ContextMenuItem
+                icon={ClipboardPaste}
+                onClick={() => viewRef.current && pasteClipboard(viewRef.current)}
+              >
+                Paste
+              </ContextMenuItem>
+              <ContextMenuItem
+                icon={TextSelect}
+                disabled={!state.sql}
+                onClick={() => viewRef.current && selectAllInView(viewRef.current)}
+              >
+                Select all
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         </div>
 
         <div

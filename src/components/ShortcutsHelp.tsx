@@ -37,6 +37,7 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
       { keys: ["Ctrl", "C"], label: "Cancel running query" },
       { keys: ["Ctrl", "Space"], label: "Autocomplete" },
       { keys: [MOD, "F"], label: "Find in editor" },
+      { keys: [SHIFT, ALT, "F"], label: "Format query / selection" },
       { keys: [MOD, "S"], label: "Save query" },
     ],
   },
