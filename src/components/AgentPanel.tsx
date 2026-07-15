@@ -18,7 +18,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useState } from "react";
 import {
   activeProvider,
   AGENT_PROVIDERS,
@@ -26,6 +26,8 @@ import {
   type AgentPermission,
 } from "../lib/store/slices/agent";
 import { useApp } from "../lib/store";
+import { Conversation } from "./agent/Conversation";
+import { Markdown } from "./agent/Markdown";
 import { Button, cn, IconButton, Input, Select } from "./ui";
 
 /** Panel width survives close/open within the session (not persisted). */
@@ -48,7 +50,9 @@ function ToolStatusIcon({ status }: { status: string }) {
   return <Circle size={9} className="text-zinc-600" />;
 }
 
-function ItemView({ item }: { item: AgentChatItem }) {
+// memo: стрим дописывает только последний элемент — готовые сообщения
+// (включая уже отрендеренный markdown) не перерендериваются
+const ItemView = memo(function ItemView({ item }: { item: AgentChatItem }) {
   switch (item.kind) {
     case "user":
       return (
@@ -57,11 +61,7 @@ function ItemView({ item }: { item: AgentChatItem }) {
         </div>
       );
     case "assistant":
-      return (
-        <div className="selectable whitespace-pre-wrap text-[12px] leading-relaxed text-zinc-200">
-          {item.text}
-        </div>
-      );
+      return <Markdown text={item.text} />;
     case "thought":
       return (
         <div className="selectable whitespace-pre-wrap text-[11px] italic leading-relaxed text-zinc-500">
@@ -99,7 +99,7 @@ function ItemView({ item }: { item: AgentChatItem }) {
       );
     }
   }
-}
+});
 
 function PermissionCard({
   perm,
@@ -158,17 +158,9 @@ export function AgentPanel() {
   const [draft, setDraft] = useState("");
   const [width, setWidth] = useState(savedWidth);
   const [customDraft, setCustomDraft] = useState(settings.agentCustomCmd ?? "");
-  const listRef = useRef<HTMLDivElement>(null);
-  // Auto-scroll sticks to the bottom until the user scrolls up.
-  const stickBottom = useRef(true);
 
   const provider = activeProvider(settings);
   const busy = chat?.status === "running" || chat?.status === "starting";
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (el && stickBottom.current) el.scrollTop = el.scrollHeight;
-  }, [chat?.items, chat?.permission, chat?.status]);
 
   const doSend = () => {
     if (!activeProfileId || busy) return;
@@ -244,15 +236,7 @@ export function AgentPanel() {
         </div>
       )}
 
-      <div
-        ref={listRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickBottom.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-        }}
-        className="flex flex-1 flex-col gap-2 overflow-y-auto px-2.5 py-2 min-h-0"
-      >
+      <Conversation>
         {(!chat || chat.items.length === 0) && !chat?.error && (
           <div className="my-auto flex flex-col items-center gap-2 px-4 text-center">
             <Sparkles size={20} className="text-violet-400/70" />
@@ -271,9 +255,19 @@ export function AgentPanel() {
         )}
         {chat?.items.map((item) => <ItemView key={item.id} item={item} />)}
         {chat?.status === "starting" && (
-          <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-            <Loader2 size={11} className="animate-spin" /> starting{" "}
-            {provider.label}…
+          <div className="flex flex-col gap-1 text-[11px] text-zinc-500">
+            <div className="flex items-center gap-1.5">
+              <Loader2 size={11} className="animate-spin" />
+              {chat.startNote ? `installing ${provider.label} adapter…` : `starting ${provider.label}…`}
+            </div>
+            {chat.startNote && (
+              <div
+                className="truncate font-mono text-[10px] text-zinc-600"
+                title={chat.startNote}
+              >
+                {chat.startNote}
+              </div>
+            )}
           </div>
         )}
         {chat?.status === "running" && !chat.permission && (
@@ -286,7 +280,7 @@ export function AgentPanel() {
             {chat.error}
           </pre>
         )}
-      </div>
+      </Conversation>
 
       {chat?.permission && activeProfileId && (
         <PermissionCard
