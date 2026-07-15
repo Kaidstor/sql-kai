@@ -12,7 +12,7 @@ import {
   Unplug,
   X,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
@@ -261,6 +261,7 @@ export function Launcher() {
   const setLauncherOpen = useApp((s) => s.setLauncherOpen);
   const openDialog = useApp((s) => s.openDialog);
   const [filter, setFilter] = useState("");
+  const filterRef = useRef<HTMLInputElement>(null);
   const needle = filter.trim().toLowerCase();
 
   // An explicitly opened launcher can be dismissed back to the workspace;
@@ -283,6 +284,22 @@ export function Launcher() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [canClose, setLauncherOpen]);
+
+  // ⌘F/Ctrl+F jumps back into the filter after focus wandered off to a card
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key.toLowerCase() !== "f") return;
+      const s = useApp.getState();
+      // overlays on top of the launcher own the keyboard
+      if (s.palette || s.dialog.open || s.settingsOpen || s.logViewerOpen) return;
+      e.preventDefault();
+      filterRef.current?.focus();
+      filterRef.current?.select();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
 
   const visible = useMemo(
     () =>
@@ -341,8 +358,9 @@ export function Launcher() {
             <>
               <div className="flex items-center gap-2 pb-4">
                 <Input
+                  ref={filterRef}
                   autoFocus
-                  placeholder="Filter connections…"
+                  placeholder={isMac ? "Filter connections…  ⌘F" : "Filter connections…  Ctrl+F"}
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
                   onKeyDown={(e) => {
