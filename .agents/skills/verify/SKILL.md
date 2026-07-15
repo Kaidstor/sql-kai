@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Верификация frontend-изменений sql-kai без сборки Tauri — Vite dev + Chrome (chrome-devtools MCP) с шимом Tauri IPC. Использовать для проверки React-компонентов/стора, когда не нужен Rust-бэкенд.
+description: Верификация frontend-изменений sql-kai без сборки Tauri — Vite dev + Chrome (chrome-devtools MCP, либо playwright-core если MCP не подключён) с шимом Tauri IPC. Использовать для проверки React-компонентов/стора, когда не нужен Rust-бэкенд.
 ---
 
 # Верификация UI sql-kai в браузере
@@ -11,6 +11,11 @@ macOS-разрешений. Для frontend-изменений (React, zustand-�
 
 ## Рецепт
 
+0. **Проверь, что chrome-devtools MCP подключён к сессии** — есть ли
+   инструменты `mcp__chrome-devtools__*` (`new_page`, `navigate_page`).
+   Сервер прописан в `~/.claude.json`, но в конкретной сессии бывает не
+   поднят. Если инструментов нет — не сдавайся и не проси пользователя
+   чинить MCP: иди в «Фолбэк без MCP» ниже, шим и весь рецепт те же.
 1. `pnpm dev` в фоне — Vite на `http://localhost:1420` (порт фиксированный).
 2. Через chrome-devtools MCP: `new_page('about:blank')`, затем
    `navigate_page` с `initScript` — шим должен встать **до** загрузки модулей.
@@ -29,9 +34,41 @@ macOS-разрешений. Для frontend-изменений (React, zustand-�
 - `list_profiles` → фейковые профили (`{id,name,host,port,database,user,ssh?,production?}`)
 - `list_queries` / `list_sessions` / `list_cli_sessions` / `list_history` → `[]`
 - `plugin:event|*` → resolve с числом (id подписки)
+
+Дальше, для workspace с деревом схемы и вкладками таблиц — на
+`connect_profile` → `{sessionId,profileId,serverVersion}` стор зовёт
+`refreshTables`, который параллелит `list_tables` + `list_all_columns`:
+
+- `list_tables` → `[{schema,name,kind}]`. `kind` бэкенд маппит из
+  `pg_class.relkind`: `v`→`view`, `m`→`matview`, `f`→`foreign`, иначе
+  `table` (`r`/`p`). Держи в фейке хотя бы один `view` рядом с `table` —
+  view-ветки (иконка-глаз, read-only грид, `Copy CREATE VIEW`) иначе
+  не отрисуются.
+- `list_all_columns` → `[{schema,table,columns:[…]}]`; падение не фатально
+  (автокомплит просто останется keyword-only), но тогда в консоли тост.
+- `list_columns` → `[{name,dataType,nullable,isPk,…}]` — грузится лениво на
+  раскрытие узла в сайдбаре и нужен вкладке с данными.
 - остальное → reject `{code:'shim', message:'unhandled <cmd>'}` — updater и
   прочие плагины глотают ошибки сами (в консоли будет шум «Uncaught (in
   promise)» — это артефакт шима, не баг).
+
+## Фолбэк без MCP (playwright-core)
+
+MCP — не единственный способ довести браузер до страницы; шим, набор
+команд и гочи ниже применимы один в один.
+
+1. В скретчпаде сессии: `npm i playwright-core` (только драйвер, без
+   загрузки браузеров).
+2. Браузер бери из кэша playwright, не качай заново:
+   `~/Library/Caches/ms-playwright/chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
+   → `chromium.launch({executablePath})`.
+3. Шим ставится через `page.addInitScript(…)` — тот же
+   `window.__TAURI_INTERNALS__`, что и в `initScript` у MCP.
+4. Скриншоты — `page.screenshot({path})`, ограничения workspace roots на
+   него не распространяются (можно писать прямо в скретчпад).
+
+Селекторы: подсказки/пункты меню ищи через `getByRole("button", …)`,
+а не `getByText` — тексты дублируются в ячейках грида и матчат лишнее.
 
 ## Гочи
 
