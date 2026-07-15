@@ -55,6 +55,14 @@ export interface PermissionRequest {
   options: PermissionOption[];
 }
 
+/** Stdio MCP server passed to the agent in session/new. */
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args: string[];
+  env: { name: string; value: string }[];
+}
+
 export interface InitializeResult {
   protocolVersion: number;
   agentCapabilities?: { loadSession?: boolean; [key: string]: unknown };
@@ -101,7 +109,14 @@ export class RpcError extends Error {
 /** JSON-RPC error code the agent answers with when it needs `authenticate`. */
 export const AUTH_REQUIRED = -32000;
 
-const agents = new Map<string, AcpAgent>();
+/** Anything spawned through acp.rs and routed by agentId. */
+interface ProcSink {
+  handleLine(line: string): void;
+  handleStderr(line: string): void;
+  handleExit(code: number | null): void;
+}
+
+const agents = new Map<string, ProcSink>();
 
 // One set of global listeners routing by agentId — per-instance listen()
 // would leak handlers on every chat reset.
@@ -112,7 +127,7 @@ function ensureListeners(): Promise<void> {
       agents.get(e.payload.agentId)?.handleLine(e.payload.line),
     ),
     listen<{ agentId: string; line: string }>("acp://stderr", (e) =>
-      agents.get(e.payload.agentId)?.handlers.onStderr(e.payload.line),
+      agents.get(e.payload.agentId)?.handleStderr(e.payload.line),
     ),
     listen<{ agentId: string; code: number | null }>("acp://exit", (e) =>
       agents.get(e.payload.agentId)?.handleExit(e.payload.code),
@@ -120,7 +135,76 @@ function ensureListeners(): Promise<void> {
   ]).then(() => {}));
 }
 
-export class AcpAgent {
+/** Rejects with a descriptive error when `p` doesn't settle in `ms`. */
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** Non-ACP child process (npm install …) with line-streamed output.
+ * Reuses the acp.rs transport: same spawn/kill commands and events. */
+export class RawProc implements ProcSink {
+  readonly id = crypto.randomUUID();
+  private exited: (code: number | null) => void = () => {};
+  /** Resolves with the exit code when the process dies. */
+  readonly done: Promise<number | null>;
+
+  private constructor(private onLine: (line: string) => void) {
+    this.done = new Promise((resolve) => {
+      this.exited = resolve;
+    });
+  }
+
+  static async spawn(
+    cmd: string,
+    args: string[],
+    env: Record<string, string>,
+    cwd: string,
+    onLine: (line: string) => void,
+  ): Promise<RawProc> {
+    await ensureListeners();
+    const proc = new RawProc(onLine);
+    agents.set(proc.id, proc);
+    try {
+      await invoke("acp_spawn", { agentId: proc.id, cmd, args, env, cwd });
+    } catch (e) {
+      agents.delete(proc.id);
+      throw e;
+    }
+    return proc;
+  }
+
+  kill(): void {
+    void invoke("acp_kill", { agentId: this.id }).catch(() => {});
+  }
+
+  handleLine(line: string): void {
+    this.onLine(line);
+  }
+  handleStderr(line: string): void {
+    this.onLine(line);
+  }
+  handleExit(code: number | null): void {
+    agents.delete(this.id);
+    this.exited(code);
+  }
+}
+
+export class AcpAgent implements ProcSink {
   readonly id = crypto.randomUUID();
   private nextId = 1;
   private pending = new Map<
@@ -201,10 +285,10 @@ export class AcpAgent {
     return this.request("authenticate", { methodId });
   }
 
-  async newSession(cwd: string): Promise<string> {
+  async newSession(cwd: string, mcpServers: McpServerConfig[] = []): Promise<string> {
     const res = await this.request<{ sessionId: string }>("session/new", {
       cwd,
-      mcpServers: [],
+      mcpServers,
     });
     return res.sessionId;
   }
@@ -227,6 +311,11 @@ export class AcpAgent {
   }
 
   // -- incoming ---------------------------------------------------------------
+
+  /** @internal one stderr line from the process. */
+  handleStderr(line: string): void {
+    this.handlers.onStderr(line);
+  }
 
   /** @internal one stdout line from the process. */
   handleLine(line: string): void {

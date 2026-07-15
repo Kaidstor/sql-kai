@@ -28,6 +28,7 @@ use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
 use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
+use cmd::mcp::McpArgs;
 use cmd::profiles::ProfilesCmd;
 use cmd::query::QueryArgs;
 use cmd::rotate::RotateArgs;
@@ -81,6 +82,9 @@ enum Cmd {
     Ddl(TableArgs),
     /// Индексы таблицы
     Indexes(TableArgs),
+    /// MCP-сервер (stdio) для AI-агентов: tools query/tables/columns/ddl/
+    /// indexes + open_table/open_query (вкладки в GUI)
+    Mcp(McpArgs),
     /// История выполненных запросов
     History(HistoryArgs),
     /// Сохранённые запросы (общие с GUI)
@@ -165,6 +169,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
         Cmd::Ddl(a) => cmd::introspect::table_info(a, TableInfoKind::Ddl).await,
         Cmd::Indexes(a) => cmd::introspect::table_info(a, TableInfoKind::Indexes).await,
+        Cmd::Mcp(a) => cmd::mcp::run(a).await,
         Cmd::History(a) => cmd::history::run(a),
         Cmd::Saved { cmd } => cmd::saved::run(cmd).await,
         Cmd::Rotate(a) => cmd::rotate::run(a).await,

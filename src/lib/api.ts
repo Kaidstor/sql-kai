@@ -67,6 +67,9 @@ export const api = {
 
   settingsPath: () => invoke<string>("settings_path"),
 
+  /** Бандл-CLI рядом с бинарём приложения (null — сборка без sidecar). */
+  cliBinPath: () => invoke<string | null>("cli_bin_path"),
+
   logPath: () => invoke<string>("log_path"),
 
   /** Appends a UI-observed event to the backend diagnostics log. */

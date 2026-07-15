@@ -259,6 +259,21 @@ function App() {
       listen("profiles://changed", () =>
         void useApp.getState().reloadProfiles(),
       ),
+      // MCP-tools агента (open_table/open_query): открыть вкладку в GUI
+      listen<
+        | { kind: "table"; profileId: string; schema: string; table: string }
+        | { kind: "query"; profileId: string; sql: string }
+      >("agent://open", (e) => {
+        const s = useApp.getState();
+        const p = e.payload;
+        // вкладка осмысленна только на живом подключении этого профиля
+        if (!s.sessions[p.profileId]) return;
+        if (p.kind === "table") {
+          s.openTableTab(p.profileId, p.schema, p.table);
+        } else {
+          s.openQueryTab(p.profileId, p.sql);
+        }
+      }),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());

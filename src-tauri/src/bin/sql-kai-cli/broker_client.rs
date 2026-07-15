@@ -257,6 +257,48 @@ impl BrokerClient {
             .await
             .map(|_| ())
     }
+
+    /// DDL таблицы силами сессии сервера (метод `ddl`, для MCP-tools).
+    pub async fn ddl(
+        &mut self,
+        profile_id: &str,
+        schema: &str,
+        table: &str,
+    ) -> Result<String, BrokerError> {
+        let v = self
+            .request(
+                "ddl",
+                json!({ "profileId": profile_id, "schema": schema, "table": table }),
+            )
+            .await?;
+        v.get("ddl")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| BrokerError::Transport("ответ без ddl".into()))
+    }
+
+    /// Открыть вкладку таблицы в GUI (метод `open_table`). Работает только
+    /// через GUI-брокер: holder ответит unsupported.
+    pub async fn open_table(
+        &mut self,
+        profile_id: &str,
+        schema: &str,
+        table: &str,
+    ) -> Result<(), BrokerError> {
+        self.request(
+            "open_table",
+            json!({ "profileId": profile_id, "schema": schema, "table": table }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Открыть вкладку запроса с готовым SQL в GUI (метод `open_query`).
+    pub async fn open_query(&mut self, profile_id: &str, sql: &str) -> Result<(), BrokerError> {
+        self.request("open_query", json!({ "profileId": profile_id, "sql": sql }))
+            .await
+            .map(|_| ())
+    }
 }
 
 /// Сообщить запущенному GUI, что состав профилей изменился (discover/rm),

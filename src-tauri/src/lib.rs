@@ -236,6 +236,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
     let gui = app.handle().clone();
     let notify = app.handle().clone();
     let notify_profiles = app.handle().clone();
+    let notify_open = app.handle().clone();
     let hooks = std::sync::Arc::new(broker::BrokerHooks {
         gui_sessions: Box::new(move || {
             let state = gui.state::<AppState>();
@@ -253,6 +254,9 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
             let _ = notify_profiles.emit("profiles://changed", ());
         }),
         shutdown: None, // GUI-брокер по сокету не гасится
+        open_in_gui: Some(Box::new(move |open| {
+            let _ = notify_open.emit("agent://open", &open);
+        })),
     });
     tauri::async_runtime::spawn(broker::serve(listener, state.clone(), hooks));
 }
@@ -343,10 +347,12 @@ pub fn run() {
             commands::copy_text_concealed,
             commands::list_cli_sessions,
             commands::install_cli,
+            commands::cli_bin_path,
             sync_tray_connections,
             acp::acp_spawn,
             acp::acp_send,
             acp::acp_kill,
+            acp::acp_installed_version,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

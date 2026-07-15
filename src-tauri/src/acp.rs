@@ -223,3 +223,17 @@ pub fn acp_kill(state: State<'_, AcpState>, agent_id: String) -> Result<(), AppE
     }
     Ok(())
 }
+
+/// Версия npm-пакета, установленного в управляемую папку адаптера
+/// (`<dir>/node_modules/<pkg>/package.json`), или None, если его там нет.
+/// Фронт сверяет её с пином и решает, нужен ли `npm install`.
+#[tauri::command]
+pub fn acp_installed_version(dir: String, pkg: String) -> Option<String> {
+    let path = std::path::Path::new(&dir)
+        .join("node_modules")
+        .join(&pkg)
+        .join("package.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(json.get("version")?.as_str()?.to_string())
+}

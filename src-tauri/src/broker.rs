@@ -153,6 +153,43 @@ pub enum Method {
     ProfilesChanged,
     /// Погасить сервер: закрыть сессии и выйти (holder). GUI-брокер отвергает.
     Shutdown,
+    /// DDL таблицы силами cli-сессии (MCP-tool `ddl` у `sql-kai mcp`).
+    Ddl {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        schema: String,
+        table: String,
+    },
+    /// Открыть в GUI вкладку таблицы (MCP-tool `open_table`).
+    OpenTable {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        schema: String,
+        table: String,
+    },
+    /// Открыть в GUI вкладку запроса с готовым SQL, не выполняя его
+    /// (MCP-tool `open_query`).
+    OpenQuery {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        sql: String,
+    },
+}
+
+/// Что открыть в интерфейсе по просьбе MCP-клиента (методы open_*).
+/// Сериализация — готовый payload события `agent://open` для webview.
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GuiOpen {
+    Table {
+        profile_id: String,
+        schema: String,
+        table: String,
+    },
+    Query {
+        profile_id: String,
+        sql: String,
+    },
 }
 
 fn default_max_rows() -> usize {
@@ -316,6 +353,9 @@ pub struct BrokerHooks {
     /// Обработчик `shutdown`: holder закрывает сессии и завершается.
     /// None (GUI-брокер) — метод отвергается: приложение так не гасят.
     pub shutdown: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Открыть вкладку в GUI (методы open_table/open_query от MCP-tools).
+    /// None (holder) — метод отвергается: интерфейса нет.
+    pub open_in_gui: Option<Box<dyn Fn(GuiOpen) + Send + Sync>>,
 }
 
 // --- Server ---------------------------------------------------------------------
@@ -459,6 +499,38 @@ async fn dispatch(
                 .map_err(|e| method_err("cancel", e.to_string()))?;
             Ok(json!({}))
         }
+        Method::Ddl { profile_id, schema, table } => {
+            if !vault::is_unlocked() {
+                return Err(method_err("vault_locked", "vault заблокирован в GUI"));
+            }
+            let entry = get_or_open(state, hooks, &profile_id)
+                .await
+                .map_err(|e| method_err("connect", e.to_string()))?;
+            let _busy = entry.busy.lock().await;
+            *entry.last_used.lock().unwrap() = Instant::now();
+            let ddl = db::table_ddl(&entry.session.client, &schema, &table)
+                .await
+                .map_err(|e| MethodError {
+                    code: "query",
+                    message: e.to_string(),
+                    sqlstate: e.sqlstate().map(str::to_string),
+                })?;
+            Ok(json!({ "ddl": ddl }))
+        }
+        Method::OpenTable { profile_id, schema, table } => match &hooks.open_in_gui {
+            Some(open) => {
+                open(GuiOpen::Table { profile_id, schema, table });
+                Ok(json!({}))
+            }
+            None => Err(method_err("unsupported", "GUI не запущен — вкладку открыть некому")),
+        },
+        Method::OpenQuery { profile_id, sql } => match &hooks.open_in_gui {
+            Some(open) => {
+                open(GuiOpen::Query { profile_id, sql });
+                Ok(json!({}))
+            }
+            None => Err(method_err("unsupported", "GUI не запущен — вкладку открыть некому")),
+        },
     }
 }
 
@@ -676,6 +748,7 @@ mod tests {
             changed: Box::new(|| {}),
             profiles_changed: Box::new(|| {}),
             shutdown: None,
+            open_in_gui: None,
         });
         tokio::spawn(serve(listener, state, hooks));
 
@@ -722,6 +795,7 @@ mod tests {
             changed: Box::new(|| {}),
             profiles_changed: Box::new(move || f.store(true, Ordering::Relaxed)),
             shutdown: None,
+            open_in_gui: None,
         });
         tokio::spawn(serve(listener, Arc::new(BrokerState::default()), hooks));
 
@@ -750,6 +824,7 @@ mod tests {
             changed: Box::new(|| {}),
             profiles_changed: Box::new(|| {}),
             shutdown: Some(Box::new(move || f.store(true, Ordering::Relaxed))),
+            open_in_gui: None,
         });
         let state = Arc::new(BrokerState::default());
         let r = dispatch(Method::Shutdown, &state, &with_hook).await;
@@ -761,8 +836,62 @@ mod tests {
             changed: Box::new(|| {}),
             profiles_changed: Box::new(|| {}),
             shutdown: None,
+            open_in_gui: None,
         });
         let r = dispatch(Method::Shutdown, &state, &without_hook).await;
+        assert!(matches!(r, Err(e) if e.code == "unsupported"));
+    }
+
+    /// open_table/open_query: с хуком (GUI) — ok и payload доходит; без хука
+    /// (holder) — unsupported. Контракт для MCP-tools sql-kai.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_in_gui_dispatch_by_hook() {
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = opened.clone();
+        let with_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: None,
+            open_in_gui: Some(Box::new(move |open| {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::to_string(&open).unwrap());
+            })),
+        });
+        let state = Arc::new(BrokerState::default());
+        let r = dispatch(
+            Method::OpenTable {
+                profile_id: "p1".into(),
+                schema: "public".into(),
+                table: "users".into(),
+            },
+            &state,
+            &with_hook,
+        )
+        .await;
+        assert!(r.is_ok());
+        let payloads = opened.lock().unwrap().clone();
+        assert_eq!(payloads.len(), 1);
+        let v: Value = serde_json::from_str(&payloads[0]).unwrap();
+        assert_eq!(v["kind"], "table");
+        assert_eq!(v["profileId"], "p1");
+        assert_eq!(v["table"], "users");
+
+        let without_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: None,
+            open_in_gui: None,
+        });
+        let r = dispatch(
+            Method::OpenQuery { profile_id: "p1".into(), sql: "SELECT 1".into() },
+            &state,
+            &without_hook,
+        )
+        .await;
         assert!(matches!(r, Err(e) if e.code == "unsupported"));
     }
 

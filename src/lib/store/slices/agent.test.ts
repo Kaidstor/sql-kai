@@ -24,7 +24,10 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 vi.mock("../../api", () => ({
-  api: { saveSettings: mocks.saveSettings },
+  api: {
+    saveSettings: mocks.saveSettings,
+    cliBinPath: async () => "/tmp/sql-kai-cli",
+  },
   errText: (error: unknown) =>
     error instanceof Error ? error.message : String(error),
 }));
@@ -89,8 +92,19 @@ vi.mock("../../acp", () => {
     }
   }
 
-  return { AcpAgent: FakeAcpAgent, RpcError: FakeRpcError, AUTH_REQUIRED: -32000 };
+  return {
+    AcpAgent: FakeAcpAgent,
+    RpcError: FakeRpcError,
+    AUTH_REQUIRED: -32000,
+    withTimeout: <T,>(p: Promise<T>) => p,
+  };
 });
+
+vi.mock("../../agentInstall", () => ({
+  NODE_NET_ENV: {},
+  ensureAdapter: async (_id: string, a: { bin: string }) =>
+    `/tmp/sql-kai/acp/${a.bin}`,
+}));
 
 import { createAgentSlice } from "./agent";
 

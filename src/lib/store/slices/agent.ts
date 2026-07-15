@@ -8,10 +8,12 @@ import {
   AcpAgent,
   AUTH_REQUIRED,
   RpcError,
+  withTimeout,
   type PermissionOption,
   type SessionUpdate,
   type ToolCallUpdate,
 } from "../../acp";
+import { ensureAdapter, NODE_NET_ENV, type NpmAdapter } from "../../agentInstall";
 import { api, errText } from "../../api";
 import type { Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
@@ -19,44 +21,64 @@ import type { Get, Set, StoreContext } from "../context";
 export interface AgentProvider {
   id: string;
   label: string;
-  cmd: string;
-  args: string[];
+  /** npm-адаптер: ставится один раз в appData и запускается с диска. */
+  npm?: NpmAdapter;
+  /** Бинарь, который пользователь ставит сам (cursor-agent). Без npm/cmd —
+   *  провайдер custom: команда целиком из настроек. */
+  cmd?: string;
+  /** Аргументы бинаря адаптера (например `--acp` у gemini). */
+  binArgs?: string[];
   /** Shown when the agent answers auth_required (-32000). */
   authHint: string;
 }
 
-/** Основные провайдеры — официальные ACP-адаптеры через npx; кастомная
- *  команда покрывает всё остальное (любой агент, говорящий ACP по stdio). */
+/** Основные провайдеры — официальные ACP-адаптеры (пины версий бампаются
+ *  релизами sql-kai); кастомная команда покрывает всё остальное (любой
+ *  агент, говорящий ACP по stdio). */
 export const AGENT_PROVIDERS: AgentProvider[] = [
   {
     id: "claude",
     label: "Claude Code",
-    cmd: "npx",
-    args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    npm: {
+      pkg: "@agentclientprotocol/claude-agent-acp",
+      version: "0.59.0",
+      bin: "claude-agent-acp",
+    },
     authHint:
       "Log in once in a terminal: run `claude` → /login (or set ANTHROPIC_API_KEY).",
   },
   {
     id: "gemini",
     label: "Gemini CLI",
-    cmd: "npx",
-    args: ["-y", "@google/gemini-cli", "--acp"],
+    npm: { pkg: "@google/gemini-cli", version: "0.50.0", bin: "gemini" },
+    binArgs: ["--acp"],
     authHint:
       "Log in once in a terminal: run `gemini` and complete the Google login (or set GEMINI_API_KEY).",
   },
   {
     id: "codex",
     label: "Codex",
-    cmd: "npx",
-    args: ["-y", "@agentclientprotocol/codex-acp"],
+    npm: {
+      pkg: "@agentclientprotocol/codex-acp",
+      version: "1.1.2",
+      bin: "codex-acp",
+    },
     authHint:
       "Log in once in a terminal: run `codex login` (or set OPENAI_API_KEY).",
   },
   {
+    // Первопартийный ACP у Cursor: `cursor-agent acp` (бинарь ставится
+    // их инсталлером, npm-пакета нет — берём с PATH).
+    id: "cursor",
+    label: "Cursor",
+    cmd: "cursor-agent",
+    binArgs: ["acp"],
+    authHint:
+      "Log in once in a terminal: run `cursor-agent login` (or set CURSOR_API_KEY). Old CLI builds lack `acp` — run `cursor-agent update`.",
+  },
+  {
     id: "custom",
     label: "Custom…",
-    cmd: "",
-    args: [],
     authHint: "The agent requires authentication — check its own CLI login.",
   },
 ];
@@ -97,6 +119,8 @@ export interface AgentChat {
   items: AgentChatItem[];
   permission: AgentPermission | null;
   error?: string;
+  /** Что происходит внутри "starting" (npm-прогресс установки адаптера). */
+  startNote?: string;
   /** Хвост stderr процесса — показывается при смерти агента. */
   stderr: string[];
 }
@@ -128,6 +152,8 @@ const liveAgents = new Map<
     sessionId: string;
     contextSent: boolean;
     generation: symbol;
+    /** Сессии передан MCP-сервер sql-kai (structured tools). */
+    mcp: boolean;
   }
 >();
 /** Spawned process whose initialize/session-new handshake is still running. */
@@ -143,14 +169,18 @@ let nextItemId = 1;
 
 class AgentSupersededError extends Error {}
 
-/** Контекст подключения, добавляемый к первому сообщению сессии. */
-function connectionContext(p: Profile): string {
+/** Контекст подключения, добавляемый к первому сообщению сессии.
+ *  `mcp` — true, когда сессии передан MCP-сервер sql-kai (structured tools). */
+function connectionContext(p: Profile, mcp: boolean): string {
   const alias = JSON.stringify(p.name); // кавычки на случай пробелов в имени
-  return [
-    "You are a database assistant embedded in sql-kai, a Postgres GUI client.",
-    `The user is looking at the database profile ${alias} — ${p.database} at ${p.host}:${p.port}, user ${p.user}.` +
-      (p.production ? " This is a PRODUCTION database: be extra careful." : ""),
-    "",
+  const viaMcp = [
+    "Use the MCP tools of the `sql-kai` server to work with the database:",
+    "  query / tables / columns / ddl / indexes — SQL and schema discovery;",
+    "  open_table / open_query — show a table or a prepared query to the user as a tab in the sql-kai GUI.",
+    "The sql-kai CLI is also available in the shell as a fallback:",
+    `  sql-kai q ${alias} -c "SELECT ..." --json`,
+  ];
+  const viaCli = [
     "Run SQL through the locally installed sql-kai CLI (it owns connection, ssh tunnel and credentials):",
     `  sql-kai q ${alias} -c "SELECT ..." --json`,
     "Schema discovery:",
@@ -158,9 +188,16 @@ function connectionContext(p: Profile): string {
     `  sql-kai columns ${alias} [schema.]table`,
     `  sql-kai ddl ${alias} [schema.]table`,
     `  sql-kai indexes ${alias} [schema.]table`,
+  ];
+  return [
+    "You are a database assistant embedded in sql-kai, a Postgres GUI client.",
+    `The user is looking at the database profile ${alias} — ${p.database} at ${p.host}:${p.port}, user ${p.user}.` +
+      (p.production ? " This is a PRODUCTION database: be extra careful." : ""),
+    "",
+    ...(mcp ? viaMcp : viaCli),
     "Notes:",
-    "- The CLI session is READ-ONLY by default. Add --write only when the user explicitly asks to modify data, and show them the statement first.",
-    "- Rows are capped at 1000 by default (--max-rows N to change); prefer --json output.",
+    "- The session is READ-ONLY by default. Enable writes only when the user explicitly asks to modify data, and show them the statement first.",
+    "- Row counts are capped by default; prefer JSON output.",
     "- If the sql-kai command is not found, ask the user to run “Install CLI…” from the sql-kai application menu.",
   ].join("\n");
 }
@@ -319,9 +356,27 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
 
     const s = get();
     const provider = activeProvider(s.settings);
-    let cmd = provider.cmd;
-    let args = provider.args;
-    if (provider.id === "custom") {
+
+    patchChat(profileId, { status: "starting", error: undefined, startNote: undefined });
+    const generation = Symbol(profileId);
+    agentGenerations.set(profileId, generation);
+    const isCurrent = () => agentGenerations.get(profileId) === generation;
+
+    let cmd: string;
+    let args: string[];
+    if (provider.npm) {
+      // управляемая установка: один раз в appData, дальше старт с диска
+      // без похода в npm registry
+      cmd = await ensureAdapter(provider.id, provider.npm, (line) => {
+        if (isCurrent()) patchChat(profileId, { startNote: line });
+      });
+      args = provider.binArgs ?? [];
+      if (!isCurrent()) throw new AgentSupersededError();
+      patchChat(profileId, { startNote: undefined });
+    } else if (provider.cmd) {
+      cmd = provider.cmd;
+      args = provider.binArgs ?? [];
+    } else {
       const parsed = parseCustomCmd(String(s.settings.agentCustomCmd ?? ""));
       if (!parsed) {
         throw new Error("Custom agent command is empty — set it in the panel header.");
@@ -329,14 +384,9 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
       ({ cmd, args } = parsed);
     }
 
-    patchChat(profileId, { status: "starting", error: undefined });
-    const generation = Symbol(profileId);
-    agentGenerations.set(profileId, generation);
-    const isCurrent = () => agentGenerations.get(profileId) === generation;
-
     // рабочая папка агента — карантин в app data, не $HOME пользователя
     const cwd = await join(await appDataDir(), "agent", profileId);
-    const agent = await AcpAgent.spawn(cmd, args, {}, cwd, {
+    const agent = await AcpAgent.spawn(cmd, args, NODE_NET_ENV, cwd, {
       onSessionUpdate: (u) => {
         if (isCurrent()) applyUpdate(profileId, u);
       },
@@ -393,11 +443,29 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
     startingAgents.set(profileId, agent);
 
     try {
-      await agent.initialize();
-      const sessionId = await agent.newSession(cwd);
+      // без таймаута зависший адаптер (сеть, авторизация, битый бинарь)
+      // оставляет панель крутиться на "starting…" навсегда
+      await withTimeout(agent.initialize(), 30_000, `${provider.label}: initialize`);
+      // MCP-сервер sql-kai: structured tools вместо разбора вывода CLI
+      // (+ open_table/open_query — открытие вкладок в GUI)
+      const cliPath = await api.cliBinPath().catch(() => null);
+      const mcpServers = cliPath
+        ? [{ name: "sql-kai", command: cliPath, args: ["mcp", profileId], env: [] }]
+        : [];
+      const sessionId = await withTimeout(
+        agent.newSession(cwd, mcpServers),
+        90_000,
+        `${provider.label}: session/new`,
+      );
       if (!isCurrent()) throw new AgentSupersededError();
       startingAgents.delete(profileId);
-      const live = { agent, sessionId, contextSent: false, generation };
+      const live = {
+        agent,
+        sessionId,
+        contextSent: false,
+        generation,
+        mcp: mcpServers.length > 0,
+      };
       liveAgents.set(profileId, live);
       return live;
     } catch (e) {
@@ -478,10 +546,10 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
         const profile = get().profiles.find((p) => p.id === profileId);
         const prompt =
           !live.contextSent && profile
-            ? `${connectionContext(profile)}\n\n---\n\nUser request:\n${trimmed}`
+            ? `${connectionContext(profile, live.mcp)}\n\n---\n\nUser request:\n${trimmed}`
             : trimmed;
         live.contextSent = true;
-        patchChat(profileId, { status: "running", error: undefined });
+        patchChat(profileId, { status: "running", error: undefined, startNote: undefined });
         const stop = await live.agent.prompt(live.sessionId, prompt);
         if (agentGenerations.get(profileId) !== live.generation) return;
         patchChat(profileId, { status: "ready", permission: null });
@@ -505,10 +573,13 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
           e instanceof RpcError && e.code === AUTH_REQUIRED
             ? `\n${activeProvider(get().settings).authHint}`
             : "";
+        // stderr агента — единственная диагностика при таймауте/падении старта
+        const tail = chatNow.stderr.slice(-5).join("\n");
         patchChat(profileId, {
           status: "error",
           permission: null,
-          error: errText(e) + hint,
+          startNote: undefined,
+          error: errText(e) + hint + (tail ? `\n${tail}` : ""),
         });
       }
     },

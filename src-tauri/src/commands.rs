@@ -949,6 +949,16 @@ pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
     set.text(text).map_err(|e| AppError::Msg(e.to_string()))
 }
 
+/// Абсолютный путь к бандл-CLI (`sql-kai-cli` рядом с бинарём приложения) —
+/// команда MCP-сервера, который панель агента передаёт в ACP session/new.
+/// None — сборка без sidecar (dev до первого cargo build --bins).
+#[tauri::command]
+pub fn cli_bin_path() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let src = exe.parent()?.join("sql-kai-cli");
+    src.exists().then(|| src.display().to_string())
+}
+
 /// Installs the `sql-kai` CLI into the system PATH, "big-company" style
 /// (Zed / VS Code): symlinks the `sql-kai-cli` sidecar bundled next to the
 /// running app into `/usr/local/bin` — which is always on PATH via

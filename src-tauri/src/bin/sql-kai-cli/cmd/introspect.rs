@@ -85,7 +85,7 @@ pub enum TableInfoKind {
 }
 
 /// "schema.table" -> (schema, table); без точки — public.
-fn split_table(spec: &str) -> (String, String) {
+pub(crate) fn split_table(spec: &str) -> (String, String) {
     match spec.split_once('.') {
         Some((s, t)) => (s.to_string(), t.to_string()),
         None => ("public".to_string(), spec.to_string()),
