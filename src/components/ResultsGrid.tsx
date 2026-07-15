@@ -104,6 +104,14 @@ function ResultsGridImpl({
     if (t) t.style.transform = `translateX(${-left}px)`;
   };
 
+  // Narrowing the content (resize/fit/hide column) while scrolled far right
+  // clamps the body's scrollLeft; a scroll event isn't guaranteed for that
+  // clamp, so re-sync the header whenever the table width changes.
+  useLayoutEffect(() => {
+    const el = bodyScrollRef.current;
+    if (el) syncHeader(el.scrollLeft);
+  }, [layout.totalW]);
+
   // Coming back to the tab lands where the user left off, not at row 1.
   useLayoutEffect(() => {
     const el = bodyScrollRef.current;
