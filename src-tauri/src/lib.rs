@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod biometric;
 pub mod broker;
 pub mod commands;
@@ -118,7 +119,6 @@ fn build_tray_menu(
     active_profile_id: Option<&str>,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
-    use tauri::tray::TrayIconBuilder;
 
     let open = MenuItemBuilder::with_id("tray-open", "Open sql-kai").build(app)?;
     let quit = MenuItemBuilder::with_id("tray-quit", "Quit sql-kai").build(app)?;
@@ -150,8 +150,9 @@ fn build_tray_menu(
 
 #[cfg(target_os = "macos")]
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-
+    use tauri::tray::TrayIconBuilder;
     use tauri::Emitter;
+
     let handle = app.handle();
     let menu = build_tray_menu(handle, &[], None)?;
     // Template-иконка (чёрная + альфа): macOS сам перекрашивает её под
@@ -180,7 +181,6 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Поднимает брокер-сокет для sql-kai: GUI-процесс выполняет его запросы своими
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrayConnection {
@@ -216,6 +216,7 @@ fn sync_tray_connections(
     Ok(())
 }
 
+/// Поднимает брокер-сокет для sql-kai: GUI-процесс выполняет его запросы своими
 /// сессиями/vault'ом. Ошибка бинда не мешает приложению — sql-kai просто пойдёт
 /// автономным путём.
 #[cfg(unix)]
@@ -268,6 +269,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .manage(broker_state.clone())
+        .manage(acp::AcpState::default())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             set_app_menu(app)?;
@@ -339,6 +341,10 @@ pub fn run() {
             commands::copy_text_concealed,
             commands::list_cli_sessions,
             commands::install_cli,
+            sync_tray_connections,
+            acp::acp_spawn,
+            acp::acp_send,
+            acp::acp_kill,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -351,6 +357,10 @@ pub fn run() {
                 tauri::RunEvent::Exit => {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.sessions.lock().unwrap().clear();
+                    }
+                    // ACP-агенты — дочерние процессы, не должны пережить приложение
+                    if let Some(acp) = app_handle.try_state::<acp::AcpState>() {
+                        acp.clear();
                     }
                     if let Some(broker) =
                         app_handle.try_state::<std::sync::Arc<broker::BrokerState>>()

@@ -3,6 +3,7 @@
 // bottom from the slice interfaces — each slice file owns its own contract.
 import type { SavedQuery } from "../types";
 import type { ActivitySlice } from "./slices/activity";
+import type { AgentSlice } from "./slices/agent";
 import type { ConnectionsSlice } from "./slices/connections";
 import type { QuerySlice } from "./slices/query";
 import type { SavedSlice } from "./slices/saved";
@@ -200,4 +201,5 @@ export type AppStore = UiSlice &
   TableSlice &
   StructureSlice &
   ActivitySlice &
-  SavedSlice;
+  SavedSlice &
+  AgentSlice;

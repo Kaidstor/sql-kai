@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
+import { AgentPanel } from "./components/AgentPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
@@ -18,8 +19,8 @@ import { TableTab } from "./components/TableTab";
 import { TabsBar } from "./components/TabsBar";
 import { UpdateToast } from "./components/UpdateToast";
 import { VaultGate } from "./components/VaultGate";
-import { isMac } from "./lib/platform";
 import { api } from "./lib/api";
+import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
 import { initUpdater, useUpdater } from "./lib/updater";
@@ -32,11 +33,12 @@ function App() {
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
   const activeProfileId = useApp((s) => s.activeProfileId);
-  const sessions = useApp((s) => s.sessions);
   const profiles = useApp((s) => s.profiles);
+  const sessions = useApp((s) => s.sessions);
   const lost = useApp((s) => s.lost);
   const launcherOpen = useApp((s) => s.launcherOpen);
   const sidebarOpen = useApp((s) => s.sidebarOpen);
+  const agentOpen = useApp((s) => s.agentOpen);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // When ⌘K was pressed; shared by the keydown handler and (on mac, where
   // ⌘W arrives as a native menu event) the menu listener.
@@ -55,8 +57,6 @@ function App() {
 
   useEffect(() => initUpdater(), []);
 
-  // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘⌥O connection
-  // palette, ⌘P saved-queries palette, ⌘S save query, ⌘R refresh table/
   // The native menu-bar switcher mirrors the live connections shown in the
   // status bar. Rebuilding it also updates the checkmark when selection moves.
   useEffect(() => {
@@ -70,6 +70,8 @@ function App() {
     });
   }, [activeProfileId, profiles, sessions]);
 
+  // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘⌥O connection
+  // palette, ⌘P saved-queries palette, ⌘S save query, ⌘R refresh table/
   // structure view, ⌘W/⌘⇧T close/reopen tab. Grid/editor hotkeys stay local.
   useEffect(() => {
     // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
@@ -123,6 +125,10 @@ function App() {
         // ⌘B — toggle the sidebar
         e.preventDefault();
         s.toggleSidebar();
+      } else if (mod && !e.altKey && !e.shiftKey && key === "j") {
+        // ⌘J — toggle the AI agent panel
+        e.preventDefault();
+        s.toggleAgentPanel();
       } else if (mod && !e.altKey && !e.shiftKey && key === "k") {
         // chord leader: ⌘K then ⌘W closes all tabs
         e.preventDefault();
@@ -223,12 +229,6 @@ function App() {
           });
         }
       }),
-      // сессия умерла на проводе (ssh-туннель/сеть/сервер) — бэкенд сообщает
-      // сразу, не дожидаясь, пока следующий запрос наткнётся на труп
-      listen<{ sessionId: string; profileId: string; reason: string }>(
-        "session://lost",
-        (e) =>
-          useApp
       listen<string>("tray://select-connection", async (e) => {
         const profileId = e.payload;
         const s = useApp.getState();
@@ -241,6 +241,12 @@ function App() {
           await s.connect(profileId);
         }
       }),
+      // сессия умерла на проводе (ssh-туннель/сеть/сервер) — бэкенд сообщает
+      // сразу, не дожидаясь, пока следующий запрос наткнётся на труп
+      listen<{ sessionId: string; profileId: string; reason: string }>(
+        "session://lost",
+        (e) =>
+          useApp
             .getState()
             .markSessionLost(e.payload.sessionId, e.payload.profileId),
       ),
@@ -302,6 +308,7 @@ function App() {
                 )}
               </div>
             </main>
+            {agentOpen && <AgentPanel />}
           </>
         )}
       </div>

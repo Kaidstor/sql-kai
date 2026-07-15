@@ -7,6 +7,7 @@ import { create } from "zustand";
 import { persistWorkspace } from "../persist";
 import { createStoreContext } from "./context";
 import { createActivitySlice } from "./slices/activity";
+import { createAgentSlice } from "./slices/agent";
 import { createConnectionsSlice } from "./slices/connections";
 import { createQuerySlice } from "./slices/query";
 import { createSavedSlice } from "./slices/saved";
@@ -29,6 +30,7 @@ export const useApp = create<AppStore>((set, get) => {
     ...createStructureSlice(set, get, ctx),
     ...createActivitySlice(set, get, ctx),
     ...createSavedSlice(set, get, ctx),
+    ...createAgentSlice(set, get, ctx),
   };
 });
 

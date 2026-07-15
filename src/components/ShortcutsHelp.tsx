@@ -26,6 +26,7 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
       { keys: [MOD, "R"], label: "Refresh table / structure" },
       { keys: [MOD, "B"], label: "Toggle sidebar" },
       { keys: [MOD, ","], label: "Settings" },
+      { keys: [MOD, "J"], label: "AI agent panel" },
       { keys: [MOD, "?"], label: "Keyboard shortcuts" },
     ],
   },

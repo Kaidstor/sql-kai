@@ -39,6 +39,10 @@ export interface LastConnected {
  *  round-trips this object, so unknown keys survive older builds. */
 export interface AppSettings {
   theme?: string;
+  /** ACP agent provider id (see AGENT_PROVIDERS in slices/agent.ts). */
+  agentProvider?: string;
+  /** Command line of the "custom" agent provider. */
+  agentCustomCmd?: string;
   [key: string]: unknown;
 }
 

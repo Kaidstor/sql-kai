@@ -6,6 +6,7 @@ import {
   Plug,
   Settings,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
@@ -133,6 +134,8 @@ export function StatusBar() {
   const toast = useApp((s) => s.toast);
   const lockVault = useApp((s) => s.lockVault);
   const setSettingsOpen = useApp((s) => s.setSettingsOpen);
+  const agentOpen = useApp((s) => s.agentOpen);
+  const toggleAgentPanel = useApp((s) => s.toggleAgentPanel);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
   const profile = profiles.find((p) => p.id === activeProfileId);
@@ -228,12 +231,24 @@ export function StatusBar() {
       )}
       <button
         data-nocopy
+        onClick={toggleAgentPanel}
+        title="AI agent (⌘J)"
+        className={cn(
+          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+          "hover:bg-zinc-800/80 hover:text-zinc-300",
+          toast || copied ? "ml-1" : "ml-auto",
+          agentOpen && "text-violet-400",
+        )}
+      >
+        <Sparkles size={11} />
+      </button>
+      <button
+        data-nocopy
         onClick={() => setSettingsOpen(true)}
         title="Settings (⌘,)"
         className={cn(
           "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
           "hover:bg-zinc-800/80 hover:text-zinc-300",
-          toast || copied ? "ml-1" : "ml-auto",
         )}
       >
         <Settings size={11} />
