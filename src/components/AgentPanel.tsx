@@ -26,7 +26,7 @@ import {
   type AgentPermission,
 } from "../lib/store/slices/agent";
 import { useApp } from "../lib/store";
-import { Conversation } from "./agent/Conversation";
+import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
 import { Button, cn, IconButton, Input, Select } from "./ui";
 
@@ -238,7 +238,7 @@ export function AgentPanel() {
 
       <Conversation>
         {(!chat || chat.items.length === 0) && !chat?.error && (
-          <div className="my-auto flex flex-col items-center gap-2 px-4 text-center">
+          <ConversationItem className="my-auto items-center gap-2 px-4 text-center">
             <Sparkles size={20} className="text-violet-400/70" />
             <div className="text-[13px] text-zinc-300">Chat with your database</div>
             <div className="text-[11px] leading-relaxed text-zinc-500">
@@ -251,11 +251,21 @@ export function AgentPanel() {
                 connection: <span className="text-zinc-400">{profile.name}</span>
               </div>
             )}
-          </div>
+          </ConversationItem>
         )}
-        {chat?.items.map((item) => <ItemView key={item.id} item={item} />)}
+        {chat?.items.map((item) => (
+          // сообщение пользователя — якорь нового хода: прилипает к верху
+          // вьюпорта, ответ стримится в место под ним
+          <ConversationItem
+            key={item.id}
+            id={String(item.id)}
+            anchor={item.kind === "user"}
+          >
+            <ItemView item={item} />
+          </ConversationItem>
+        ))}
         {chat?.status === "starting" && (
-          <div className="flex flex-col gap-1 text-[11px] text-zinc-500">
+          <ConversationItem className="gap-1 text-[11px] text-zinc-500">
             <div className="flex items-center gap-1.5">
               <Loader2 size={11} className="animate-spin" />
               {chat.startNote ? `installing ${provider.label} adapter…` : `starting ${provider.label}…`}
@@ -268,17 +278,19 @@ export function AgentPanel() {
                 {chat.startNote}
               </div>
             )}
-          </div>
+          </ConversationItem>
         )}
         {chat?.status === "running" && !chat.permission && (
-          <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          <ConversationItem className="flex-row items-center gap-1.5 text-[11px] text-zinc-500">
             <Loader2 size={11} className="animate-spin" /> thinking…
-          </div>
+          </ConversationItem>
         )}
         {chat?.error && (
-          <pre className="selectable whitespace-pre-wrap rounded-md border border-red-900/60 bg-red-950/40 p-2 font-mono text-[11px] text-red-300">
-            {chat.error}
-          </pre>
+          <ConversationItem>
+            <pre className="selectable whitespace-pre-wrap rounded-md border border-red-900/60 bg-red-950/40 p-2 font-mono text-[11px] text-red-300">
+              {chat.error}
+            </pre>
+          </ConversationItem>
         )}
       </Conversation>
 
