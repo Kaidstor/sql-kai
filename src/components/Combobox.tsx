@@ -67,7 +67,7 @@ export function Combobox({
     <Popover
       open={open}
       onClose={close}
-      panelClassName="w-56"
+      panelClassName="w-84"
       trigger={
         <button
           onClick={() => (open ? close() : setOpen(true))}

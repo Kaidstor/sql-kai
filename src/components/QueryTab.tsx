@@ -267,14 +267,33 @@ export function QueryTab({ tab }: { tab: Tab }) {
               return true;
             },
           },
-          {
-            key: "Shift-Alt-f",
-            run: (view) => {
+        ]),
+      ),
+      Prec.highest(
+        EditorView.domEventHandlers({
+          // ⇧⌥F can't be a keymap entry: on macOS Option-combos arrive as the
+          // typed character ("Ï", layout-dependent) and CodeMirror deliberately
+          // skips base-key fallback for them — match the physical key instead.
+          keydown(e, view) {
+            if (
+              e.code === "KeyF" &&
+              e.altKey &&
+              e.shiftKey &&
+              !e.metaKey &&
+              !e.ctrlKey
+            ) {
               formatInView(view);
               return true;
-            },
+            }
+            return false;
           },
-        ]),
+          // macOS WebKit selects the word under a right-click in editable
+          // text, which flips the context menu to "Run/Format selection";
+          // suppress it — `contextmenu` still fires, so the menu opens.
+          mousedown(e) {
+            return e.button === 2;
+          },
+        }),
       ),
     ];
   }, [tab.id, schemaColumns]);
