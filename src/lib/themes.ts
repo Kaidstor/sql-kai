@@ -179,65 +179,21 @@ export function applyCachedTheme() {
   }
 }
 
-/** Restyles CodeMirror panels (the @codemirror/search find/replace bar) to the
- *  app's UI kit. Colors ride the theme CSS variables, so every app theme —
- *  including light ones — gets its own palette from the one extension. */
-const panelTheme = EditorView.theme({
-  ".cm-panels": {
-    backgroundColor: "var(--color-zinc-925)",
-    color: "var(--color-zinc-200)",
+/** Themes the search-match highlights (from editorSearch.ts) to the app's UI
+ *  kit. Colors ride the theme CSS variables, so every app theme — including
+ *  light ones — gets its own palette from this one extension. */
+const searchTheme = EditorView.theme({
+  ".cm-searchMatch": {
+    backgroundColor: "color-mix(in srgb, var(--color-amber-400) 28%, transparent)",
+    borderRadius: "2px",
   },
-  ".cm-panels-top": { borderBottom: "1px solid var(--color-zinc-800)" },
-  ".cm-panels-bottom": { borderTop: "1px solid var(--color-zinc-800)" },
-  ".cm-panel.cm-search": {
-    padding: "6px 32px 6px 8px",
-    fontSize: "12px",
+  ".cm-searchMatch-selected": {
+    backgroundColor: "color-mix(in srgb, var(--color-sky-500) 55%, transparent)",
+    outline: "1px solid var(--color-sky-400)",
   },
-  ".cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label":
-    {
-      margin: "2px 8px 2px 0",
-      fontSize: "12px",
-    },
-  ".cm-panel.cm-search label": {
-    color: "var(--color-zinc-400)",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "4px",
+  ".cm-selectionMatch": {
+    backgroundColor: "color-mix(in srgb, var(--color-zinc-400) 22%, transparent)",
   },
-  ".cm-panel.cm-search input[type=checkbox]": {
-    margin: "0",
-    accentColor: "var(--color-sky-600)",
-  },
-  ".cm-textfield": {
-    backgroundColor: "var(--color-zinc-900)",
-    border: "1px solid var(--color-zinc-700)",
-    borderRadius: "6px",
-    color: "var(--color-zinc-100)",
-    padding: "3px 8px",
-  },
-  ".cm-textfield:focus": {
-    outline: "none",
-    borderColor: "var(--color-sky-600)",
-  },
-  ".cm-textfield::placeholder": { color: "var(--color-zinc-500)" },
-  ".cm-button": {
-    backgroundImage: "none",
-    backgroundColor: "var(--color-zinc-800)",
-    border: "1px solid var(--color-zinc-700)",
-    borderRadius: "6px",
-    color: "var(--color-zinc-200)",
-    padding: "3px 10px",
-    transition: "background-color 0.15s",
-  },
-  ".cm-button:hover": { backgroundColor: "var(--color-zinc-700)" },
-  ".cm-button:active": { backgroundImage: "none" },
-  ".cm-panel button[name=close]": {
-    color: "var(--color-zinc-500)",
-    cursor: "pointer",
-    padding: "2px 8px",
-    fontSize: "14px",
-  },
-  ".cm-panel button[name=close]:hover": { color: "var(--color-zinc-200)" },
 });
 
 /** SQL editor palettes with a transparent background so the app theme shows
@@ -247,12 +203,12 @@ export const editorThemes = {
     vscodeDarkInit({
       settings: { background: "transparent", gutterBackground: "transparent" },
     }),
-    panelTheme,
+    searchTheme,
   ],
   light: [
     vscodeLightInit({
       settings: { background: "transparent", gutterBackground: "transparent" },
     }),
-    panelTheme,
+    searchTheme,
   ],
 };

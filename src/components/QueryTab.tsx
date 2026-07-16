@@ -14,9 +14,10 @@ import {
   TextSelect,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { format } from "sql-formatter";
 import { copyText, readClipboardText } from "../lib/clipboard";
+import { searchExtensions } from "../lib/editorSearch";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes, themeById } from "../lib/themes";
 import type { SortSpec, StatementResult } from "../lib/types";
@@ -32,6 +33,7 @@ import { ExplainView } from "./ExplainView";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
+import { SearchPanel, type SearchHandle } from "./SearchPanel";
 import { TabError } from "./TabError";
 import { Button, cn, MenuButton, Popover, Select } from "./ui";
 
@@ -188,6 +190,16 @@ const DEFAULT_EDITOR_PCT = 40;
 /** Minimum pane height while dragging; below half of it the editor snaps shut. */
 const MIN_PANE_PX = 100;
 
+/** Stable reference — an inline object would make @uiw/react-codemirror
+ *  reconfigure the whole editor on every render (which closes our search
+ *  panel). searchKeymap is off: we bind ⌘F ourselves and drive a custom panel. */
+const BASIC_SETUP = {
+  foldGutter: false,
+  autocompletion: true,
+  highlightActiveLine: true,
+  searchKeymap: false,
+} as const;
+
 export function QueryTab({ tab }: { tab: Tab }) {
   const state = tab.state as QueryTabState;
   const runQuery = useApp((s) => s.runQuery);
@@ -215,6 +227,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
   const lightTheme = useApp((s) => Boolean(themeById(s.settings.theme).light));
   const splitRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const searchApi = useRef<SearchHandle>(null);
   // Drives the "Run selection" label — mirrors whether the editor selection
   // holds runnable (non-whitespace) text.
   const [hasSelection, setHasSelection] = useState(false);
@@ -225,6 +238,12 @@ export function QueryTab({ tab }: { tab: Tab }) {
     const view = viewRef.current;
     void runQuery(tab.id, view ? selectionText(view) : undefined);
   };
+
+  // Stable so @uiw/react-codemirror doesn't reconfigure the editor every render.
+  const handleChange = useCallback(
+    (value: string) => setTabSql(tab.id, value),
+    [setTabSql, tab.id],
+  );
 
   const resizeTo = (clientY: number) => {
     const split = splitRef.current;
@@ -258,6 +277,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
           editorSelections.set(tab.id, { anchor: m.anchor, head: m.head });
         }
       }),
+      ...searchExtensions,
       Prec.highest(
         keymap.of([
           {
@@ -267,13 +287,35 @@ export function QueryTab({ tab }: { tab: Tab }) {
               return true;
             },
           },
+          {
+            key: "Mod-f",
+            run: () => {
+              searchApi.current?.open(false);
+              return true;
+            },
+          },
+          {
+            key: "Mod-g",
+            run: () => {
+              searchApi.current?.findNext();
+              return true;
+            },
+          },
+          {
+            key: "Mod-Shift-g",
+            run: () => {
+              searchApi.current?.findPrevious();
+              return true;
+            },
+          },
         ]),
       ),
       Prec.highest(
         EditorView.domEventHandlers({
-          // ⇧⌥F can't be a keymap entry: on macOS Option-combos arrive as the
-          // typed character ("Ï", layout-dependent) and CodeMirror deliberately
-          // skips base-key fallback for them — match the physical key instead.
+          // ⇧⌥F / ⌘⌥F can't be keymap entries: on macOS Option-combos arrive as
+          // the typed character ("Ï", layout-dependent) and CodeMirror
+          // deliberately skips base-key fallback for them — match the physical
+          // key (e.code) instead.
           keydown(e, view) {
             if (
               e.code === "KeyF" &&
@@ -283,6 +325,16 @@ export function QueryTab({ tab }: { tab: Tab }) {
               !e.ctrlKey
             ) {
               formatInView(view);
+              return true;
+            }
+            if (
+              e.code === "KeyF" &&
+              e.altKey &&
+              e.metaKey &&
+              !e.shiftKey &&
+              !e.ctrlKey
+            ) {
+              searchApi.current?.open(true);
               return true;
             }
             return false;
@@ -481,7 +533,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
           className={
             editorPct === 0
               ? "hidden"
-              : "min-h-[100px] shrink-0 overflow-hidden"
+              : "relative min-h-[100px] shrink-0 overflow-hidden"
           }
           style={{ height: `${editorPct}%` }}
         >
@@ -489,7 +541,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
             <ContextMenuTrigger className="block h-full">
               <CodeMirror
                 value={state.sql}
-                onChange={(value) => setTabSql(tab.id, value)}
+                onChange={handleChange}
                 onCreateEditor={(view) => {
                   viewRef.current = view;
                   // an accidental tab hop keeps the selection (see editorSelections)
@@ -504,11 +556,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
                 height="100%"
                 style={{ height: "100%" }}
                 placeholder="SELECT * FROM …"
-                basicSetup={{
-                  foldGutter: false,
-                  autocompletion: true,
-                  highlightActiveLine: true,
-                }}
+                basicSetup={BASIC_SETUP}
               />
             </ContextMenuTrigger>
             <ContextMenuContent>
@@ -558,6 +606,11 @@ export function QueryTab({ tab }: { tab: Tab }) {
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
+          <SearchPanel
+            ref={searchApi}
+            getView={() => viewRef.current}
+            sqlText={state.sql}
+          />
         </div>
 
         <div
