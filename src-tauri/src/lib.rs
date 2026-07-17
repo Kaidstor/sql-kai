@@ -331,6 +331,7 @@ pub fn run() {
             commands::list_sessions,
             commands::test_profile,
             commands::execute_sql,
+            commands::export_sql,
             commands::session_tx_status,
             commands::cancel_query,
             commands::list_tables,

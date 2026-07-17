@@ -504,6 +504,33 @@ pub async fn execute_sql(
     result
 }
 
+/// Full-result export: re-runs `sql` and streams the rows of statement
+/// `statement_index` into `path` (csv/json/md/xlsx) with no row limit — the
+/// grid's fetch cap does not apply here. A failed export removes the partial
+/// file so the user never finds a half-written dump.
+#[tauri::command]
+pub async fn export_sql(
+    state: State<'_, AppState>,
+    session_id: String,
+    sql: String,
+    statement_index: Option<usize>,
+    format: String,
+    path: String,
+) -> Result<db::ExportOutcome, AppError> {
+    let format = db::ExportFormat::parse(&format)?;
+    let (client, tx) = client_and_tx(&state, &session_id)?;
+    let before = TxStatus::from_u8(tx.load(Ordering::Relaxed));
+    let result =
+        db::export_statement(&client, &sql, statement_index.unwrap_or(0), format, &path).await;
+    // The re-run goes through the same connection — keep the tx badge honest
+    // (the exported SQL may contain BEGIN or fail inside an open transaction).
+    tx.store(db::advance_tx(before, &sql, result.is_ok()) as u8, Ordering::Relaxed);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
+}
+
 /// Current heuristic transaction state of the session ("idle"/"active"/"failed").
 /// Read after a run to refresh the status-bar badge (covers the error path,
 /// where `execute_sql` returns Err and carries no result).

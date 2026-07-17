@@ -15,6 +15,7 @@ import {
   type RelationInfo,
   type SortSpec,
 } from "../lib/types";
+import { ExportMenu } from "./ExportMenu";
 import { FilterBar } from "./FilterBar";
 import { ReconnectButton } from "./ReconnectButton";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
@@ -29,8 +30,13 @@ function formatApprox(n: number): string {
 }
 
 /** The SELECT behind this grid (see get_table_page). Columns hidden in the
- *  grid are dropped from the list; with none hidden it stays SELECT *. */
-function currentViewSql(state: TableTabState, visible: string[] | null): string {
+ *  grid are dropped from the list; with none hidden it stays SELECT *.
+ *  `withPage: false` drops LIMIT/OFFSET — the full result for the export. */
+function currentViewSql(
+  state: TableTabState,
+  visible: string[] | null,
+  withPage = true,
+): string {
   const rel = relIdent(state.schema, state.table);
   const select = visible?.length ? visible.map(quoteIdent).join(", ") : "*";
   const where = state.filter.trim() ? `\nWHERE ${state.filter.trim()}` : "";
@@ -39,7 +45,10 @@ function currentViewSql(state: TableTabState, visible: string[] | null): string 
         .map((s) => `${quoteIdent(s.column)} ${s.dir === "desc" ? "DESC" : "ASC"}`)
         .join(", ")}`
     : "";
-  return `SELECT ${select}\nFROM ${rel}${where}${order}\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`;
+  const page = withPage
+    ? `\nLIMIT ${state.pageSize} OFFSET ${state.page * state.pageSize}`
+    : "";
+  return `SELECT ${select}\nFROM ${rel}${where}${order}${page}`;
 }
 
 export function TableTab({ tab }: { tab: Tab }) {
@@ -168,6 +177,25 @@ export function TableTab({ tab }: { tab: Tab }) {
   const rows = state.data?.result.rows.length ?? 0;
   const lastPage = rows < state.pageSize;
 
+  // Visible column names (null = all) shared by "view as query" and export.
+  const visibleColNames = useMemo(() => {
+    const all = state.data?.result.columns ?? [];
+    return hiddenCols.size ? all.filter((_, i) => !hiddenCols.has(i)) : null;
+  }, [state.data, hiddenCols]);
+
+  // Loaded page with hidden columns dropped — the export menu's copy section
+  // mirrors what's on screen, like the grid's own export actions.
+  const exportResult = useMemo(() => {
+    const res = state.data?.result;
+    if (!res || !hiddenCols.size) return res;
+    const keep = res.columns.map((_, i) => i).filter((i) => !hiddenCols.has(i));
+    return {
+      ...res,
+      columns: keep.map((i) => res.columns[i]),
+      rows: res.rows.map((r) => keep.map((i) => r[i])),
+    };
+  }, [state.data, hiddenCols]);
+
   // O(1) column lookup by name, shared by the type/nullable projections below
   // (was an O(cols·rows) `cols.find` per result column on every render).
   const colByName = useMemo(() => {
@@ -243,17 +271,13 @@ export function TableTab({ tab }: { tab: Tab }) {
         />
         <IconButton
           title="Current view as query — open this grid's SQL in a new tab"
-          onClick={() => {
-            const all = state.data?.result.columns ?? [];
-            const visible = hiddenCols.size
-              ? all.filter((_, i) => !hiddenCols.has(i))
-              : null;
+          onClick={() =>
             openQueryTab(
               tab.profileId,
-              currentViewSql(state, visible),
+              currentViewSql(state, visibleColNames),
               state.table,
-            );
-          }}
+            )
+          }
         >
           <FileCode2 size={13} />
         </IconButton>
@@ -293,6 +317,12 @@ export function TableTab({ tab }: { tab: Tab }) {
             {formatApprox(state.data?.approxRows ?? -1)} rows
             {state.data ? ` · ${state.data.durationMs} ms` : ""}
           </span>
+          <ExportMenu
+            result={exportResult}
+            sessionId={sessions[tab.profileId]?.sessionId ?? null}
+            sql={state.data ? currentViewSql(state, visibleColNames, false) : null}
+            fileBase={state.table}
+          />
           <Select
             value={state.pageSize}
             onChange={(e) =>

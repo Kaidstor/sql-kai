@@ -5,6 +5,8 @@ import type {
   ColumnInfo,
   EnumTypeInfo,
   ExecResult,
+  ExportFormat,
+  ExportOutcome,
   HistoryEntry,
   IndexInfo,
   Profile,
@@ -119,6 +121,23 @@ export const api = {
     maxRows: number,
     autoBegin = false,
   ) => invoke<ExecResult>("execute_sql", { sessionId, sql, maxRows, autoBegin }),
+
+  /** Full-result export: re-runs `sql` with no row limit and streams the
+   *  rows of statement `statementIndex` into `path`. */
+  exportSql: (
+    sessionId: string,
+    sql: string,
+    statementIndex: number,
+    format: ExportFormat,
+    path: string,
+  ) =>
+    invoke<ExportOutcome>("export_sql", {
+      sessionId,
+      sql,
+      statementIndex,
+      format,
+      path,
+    }),
 
   openIsolatedSession: (profileId: string) =>
     invoke<SessionInfo>("open_isolated_session", { profileId }),

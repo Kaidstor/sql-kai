@@ -243,6 +243,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
         notifyDone(tab.profileId, started, true, sql);
         patchTab<QueryTabState>(tabId, {
           result,
+          resultSql: sql,
           explain: undefined,
           running: false,
         });
@@ -253,6 +254,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           error: errText(e),
           connectionLost: isSessionLost(e),
           result: undefined,
+          resultSql: undefined,
           running: false,
         });
         handleRunError(tab, isolated, e);

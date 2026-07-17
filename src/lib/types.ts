@@ -119,6 +119,16 @@ export interface ExecResult {
   durationMs: number;
 }
 
+/** File formats of the full-result export (export_sql). */
+export type ExportFormat = "csv" | "json" | "md" | "xlsx";
+
+export interface ExportOutcome {
+  rows: number;
+  /** XLSX sheet row limit cut the result; other formats never truncate. */
+  truncated: boolean;
+  durationMs: number;
+}
+
 export interface TableInfo {
   schema: string;
   name: string;

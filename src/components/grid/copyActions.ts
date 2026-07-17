@@ -159,7 +159,9 @@ export function makeCopyActions({
     };
   };
 
-  const exportLabel = n > 0 ? `${n} row(s)` : "all";
+  // "loaded", not "all": these act on fetched rows only — the toolbar's
+  // Export menu is the one that dumps the full result.
+  const exportLabel = n > 0 ? `${n} row(s)` : "loaded";
 
   const exportRows = async (kind: "csv" | "json" | "md") => {
     const { columns, rows } = exportable();

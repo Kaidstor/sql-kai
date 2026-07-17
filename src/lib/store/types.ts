@@ -17,6 +17,9 @@ export interface QueryTabState {
   kind: "query";
   sql: string;
   result?: import("../types").ExecResult;
+  /** The SQL that produced `result` (may be an editor selection, not `sql`) —
+   *  the full export re-runs exactly this text. */
+  resultSql?: string;
   /** Parsed EXPLAIN output; shown instead of results until dismissed. */
   explain?: import("../types").ExplainResult;
   error?: string;

@@ -15,6 +15,13 @@ export function toCsv(columns: readonly string[], rows: readonly Row[]): string 
     .join("\r\n");
 }
 
+/** TSV with a header row; NULL becomes an empty field. */
+export function toTsv(columns: readonly string[], rows: readonly Row[]): string {
+  return [columns, ...rows]
+    .map((row) => row.map((v) => v ?? "").join("\t"))
+    .join("\n");
+}
+
 /** Array of {column: value} objects, pretty-printed. */
 export function toJson(columns: readonly string[], rows: readonly Row[]): string {
   const objs = rows.map((row) =>
