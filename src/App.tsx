@@ -70,9 +70,10 @@ function App() {
     });
   }, [activeProfileId, profiles, sessions]);
 
-  // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘⌥O connection
-  // palette, ⌘P saved-queries palette, ⌘S save query, ⌘R refresh table/
-  // structure view, ⌘W/⌘⇧T close/reopen tab. Grid/editor hotkeys stay local.
+  // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘`/⌘~ cycle them,
+  // Ctrl+Tab and ⌘⇧]/⌘⇧[ cycle tabs, ⌘⌥O connection palette, ⌘P saved-queries
+  // palette, ⌘S save query, ⌘R refresh table/structure view, ⌘W/⌘⇧T close/reopen
+  // tab. Grid/editor hotkeys stay local.
   useEffect(() => {
     // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
     // accelerator consumes the keypress before the webview sees it.
@@ -95,6 +96,23 @@ function App() {
           e.preventDefault();
           void s.cancelQuery(tab.id);
         }
+      } else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") {
+        // Ctrl+Tab / Ctrl+⇧Tab — cycle through this connection's tabs like a browser
+        e.preventDefault();
+        s.cycleTab(e.shiftKey ? -1 : 1);
+      } else if (
+        mod &&
+        e.shiftKey &&
+        !e.altKey &&
+        (e.code === "BracketRight" || e.code === "BracketLeft")
+      ) {
+        // ⌘⇧] / ⌘⇧[ — next / previous tab (browser-style, works from anywhere)
+        e.preventDefault();
+        s.cycleTab(e.code === "BracketRight" ? 1 : -1);
+      } else if (mod && !e.altKey && e.code === "Backquote") {
+        // ⌘` next connection, ⌘~ (⌘⇧`) previous — macOS window-cycle convention
+        e.preventDefault();
+        s.cycleProfile(e.shiftKey ? -1 : 1);
       } else if (mod && e.altKey && e.code === "KeyO") {
         // e.code, not e.key — Option+O types "ø" on mac
         e.preventDefault();

@@ -48,6 +48,8 @@ export interface TabsSlice {
   /** ⌘N: new query tab on the active connection (or the ⌘⌥O palette). */
   newQueryTab: () => void;
   setActiveTab: (tabId: string) => void;
+  /** Ctrl+Tab / ⌘⇧] step through the active connection's tabs (wraps around). */
+  cycleTab: (dir: 1 | -1) => void;
   /** Drag reorder: puts dragId before targetId (or after it when `after`). */
   moveTab: (dragId: string, targetId: string, after: boolean) => void;
   setTabSql: (tabId: string, sql: string) => void;
@@ -292,6 +294,18 @@ export function createTabsSlice(set: Set, get: Get, ctx: StoreContext): TabsSlic
     },
 
     setActiveTab: (tabId) => set({ activeTabId: tabId }),
+
+    cycleTab: (dir) => {
+      const s = get();
+      // only the active connection's tabs are on the bar
+      const visible = s.tabs.filter((t) => t.profileId === s.activeProfileId);
+      if (visible.length === 0) return;
+      const cur = visible.findIndex((t) => t.id === s.activeTabId);
+      // from outside the visible set, step in from the matching end
+      const base = cur < 0 ? (dir > 0 ? -1 : 0) : cur;
+      const next = (base + dir + visible.length) % visible.length;
+      set({ activeTabId: visible[next].id });
+    },
 
     moveTab: (dragId, targetId, after) =>
       set((s) => {

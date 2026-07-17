@@ -65,3 +65,52 @@ describe("background connection recovery", () => {
     expect(state.activeProfileId).toBe("foreground");
   });
 });
+
+describe("cycleProfile", () => {
+  /** Slice wired over a plain state object with `n` live connections, first active. */
+  const setup = (n: number, activeIdx = 0) => {
+    const state = { tabs: [], launcherOpen: false } as unknown as AppStore;
+    const set = ((
+      update: Partial<AppStore> | ((snapshot: AppStore) => Partial<AppStore>),
+    ) => {
+      Object.assign(state, typeof update === "function" ? update(state) : update);
+    }) as Set;
+    Object.assign(
+      state,
+      createConnectionsSlice(set, () => state, {} as unknown as StoreContext),
+    );
+    state.profiles = Array.from({ length: n }, (_, i) => ({
+      id: `p${i}`,
+      name: `P${i}`,
+      host: "localhost",
+      port: 5432,
+      database: "db",
+      user: "u",
+    }));
+    state.sessions = Object.fromEntries(
+      state.profiles.map((p) => [
+        p.id,
+        { sessionId: `s-${p.id}`, profileId: p.id, serverVersion: "17" },
+      ]),
+    );
+    state.activeProfileId = `p${activeIdx}`;
+    return state;
+  };
+
+  it("wraps forward and backward through live connections", () => {
+    const state = setup(3);
+    state.cycleProfile(1);
+    expect(state.activeProfileId).toBe("p1");
+    state.cycleProfile(1);
+    state.cycleProfile(1);
+    expect(state.activeProfileId).toBe("p0"); // wrapped past the end
+    state.cycleProfile(-1);
+    expect(state.activeProfileId).toBe("p2"); // wrapped before the start
+  });
+
+  it("is a no-op with fewer than two live connections", () => {
+    const state = setup(1);
+    state.cycleProfile(1);
+    expect(state.activeProfileId).toBe("p0");
+  });
+});

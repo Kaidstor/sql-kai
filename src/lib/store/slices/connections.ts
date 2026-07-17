@@ -3,6 +3,7 @@
 // sidebar column/FK caches) and the broker's cli-session badges.
 import { api, errText } from "../../api";
 import { persistClosedTabs, persistWorkspace, removeWorkspace } from "../../persist";
+import { connectedProfiles } from "../../profile";
 import type {
   CliSessionInfo,
   ColumnInfo,
@@ -59,6 +60,8 @@ export interface ConnectionsSlice {
    *  and tabs that errored with the dead session reload once connected. */
   reconnect: (profileId: string, activate?: boolean) => Promise<void>;
   selectProfile: (profileId: string) => void;
+  /** ⌘`/⌘~ cycle the active connection through the live ones (wraps around). */
+  cycleProfile: (dir: 1 | -1) => void;
   refreshTables: (profileId: string) => Promise<void>;
   /** Re-pulls broker cli-sessions (on load and broker://changed events). */
   refreshCliSessions: () => Promise<void>;
@@ -324,6 +327,17 @@ export function createConnectionsSlice(
         }
         return { activeProfileId: profileId, activeTabId, launcherOpen: false };
       }),
+
+    cycleProfile: (dir) => {
+      const s = get();
+      // same live-connections list (and order) the Ctrl+1…9 hotkeys use
+      const list = connectedProfiles(s.profiles, s.sessions);
+      if (list.length < 2) return;
+      const cur = list.findIndex((p) => p.id === s.activeProfileId);
+      const base = cur < 0 ? (dir > 0 ? -1 : 0) : cur;
+      const next = (base + dir + list.length) % list.length;
+      get().selectProfile(list[next].id);
+    },
 
     refreshTables: async (profileId) => {
       const session = get().sessions[profileId];
