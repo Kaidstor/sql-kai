@@ -352,7 +352,7 @@ export function Launcher() {
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-scroll">
         <div className="mx-auto w-full max-w-3xl px-6 py-8">
           {profiles.length > 0 ? (
             <>
