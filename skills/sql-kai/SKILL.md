@@ -30,8 +30,13 @@ sql-kai <alias> -c "SELECT ..."          # alias = имя профиля, id и�
 echo "SELECT now()" | sql-kai <alias>    # SQL со stdin; или -f query.sql
 sql-kai <alias> -c "..." --json          # структурный вывод, значения типизированы
 sql-kai <alias> -c "..." -t              # tuples-only (значения через |); есть и --csv
-sql-kai profiles list                    # какие профили уже есть
+sql-kai profiles list [фильтр]           # профили; фильтруй по имени сервиса: profiles list vuln
 ```
+
+**Профиль ищи с фильтром, а не полным списком**: `sql-kai profiles list <сервис>` —
+подстрока без учёта регистра по name/group/host/db/ssh. Профиль сервиса обычно совпадает
+с ним по имени, полный список на десятки строк тянуть в контекст не нужно. Фильтр не
+нашёл ничего — тогда уже смотри полный `profiles list`.
 
 - **Сессия по умолчанию read-only** (`SET default_transaction_read_only = on`).
   Запись/DDL требуют `--write`.

@@ -63,7 +63,8 @@
 Собирается из этого же репозитория (<code>src-tauri</code>, cargo-фича <code>cli</code>).</p>
 
 <h2 id="quickstart">Быстрый старт</h2>
-<pre><code>sql-kai profiles list                       # какие профили уже есть (общие с GUI)
+<pre><code>sql-kai profiles list [фильтр]              # профили (общие с GUI); фильтр — подстрока
+                                            # по name/group/host/db/ssh: profiles list vuln
 sql-kai domainator -c "SELECT count(*) FROM domains"
 echo "SELECT now()" | sql-kai orchestrator  # SQL со stdin; или -f query.sql
 sql-kai coordinator -c "..." --json         # структурный вывод: числа/bool/null/json типизированы
@@ -110,7 +111,7 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><td><code>sql-kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
 <tr><td><code>sql-kai sessions</code></td><td>Живые сессии GUI-брокера и holder'а (origin: gui / cli / holder, простой)</td></tr>
 <tr><td><code>sql-kai holder stop</code></td><td>Погасить фоновый держатель сессий (см. «Holder»); поднимается он сам</td></tr>
-<tr><td><code>sql-kai profiles list|show|rm</code></td><td>Профили</td></tr>
+<tr><td><code>sql-kai profiles list [фильтр]|show|rm</code></td><td>Профили; фильтр — подстрока по name/group/host/db/ssh</td></tr>
 <tr><td><code>sql-kai vault status|setup|trust|revoke</code></td><td>Vault (см. ниже)</td></tr>
 </table>
 <p><code>sql-kai &lt;команда&gt; --help</code> — все флаги.</p>

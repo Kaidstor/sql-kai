@@ -15,6 +15,9 @@ use crate::session;
 pub enum ProfilesCmd {
     /// Список профилей
     List {
+        /// Фильтр: подстрока без учёта регистра по name/group/host/db/ssh
+        /// (обычно имя сервиса: `sql-kai profiles list vuln`)
+        filter: Option<String>,
         #[command(flatten)]
         fmt: FormatArgs,
     },
@@ -44,8 +47,22 @@ fn fmt_ago(ts_ms: i64) -> String {
 
 pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
     match cmd {
-        ProfilesCmd::List { fmt } => {
+        ProfilesCmd::List { filter, fmt } => {
             let mut profiles = store::load_profiles()?;
+            if let Some(f) = &filter {
+                let f = f.to_lowercase();
+                profiles.retain(|p| {
+                    p.name.to_lowercase().contains(&f)
+                        || p.group
+                            .as_deref()
+                            .is_some_and(|g| g.to_lowercase().contains(&f))
+                        || p.database.to_lowercase().contains(&f)
+                        || format!("{}:{}", p.host, p.port).contains(&f)
+                        || p.ssh
+                            .as_ref()
+                            .is_some_and(|s| s.host.to_lowercase().contains(&f))
+                });
+            }
             let marks = store::load_last_connected().unwrap_or_default();
             for p in &mut profiles {
                 p.last_connected = marks.get(&p.id).copied();
