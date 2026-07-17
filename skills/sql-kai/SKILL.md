@@ -19,9 +19,13 @@ GUI/holder) или `--no-mux` (то же + свежий ssh без ControlMaster
 ```bash
 # из бандла приложения (обновляется вместе с ним):
 ln -sf /Applications/sql-kai.app/Contents/MacOS/sql-kai-cli ~/.local/bin/sql-kai
-# или из исходников:
-cargo install --path src-tauri --features cli --bin sql-kai
+# или из исходников (cargo-таргет называется sql-kai-cli, не sql-kai):
+cargo install --path src-tauri --features cli --bin sql-kai-cli
 ```
+
+Нюанс: `cargo install` кладёт бинарь `~/.cargo/bin/sql-kai-cli` и симлинк `sql-kai`,
+указывающий в бандл приложения, НЕ обновляет — команда `sql-kai` обновляется только
+вместе с приложением (релиз + перезапуск, дальше апдейтер сам).
 
 ## Быстрый старт
 
