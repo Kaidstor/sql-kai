@@ -1,6 +1,7 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
+import { stashPendingNotes } from "./whatsNew";
 
 /** Outcome of an explicit "Check for Updates…" (menu) — drives toast feedback. */
 export type ManualCheckResult =
@@ -85,6 +86,8 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
         }
       });
       // Installed — hold for an explicit relaunch ("Restart to Update").
+      // Release notes survive the relaunch: WhatsNewDialog shows them.
+      stashPendingNotes(update.version, update.body);
       set({ downloading: false, ready: true, progress: 100 });
     } catch (e) {
       set({ downloading: false, progress: null, error: String(e) });

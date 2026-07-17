@@ -18,6 +18,7 @@ import { StructureTab } from "./components/StructureTab";
 import { TableTab } from "./components/TableTab";
 import { TabsBar } from "./components/TabsBar";
 import { UpdateToast } from "./components/UpdateToast";
+import { WhatsNewDialog } from "./components/WhatsNewDialog";
 import { VaultGate } from "./components/VaultGate";
 import { api } from "./lib/api";
 import { isMac } from "./lib/platform";
@@ -347,6 +348,7 @@ function App() {
       </div>
       <StatusBar />
       <UpdateToast />
+      <WhatsNewDialog />
       <ConnectionDialog />
       <ConfirmDialog />
       <SettingsDialog />
