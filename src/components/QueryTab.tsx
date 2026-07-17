@@ -7,6 +7,7 @@ import {
   CircleStop,
   ClipboardPaste,
   Copy,
+  ListFilter,
   Play,
   Route,
   Scissors,
@@ -30,6 +31,7 @@ import {
   ContextMenuTrigger,
 } from "./ContextMenu";
 import { ExplainView } from "./ExplainView";
+import { ExportMenu } from "./ExportMenu";
 import { HistoryMenu } from "./HistoryMenu";
 import { ResultsGrid } from "./ResultsGrid";
 import { SaveQueryButton, SavedQueriesMenu } from "./SavedQueries";
@@ -74,9 +76,46 @@ function applyClientSort(
   };
 }
 
-function ResultBlock({ result }: { result: StatementResult }) {
+/** Keeps rows where any cell contains the needle, case-insensitive. Like the
+ *  client sort above, this narrows the view only — the query is NOT re-run,
+ *  so just the fetched rows are searched. NULL cells never match. */
+function applyClientFilter(
+  result: StatementResult,
+  needle: string,
+): StatementResult {
+  const q = needle.trim().toLowerCase();
+  if (!q) return result;
+  return {
+    ...result,
+    rows: result.rows.filter((row) =>
+      row.some((v) => v !== null && v.toLowerCase().includes(q)),
+    ),
+  };
+}
+
+function ResultBlock({
+  result,
+  index,
+  sessionId,
+  resultSql,
+}: {
+  result: StatementResult;
+  /** Index of this statement within the run — targets the full export. */
+  index: number;
+  /** Connection the full export runs on (null = not connected). */
+  sessionId: string | null;
+  /** SQL that produced the run (see QueryTabState.resultSql). */
+  resultSql: string | null;
+}) {
   const [sorts, setSorts] = useState<SortSpec[]>([]);
+  const [filter, setFilter] = useState("");
   const sorted = useMemo(() => applyClientSort(result, sorts), [result, sorts]);
+  // Filter after sort so retyping the needle reuses the memoized sort.
+  const shown = useMemo(
+    () => applyClientFilter(sorted.result, filter),
+    [sorted.result, filter],
+  );
+  const filtering = Boolean(filter.trim());
   if (result.columns.length === 0) {
     return (
       <div className="px-3 py-1.5 text-[12px] text-emerald-400/90 border-b border-zinc-800">
@@ -86,21 +125,69 @@ function ResultBlock({ result }: { result: StatementResult }) {
   }
   return (
     <div className="flex flex-col min-h-0 flex-1">
-      <div className="px-3 py-1 text-[11px] text-zinc-500 border-b border-zinc-800 shrink-0">
-        {result.rows.length} row(s)
-        {result.truncated && (
-          <span className="text-amber-400"> · truncated to limit</span>
-        )}
-        {sorted.sorts.length > 0 && (
-          <span title="Rows are reordered in the view; the query was not re-run">
-            {" "}
-            · sorted locally
-          </span>
-        )}
+      <div className="flex items-center px-3 text-[11px] text-zinc-500 border-b border-zinc-800 shrink-0">
+        <span className="py-1">
+          {filtering ? (
+            <span title="Rows are hidden in the view; the query was not re-run">
+              {shown.rows.length} of {result.rows.length} row(s)
+            </span>
+          ) : (
+            `${result.rows.length} row(s)`
+          )}
+          {result.truncated && (
+            <span className="text-amber-400"> · truncated to limit</span>
+          )}
+          {sorted.sorts.length > 0 && (
+            <span title="Rows are reordered in the view; the query was not re-run">
+              {" "}
+              · sorted locally
+            </span>
+          )}
+        </span>
+        <span className="ml-auto flex items-center gap-1">
+          <ListFilter
+            size={11}
+            className={filtering ? "text-sky-400" : "text-zinc-600"}
+          />
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setFilter("");
+                e.currentTarget.blur();
+              }
+            }}
+            placeholder="Filter rows…"
+            title="Hide fetched rows where no cell contains the text — the query is not re-run"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            className="w-32 bg-transparent py-0.5 font-mono text-[11px] text-zinc-200 outline-none transition-[width] placeholder:text-zinc-700 focus:w-48"
+          />
+          {filter && (
+            <button
+              onClick={() => setFilter("")}
+              title="Clear filter"
+              className="text-zinc-500 hover:text-zinc-200"
+            >
+              <X size={10} />
+            </button>
+          )}
+        </span>
+        <ExportMenu
+          className="ml-1 !py-0.5 text-[11px]"
+          result={shown}
+          sessionId={sessionId}
+          sql={resultSql}
+          statementIndex={index}
+          fileBase="result"
+          rerun
+        />
       </div>
       <div className="flex-1 min-h-0">
         <ResultsGrid
-          result={sorted.result}
+          result={shown}
           sorts={sorted.sorts}
           onSortsChange={setSorts}
         />
@@ -642,7 +729,17 @@ export function QueryTab({ tab }: { tab: Tab }) {
           {!state.error &&
             !state.explain &&
             state.result?.results.map((result, i) => (
-              <ResultBlock key={i} result={result} />
+              <ResultBlock
+                key={i}
+                result={result}
+                index={i}
+                sessionId={
+                  isoSession?.sessionId ??
+                  sessions[tab.profileId]?.sessionId ??
+                  null
+                }
+                resultSql={state.resultSql ?? null}
+              />
             ))}
           {!state.error && !state.explain && !state.result && !state.running && (
             <div className="flex-1 flex items-center justify-center text-zinc-600 text-[12px]">
