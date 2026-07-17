@@ -6,6 +6,9 @@ import {
 } from "react";
 import type { StatementResult } from "../../lib/types";
 
+/** Shared "nothing hidden" set for the measuring pass (stable identity). */
+const EMPTY_HIDDEN: ReadonlySet<number> = new Set();
+
 /**
  * Column layout of the grid: measured widths, drag-resize, content-fit and
  * hidden columns. First data render is auto-layout; actual widths are then
@@ -24,10 +27,19 @@ export function useColumnLayout(
    *  header can sit outside the scroller — see ResultsGrid. */
   const bodyTableRef = useRef<HTMLTableElement>(null);
   const [colWidths, setColWidths] = useState<Record<number, number>>({});
-  const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
+  const [hiddenColsState, setHiddenCols] = useState<ReadonlySet<number>>(
+    new Set(),
+  );
   const [sizedFor, setSizedFor] = useState<string | null>(null);
   const colsKey = result.columns.join("\u0000");
   const sized = sizedFor === colsKey;
+  // Stale hidden indices from the PREVIOUS column set must not leak into the
+  // measuring pass: they'd keep the new result's columns out of the auto-
+  // layout render, nothing would get measured, and the fixed layout would
+  // then collapse the (re-shown) columns to zero width — row gutter visible,
+  // no data. While unsized everything renders and measures; the measure
+  // effect below then resets the stored set for real.
+  const hiddenCols = sized ? hiddenColsState : EMPTY_HIDDEN;
 
   const changeHiddenCols = (next: ReadonlySet<number>) => {
     setHiddenCols(next);
