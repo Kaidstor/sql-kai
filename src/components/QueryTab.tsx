@@ -15,7 +15,7 @@ import {
   TextSelect,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "sql-formatter";
 import { copyText, readClipboardText } from "../lib/clipboard";
 import { searchExtensions } from "../lib/editorSearch";
@@ -76,45 +76,56 @@ function applyClientSort(
   };
 }
 
-/** Keeps rows where any cell contains the needle, case-insensitive. Like the
- *  client sort above, this narrows the view only — the query is NOT re-run,
- *  so just the fetched rows are searched. NULL cells never match. */
-function applyClientFilter(
-  result: StatementResult,
-  needle: string,
-): StatementResult {
-  const q = needle.trim().toLowerCase();
-  if (!q) return result;
-  return {
-    ...result,
-    rows: result.rows.filter((row) =>
-      row.some((v) => v !== null && v.toLowerCase().includes(q)),
-    ),
-  };
-}
-
 function ResultBlock({
   result,
   index,
+  profileId,
   sessionId,
+  autoBegin,
+  isolatedTabId,
   resultSql,
 }: {
   result: StatementResult;
   /** Index of this statement within the run — targets the full export. */
   index: number;
+  /** Profile of the connection — session-lost routing on export. */
+  profileId: string;
   /** Connection the full export runs on (null = not connected). */
   sessionId: string | null;
+  /** Manual-commit tab: the export re-run wraps writes in BEGIN like Run. */
+  autoBegin: boolean;
+  /** Query tab id when `sessionId` is the tab's isolated session. */
+  isolatedTabId?: string;
   /** SQL that produced the run (see QueryTabState.resultSql). */
   resultSql: string | null;
 }) {
   const [sorts, setSorts] = useState<SortSpec[]>([]);
   const [filter, setFilter] = useState("");
+  // A new run replaces the result object — a needle typed for the previous
+  // result must not silently filter the fresh rows ("0 of 500" mystery).
+  useEffect(() => setFilter(""), [result]);
   const sorted = useMemo(() => applyClientSort(result, sorts), [result, sorts]);
-  // Filter after sort so retyping the needle reuses the memoized sort.
-  const shown = useMemo(
-    () => applyClientFilter(sorted.result, filter),
-    [sorted.result, filter],
+  // Client filter: keeps rows where any cell contains the needle,
+  // case-insensitive; NULL cells never match. Narrows the view only — the
+  // query is NOT re-run, so just the fetched rows are searched. One lowercased
+  // haystack per row, built once per sort — a keystroke then only scans
+  // strings instead of re-lowercasing every cell. \u0000 separates cells:
+  // untypeable, so a needle can never straddle a cell boundary.
+  const haystacks = useMemo(
+    () =>
+      sorted.result.rows.map((row) =>
+        row.map((v) => v?.toLowerCase() ?? "").join("\u0000"),
+      ),
+    [sorted.result],
   );
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return sorted.result;
+    return {
+      ...sorted.result,
+      rows: sorted.result.rows.filter((_, i) => haystacks[i].includes(q)),
+    };
+  }, [sorted.result, haystacks, filter]);
   const filtering = Boolean(filter.trim());
   if (result.columns.length === 0) {
     return (
@@ -178,9 +189,12 @@ function ResultBlock({
         <ExportMenu
           className="ml-1 !py-0.5 text-[11px]"
           result={shown}
+          profileId={profileId}
           sessionId={sessionId}
           sql={resultSql}
           statementIndex={index}
+          autoBegin={autoBegin}
+          isolatedTabId={isolatedTabId}
           fileBase="result"
           rerun
         />
@@ -733,11 +747,19 @@ export function QueryTab({ tab }: { tab: Tab }) {
                 key={i}
                 result={result}
                 index={i}
+                profileId={tab.profileId}
+                // An isolated tab's export must run on ITS connection — no
+                // fallback to the shared session: it would export committed
+                // state that need not match the (transactional) grid. Dead
+                // isolated session ⇒ export disabled until the next Run
+                // lazily reopens it.
                 sessionId={
-                  isoSession?.sessionId ??
-                  sessions[tab.profileId]?.sessionId ??
-                  null
+                  state.isolated
+                    ? (isoSession?.sessionId ?? null)
+                    : (sessions[tab.profileId]?.sessionId ?? null)
                 }
+                autoBegin={Boolean(state.isolated) && commitMode === "manual"}
+                isolatedTabId={state.isolated ? tab.id : undefined}
                 resultSql={state.resultSql ?? null}
               />
             ))}

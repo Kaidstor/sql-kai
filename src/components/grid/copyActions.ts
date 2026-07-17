@@ -2,10 +2,10 @@
 // selection — no state of its own, so it stays trivially in sync with the
 // component. Every path goes through `shownValue`: ⌘C on an edited cell
 // copies what the user sees (the staged value), not the stale DB value.
-import { save } from "@tauri-apps/plugin-dialog";
 import { api, errText } from "../../lib/api";
 import { copyText } from "../../lib/clipboard";
-import { toCsv, toJson, toMarkdown } from "../../lib/export";
+import { exportedMessage, toCsv, toJson, toMarkdown } from "../../lib/export";
+import { promptExportPath } from "../../lib/exportFile";
 import { quoteIdent, quoteLit, relIdent } from "../../lib/sql";
 import type { StatementResult } from "../../lib/types";
 
@@ -159,9 +159,9 @@ export function makeCopyActions({
     };
   };
 
-  // "loaded", not "all": these act on fetched rows only — the toolbar's
-  // Export menu is the one that dumps the full result.
-  const exportLabel = n > 0 ? `${n} row(s)` : "loaded";
+  // "shown", not "all": these act on the rows currently displayed (any
+  // client filter applied) — the toolbar's Export menu dumps the full result.
+  const exportLabel = n > 0 ? `${n} row(s)` : "shown";
 
   const exportRows = async (kind: "csv" | "json" | "md") => {
     const { columns, rows } = exportable();
@@ -172,16 +172,10 @@ export function makeCopyActions({
           ? toJson(columns, rows)
           : toMarkdown(columns, rows);
     try {
-      const path = await save({
-        defaultPath: `${insertTarget?.table ?? "result"}.${kind}`,
-        filters: [
-          { name: kind.toUpperCase(), extensions: [kind] },
-          { name: "All files", extensions: ["*"] },
-        ],
-      });
+      const path = await promptExportPath(insertTarget?.table ?? "result", kind);
       if (!path) return;
       await api.saveTextFile(path, content);
-      toastCopied(`Exported ${rows.length} row(s) → ${path.split("/").pop()}`);
+      toastCopied(exportedMessage(rows.length, path));
     } catch (e) {
       showToast(errText(e));
     }

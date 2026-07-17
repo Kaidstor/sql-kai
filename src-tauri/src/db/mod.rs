@@ -18,5 +18,5 @@ pub use exec::{
     cell, cell_bool, execute, query_rows, query_scalar, statement_column_types, ExecResult,
     StatementResult,
 };
-pub use export::{export_statement, ExportFormat, ExportOutcome};
+pub use export::{export_statement, ExportError, ExportFormat, ExportOutcome};
 pub use sqltext::{advance_tx, split_statements, TxStatus};

@@ -123,13 +123,15 @@ export const api = {
   ) => invoke<ExecResult>("execute_sql", { sessionId, sql, maxRows, autoBegin }),
 
   /** Full-result export: re-runs `sql` with no row limit and streams the
-   *  rows of statement `statementIndex` into `path`. */
+   *  rows of statement `statementIndex` into `path`. `autoBegin` mirrors
+   *  executeSql's manual-commit wrapping (the backend shifts the index). */
   exportSql: (
     sessionId: string,
     sql: string,
     statementIndex: number,
     format: ExportFormat,
     path: string,
+    autoBegin = false,
   ) =>
     invoke<ExportOutcome>("export_sql", {
       sessionId,
@@ -137,6 +139,7 @@ export const api = {
       statementIndex,
       format,
       path,
+      autoBegin,
     }),
 
   openIsolatedSession: (profileId: string) =>

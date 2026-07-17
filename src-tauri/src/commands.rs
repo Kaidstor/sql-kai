@@ -492,22 +492,31 @@ pub async fn execute_sql(
     let before = TxStatus::from_u8(tx.load(Ordering::Relaxed));
     // Manual-commit mode: hold a transaction open across runs by opening one
     // when the connection is idle, so the user never has to type BEGIN.
-    let sql = if auto_begin.unwrap_or(false) && before == TxStatus::Idle {
-        format!("BEGIN;\n{sql}")
-    } else {
-        sql
-    };
-    let result = db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await;
+    let prepended = auto_begin.unwrap_or(false) && before == TxStatus::Idle;
+    let sql = if prepended { format!("BEGIN;\n{sql}") } else { sql };
+    let mut result = db::execute(&client, &sql, max_rows.unwrap_or(1000).clamp(1, 100_000)).await;
     // Track the transaction state whether the batch succeeded or failed — a
     // failed statement inside a tx leaves it aborted, which the badge surfaces.
     tx.store(db::advance_tx(before, &sql, result.is_ok()) as u8, Ordering::Relaxed);
+    // Hide the synthetic BEGIN's result: the frontend numbers result blocks by
+    // the statements of the SQL it sent (per-statement export relies on it),
+    // and an "OK" block for a BEGIN the user never typed is just noise.
+    if prepended {
+        if let Ok(r) = &mut result {
+            if !r.results.is_empty() {
+                r.results.remove(0);
+            }
+        }
+    }
     result
 }
 
 /// Full-result export: re-runs `sql` and streams the rows of statement
 /// `statement_index` into `path` (csv/json/md/xlsx) with no row limit — the
-/// grid's fetch cap does not apply here. A failed export removes the partial
-/// file so the user never finds a half-written dump.
+/// grid's fetch cap does not apply here. The rows stream into a sibling
+/// `.part` file that replaces `path` only on success, so a failed export
+/// neither leaves a half-written dump nor destroys a pre-existing file it
+/// never wrote (XLSX only touches the disk in its final save).
 #[tauri::command]
 pub async fn export_sql(
     state: State<'_, AppState>,
@@ -516,19 +525,36 @@ pub async fn export_sql(
     statement_index: Option<usize>,
     format: String,
     path: String,
+    auto_begin: Option<bool>,
 ) -> Result<db::ExportOutcome, AppError> {
     let format = db::ExportFormat::parse(&format)?;
     let (client, tx) = client_and_tx(&state, &session_id)?;
     let before = TxStatus::from_u8(tx.load(Ordering::Relaxed));
-    let result =
-        db::export_statement(&client, &sql, statement_index.unwrap_or(0), format, &path).await;
-    // The re-run goes through the same connection — keep the tx badge honest
-    // (the exported SQL may contain BEGIN or fail inside an open transaction).
-    tx.store(db::advance_tx(before, &sql, result.is_ok()) as u8, Ordering::Relaxed);
-    if result.is_err() {
-        let _ = std::fs::remove_file(&path);
+    // Mirror execute_sql's manual-commit wrapping — the re-run must not
+    // autocommit a write that Run would have kept inside the open transaction.
+    // The prepended BEGIN emits its own result set, shifting the numbering.
+    let (sql, statement_index) = if auto_begin.unwrap_or(false) && before == TxStatus::Idle {
+        (format!("BEGIN;\n{sql}"), statement_index.unwrap_or(0) + 1)
+    } else {
+        (sql, statement_index.unwrap_or(0))
+    };
+    let tmp = format!("{path}.part");
+    let result = db::export_statement(&client, &sql, statement_index, format, &tmp).await;
+    // The re-run goes through the same connection — keep the tx badge honest.
+    // Only a database error can have aborted the transaction; local failures
+    // (unwritable path, XLSX cap) never touched the server, so they count ok.
+    let sql_ok = !matches!(&result, Err(db::ExportError::Sql(_)));
+    tx.store(db::advance_tx(before, &sql, sql_ok) as u8, Ordering::Relaxed);
+    match result {
+        Ok(outcome) => {
+            std::fs::rename(&tmp, &path)?;
+            Ok(outcome)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.into())
+        }
     }
-    result
 }
 
 /// Current heuristic transaction state of the session ("idle"/"active"/"failed").

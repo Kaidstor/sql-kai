@@ -15,12 +15,22 @@ export function toCsv(columns: readonly string[], rows: readonly Row[]): string 
     .join("\r\n");
 }
 
-/** TSV with a header row; NULL becomes an empty field. */
+/** TSV with a header row; NULL becomes an empty field. Cells containing a
+ *  tab, newline or quote are quoted CSV-style — spreadsheets parse quoted
+ *  TSV fields, while a raw \t or \n would corrupt the row/column grid. */
 export function toTsv(columns: readonly string[], rows: readonly Row[]): string {
+  const field = (v: string | null) => {
+    if (v === null) return "";
+    return /["\t\n\r]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v;
+  };
   return [columns, ...rows]
-    .map((row) => row.map((v) => v ?? "").join("\t"))
+    .map((row) => row.map((v) => field(v as string | null)).join("\t"))
     .join("\n");
 }
+
+/** Standard success toast for a finished file export. */
+export const exportedMessage = (rows: number, path: string) =>
+  `Exported ${rows.toLocaleString()} row(s) → ${path.split("/").pop()}`;
 
 /** Array of {column: value} objects, pretty-printed. */
 export function toJson(columns: readonly string[], rows: readonly Row[]): string {

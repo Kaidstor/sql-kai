@@ -2,14 +2,40 @@
 // transaction), manual commit mode and the COMMIT/ROLLBACK verbs. Owns all
 // isolated-session plumbing — other slices only clear the shared maps.
 import { api, errText, isSessionLost } from "../../api";
+import { exportedMessage } from "../../export";
 import { notifyQueryDone } from "../../notify";
 import { countStatements } from "../../sql";
-import type { ExplainResult, HistoryEntry, SessionInfo } from "../../types";
+import type {
+  ExplainResult,
+  ExportFormat,
+  HistoryEntry,
+  SessionInfo,
+} from "../../types";
 import type { Get, Set, StoreContext } from "../context";
 import { without } from "../helpers";
 import type { QueryTabState, Tab } from "../types";
 
 export interface QuerySlice {
+  /** Session ids with a file export in flight. A Run on the same connection
+   *  queues behind it (one pipelined connection per session) — surfaced with
+   *  a toast instead of looking hung. */
+  exporting: Record<string, true>;
+  /** Full-result file export (Export menu): re-runs `sql` on `sessionId` and
+   *  streams statement `statementIndex` to `path`. Session-lost errors route
+   *  like runQuery's (an isolated tab drops its session, the shared one flips
+   *  the profile to "connection lost"), and the tx badge refreshes after. */
+  exportSqlToFile: (req: {
+    profileId: string;
+    sessionId: string;
+    sql: string;
+    statementIndex: number;
+    /** Manual-commit tab: wrap the re-run in BEGIN exactly like Run would. */
+    autoBegin: boolean;
+    format: ExportFormat;
+    path: string;
+    /** Query tab owning `sessionId` when it is the tab's isolated session. */
+    isolatedTabId?: string;
+  }) => Promise<void>;
   /** Runs the tab's SQL, or `sqlOverride` (an editor selection) when given.
    *  The override is executed and recorded to history, but not persisted as
    *  the tab's SQL. */
@@ -200,6 +226,60 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
   };
 
   return {
+    exporting: {},
+
+    exportSqlToFile: async ({
+      profileId,
+      sessionId,
+      sql,
+      statementIndex,
+      autoBegin,
+      format,
+      path,
+      isolatedTabId,
+    }) => {
+      /** Live SessionInfo for the tx-badge refresh — whichever map owns it
+       *  (null once a lost isolated session has been dropped). */
+      const sessionOf = () =>
+        get().isolatedSessions[sessionId] ??
+        (get().sessions[profileId]?.sessionId === sessionId
+          ? get().sessions[profileId]
+          : null);
+      set((s) => ({ exporting: { ...s.exporting, [sessionId]: true } }));
+      try {
+        const out = await api.exportSql(
+          sessionId,
+          sql,
+          statementIndex,
+          format,
+          path,
+          autoBegin,
+        );
+        get().showToast(
+          out.truncated
+            ? `Exported first ${out.rows.toLocaleString()} rows — XLSX sheet limit`
+            : exportedMessage(out.rows, path),
+          out.truncated ? "info" : "success",
+        );
+      } catch (e) {
+        // Та же маршрутизация, что у runQuery: умершая изолированная сессия —
+        // событие таба (дроп, переоткроется на следующем Run), общая — флип
+        // профиля в "connection lost", иначе Reconnect не предлагается.
+        if (isolatedTabId) {
+          if (isSessionLost(e)) dropIsolatedSession(isolatedTabId);
+        } else {
+          ctx.noteSessionLost(profileId, e);
+        }
+        get().showToast(errText(e));
+      } finally {
+        set((s) => ({ exporting: without(s.exporting, sessionId) }));
+        // Экспорт (или его провал) мог сдвинуть tx-эвристику — обновить бейдж,
+        // как это делают runQuery/runTxVerb.
+        const session = sessionOf();
+        if (session) void refreshTxStatus(session);
+      }
+    },
+
     runQuery: async (tabId, sqlOverride) => {
       const tab = tabOf(tabId, "query");
       if (!tab || tab.state.running) return;
@@ -210,6 +290,14 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);
       if (!session) return;
+      if (get().exporting[session.sessionId]) {
+        // одно pipelined-соединение на сессию: запрос встанет в очередь за
+        // экспортом — сказать об этом, а не выглядеть зависшим
+        get().showToast(
+          "Export in progress on this connection — the query starts after it",
+          "info",
+        );
+      }
       // manual commit only ever applies on an isolated connection — never let it
       // open a transaction on the shared one
       const autoBegin = isolated && tab.state.commitMode === "manual";
@@ -313,6 +401,14 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       if (!tab) return;
       const session = effectiveSession(tab);
       if (!session) return;
+      if (get().exporting[session.sessionId]) {
+        // CancelRequest бьёт по выполняемому сейчас стейтменту — это экспорт,
+        // а не запрос, который стоит за ним в очереди; предупредить.
+        get().showToast(
+          "Cancelling the export running on this connection",
+          "info",
+        );
+      }
       try {
         await api.cancelQuery(session.sessionId);
       } catch (e) {

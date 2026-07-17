@@ -183,18 +183,30 @@ export function TableTab({ tab }: { tab: Tab }) {
     return hiddenCols.size ? all.filter((_, i) => !hiddenCols.has(i)) : null;
   }, [state.data, hiddenCols]);
 
-  // Loaded page with hidden columns dropped — the export menu's copy section
-  // mirrors what's on screen, like the grid's own export actions.
+  // Loaded page as displayed: staged cell edits applied and hidden columns
+  // dropped — the export menu's copy section mirrors the grid (its own copy
+  // paths go through shownValue), not the stale DB values.
   const exportResult = useMemo(() => {
     const res = state.data?.result;
-    if (!res || !hiddenCols.size) return res;
+    if (!res) return res;
+    const hasEdits = Object.keys(state.edits).length > 0;
+    if (!hasEdits && !hiddenCols.size) return res;
+    // edits are keyed by ORIGINAL column index — apply before dropping columns
+    const rows = hasEdits
+      ? res.rows.map((r, ri) => {
+          const rowEdits = state.edits[ri];
+          if (!rowEdits) return r;
+          return r.map((v, ci) => (ci in rowEdits ? rowEdits[ci] : v));
+        })
+      : res.rows;
+    if (!hiddenCols.size) return { ...res, rows };
     const keep = res.columns.map((_, i) => i).filter((i) => !hiddenCols.has(i));
     return {
       ...res,
       columns: keep.map((i) => res.columns[i]),
-      rows: res.rows.map((r) => keep.map((i) => r[i])),
+      rows: rows.map((r) => keep.map((i) => r[i])),
     };
-  }, [state.data, hiddenCols]);
+  }, [state.data, state.edits, hiddenCols]);
 
   // O(1) column lookup by name, shared by the type/nullable projections below
   // (was an O(cols·rows) `cols.find` per result column on every render).
@@ -319,6 +331,7 @@ export function TableTab({ tab }: { tab: Tab }) {
           </span>
           <ExportMenu
             result={exportResult}
+            profileId={tab.profileId}
             sessionId={sessions[tab.profileId]?.sessionId ?? null}
             sql={state.data ? currentViewSql(state, visibleColNames, false) : null}
             fileBase={state.table}

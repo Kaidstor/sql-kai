@@ -46,6 +46,25 @@ pub struct ExportOutcome {
     pub duration_ms: u64,
 }
 
+/// [`export_statement`] failure split by origin, so the caller keeps the tx
+/// heuristic honest: only the database failing means the SQL itself failed —
+/// a full disk or an unwritable path never aborted the server's transaction.
+#[derive(Debug)]
+pub enum ExportError {
+    /// The server rejected/aborted the script (or the wire died mid-stream).
+    Sql(AppError),
+    /// Local failure — file IO, XLSX limits, "no result set". The SQL ran.
+    Local(AppError),
+}
+
+impl From<ExportError> for AppError {
+    fn from(e: ExportError) -> Self {
+        match e {
+            ExportError::Sql(e) | ExportError::Local(e) => e,
+        }
+    }
+}
+
 /// Runs `sql` and exports the rows of statement `statement_index` (same
 /// numbering as `ExecResult.results`) into `path`. The whole result is
 /// written — no row limit except the XLSX sheet cap.
@@ -55,30 +74,35 @@ pub async fn export_statement(
     statement_index: usize,
     format: ExportFormat,
     path: &str,
-) -> Result<ExportOutcome, AppError> {
+) -> Result<ExportOutcome, ExportError> {
+    let sql_err = |e: tokio_postgres::Error| ExportError::Sql(e.into());
     let start = Instant::now();
-    let stream = client.simple_query_raw(sql).await?;
+    let stream = client.simple_query_raw(sql).await.map_err(sql_err)?;
     futures_util::pin_mut!(stream);
 
-    let mut writer = Writer::create(format, path)?;
+    let mut writer = Writer::create(format, path).map_err(ExportError::Local)?;
     let mut idx = 0usize; // statement index, advanced on CommandComplete
     let mut columns_seen = false;
     let mut rows = 0u64;
     let mut truncated = false;
 
-    while let Some(msg) = stream.try_next().await? {
+    while let Some(msg) = stream.try_next().await.map_err(sql_err)? {
         match msg {
             SimpleQueryMessage::RowDescription(cols) if idx == statement_index => {
-                writer.begin(&cols.iter().map(|c| c.name().to_string()).collect::<Vec<_>>())?;
+                writer
+                    .begin(&cols.iter().map(|c| c.name().to_string()).collect::<Vec<_>>())
+                    .map_err(ExportError::Local)?;
                 columns_seen = true;
             }
             SimpleQueryMessage::Row(row) if idx == statement_index => {
                 if !columns_seen {
                     // same tolerance as execute(): a Row without a preceding
                     // RowDescription still carries its column names
-                    writer.begin(
-                        &row.columns().iter().map(|c| c.name().to_string()).collect::<Vec<_>>(),
-                    )?;
+                    writer
+                        .begin(
+                            &row.columns().iter().map(|c| c.name().to_string()).collect::<Vec<_>>(),
+                        )
+                        .map_err(ExportError::Local)?;
                     columns_seen = true;
                 }
                 if writer.at_capacity(rows) {
@@ -86,7 +110,9 @@ pub async fn export_statement(
                     truncated = true;
                     break;
                 }
-                writer.row(&(0..row.len()).map(|i| row.get(i)).collect::<Vec<_>>())?;
+                writer
+                    .row(&(0..row.len()).map(|i| row.get(i)).collect::<Vec<_>>())
+                    .map_err(ExportError::Local)?;
                 rows += 1;
             }
             SimpleQueryMessage::CommandComplete(_) => {
@@ -100,11 +126,11 @@ pub async fn export_statement(
     }
 
     if !columns_seen {
-        return Err(AppError::Msg(
+        return Err(ExportError::Local(AppError::Msg(
             "the statement produced no result set to export".into(),
-        ));
+        )));
     }
-    writer.finish(path)?;
+    writer.finish(path).map_err(ExportError::Local)?;
 
     Ok(ExportOutcome {
         rows,
