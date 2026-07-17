@@ -2,6 +2,8 @@
 name: release
 description: Выпустить релиз sql-kai — бамп версии, тег, GitLab-релиз с changelog, сборка .app/dmg/sql-kai и артефакты автообновления (latest.json). Использовать когда пользователь просит «сделай релиз», «выпусти версию», «зарелизь», «бампни версию» в этом репозитории.
 compatibility: Требует .env с GITLAB_TOKEN и ключами подписи Tauri, pnpm/jq/curl/rust в PATH; сборка и загрузка идут с этой машины (локальное «CI», GitLab CI не участвует)
+context: fork
+model: opus
 ---
 
 # Релиз sql-kai
