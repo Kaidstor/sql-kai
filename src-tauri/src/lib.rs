@@ -348,6 +348,7 @@ pub fn run() {
             commands::copy_text_concealed,
             commands::list_cli_sessions,
             commands::install_cli,
+            commands::relaunch_app,
             commands::cli_bin_path,
             sync_tray_connections,
             acp::acp_spawn,

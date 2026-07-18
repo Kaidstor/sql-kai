@@ -1,4 +1,4 @@
-import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { create } from "zustand";
 import { stashPendingNotes } from "./whatsNew";
@@ -96,7 +96,10 @@ export const useUpdater = create<UpdaterStore>((set, get) => ({
 
   restart: async () => {
     try {
-      await relaunch();
+      // Native command instead of plugin-process relaunch(): that one spawns
+      // the process bypassing LaunchServices, so on macOS the new window
+      // would start behind others.
+      await invoke("relaunch_app");
     } catch (e) {
       set({ error: String(e) });
     }

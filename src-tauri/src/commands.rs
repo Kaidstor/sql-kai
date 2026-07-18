@@ -1081,3 +1081,34 @@ pub fn install_cli() -> Result<String, AppError> {
     }
 }
 
+/// Relaunch to apply an update. plugin-process relaunch() spawns the binary
+/// directly, bypassing LaunchServices — modern macOS denies activation to such
+/// a process, so the new window starts behind others. `open -n` relaunches the
+/// bundle as a user-initiated launch and the window comes to front.
+#[tauri::command]
+pub fn relaunch_app(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        // …/sql-kai.app/Contents/MacOS/sql-kai → …/sql-kai.app
+        let bundle = std::env::current_exe().ok().and_then(|exe| {
+            let b = exe.ancestors().nth(3)?;
+            b.extension()
+                .is_some_and(|e| e == "app")
+                .then(|| b.to_path_buf())
+        });
+        if let Some(bundle) = bundle {
+            let spawned = std::process::Command::new("open")
+                .arg("-n")
+                .arg(&bundle)
+                .spawn()
+                .is_ok();
+            if spawned {
+                app.exit(0);
+                return;
+            }
+        }
+    }
+    // Outside a bundle (dev run) or non-macOS — plain restart.
+    app.restart();
+}
+
