@@ -100,7 +100,7 @@ sql-kai holder stop                 # погасить фоновый держа
   stop`, vault lock в GUI или `sql-kai vault revoke`. Одиночный вызов мимо
   GUI/holder — `--local` (одноразовая сессия) или `--no-mux` (плюс свежий
   ssh без ControlMaster).
-- **Интеграция с [sec](https://go.dev)** (агент-безопасный менеджер секретов; хранилища не сливаются —
+- **Интеграция с [sec](https://github.com/Kaidstor/sec)** (агент-безопасный менеджер секретов; хранилища не сливаются —
   vault для GUI, sec для CLI). sql-kai зовёт `sec` из PATH (или `KAI_SEC_BIN`), ключ
   по конвенции `<имя>/DB_PASSWORD`:
   - `sql-kai discover --to-sec [--no-vault]` — пароль БД в sec (прод-политика: не в vault),
