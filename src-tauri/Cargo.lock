@@ -4120,7 +4120,7 @@ dependencies = [
 
 [[package]]
 name = "sql-kai"
-version = "1.13.6"
+version = "1.13.7"
 dependencies = [
  "aes-gcm",
  "arboard",
