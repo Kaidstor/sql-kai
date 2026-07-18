@@ -57,6 +57,19 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Окно создаётся скрытым (visible: false) — показываем его после того, как
+  // UI отрисовал первый кадр, чтобы не было «растягивания» окна из дефолтной
+  // геометрии на старте и при перезапуске после автообновления. Двойной rAF:
+  // первый колбэк — перед ближайшей отрисовкой, второй — уже после неё.
+  useEffect(() => {
+    const outer = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        void api.revealWindow().catch(() => {});
+      });
+    });
+    return () => cancelAnimationFrame(outer);
+  }, []);
+
   useEffect(() => initUpdater(), []);
 
   // The native menu-bar switcher mirrors the live connections shown in the
