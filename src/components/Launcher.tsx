@@ -24,6 +24,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "./ContextMenu";
 import { CliBadge, cn, IconButton, Input, ProdBadge } from "./ui";
@@ -75,8 +76,15 @@ function ProfileCard({ profile }: { profile: Profile }) {
   if (pendingDelete[profile.id]) {
     return (
       <div
-        className="relative cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-925 px-3 py-2.5 hover:border-zinc-600"
+        role="button"
+        tabIndex={0}
+        className="relative cursor-pointer overflow-hidden rounded-lg border border-zinc-800 bg-zinc-925 px-3 py-2.5 hover:border-zinc-600 focus-visible:border-sky-500 focus-visible:outline-none"
         onClick={() => undoDeleteProfile(profile.id)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          undoDeleteProfile(profile.id);
+        }}
         title="Click to undo"
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -105,8 +113,12 @@ function ProfileCard({ profile }: { profile: Profile }) {
     <ContextMenu>
     <ContextMenuTrigger className="block min-w-0">
     <div
+      role="button"
+      tabIndex={0}
       className={cn(
         "group relative flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2.5 transition-colors",
+        // the accent stripe is an inline box-shadow, so focus is a border, not a ring
+        "focus-visible:border-sky-500 focus-visible:outline-none",
         state === "connected"
           ? "border-emerald-500/40 bg-emerald-950/40 hover:border-emerald-500/60"
           : retry
@@ -115,6 +127,23 @@ function ProfileCard({ profile }: { profile: Profile }) {
       )}
       style={color ? { boxShadow: `inset 3px 0 0 ${color}` } : undefined}
       onClick={open}
+      onKeyDown={(e) => {
+        // card-level shortcuts replace tabbing into the hover-only action
+        // buttons: Enter/Space connect, ⌘E edits, Delete/Backspace deletes
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "e") {
+          e.preventDefault();
+          openDialog(profile);
+          return;
+        }
+        if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          requestDeleteProfile(profile.id);
+          return;
+        }
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        open();
+      }}
       title={
         busy
           ? "Connecting…"
@@ -180,6 +209,8 @@ function ProfileCard({ profile }: { profile: Profile }) {
                   : "never connected"}
       </div>
 
+      {/* tabIndex -1: the card itself is the single tab stop — these appear on
+          hover for the mouse, keyboard users act via the card shortcuts */}
       <div
         className="absolute right-1.5 top-1.5 hidden items-center gap-0.5 group-hover:flex"
         onClick={(e) => e.stopPropagation()}
@@ -187,21 +218,22 @@ function ProfileCard({ profile }: { profile: Profile }) {
         {busy ? (
           <Loader2 size={13} className="m-1 animate-spin text-amber-400" />
         ) : connected ? (
-          <IconButton title="Disconnect" onClick={() => void disconnect(profile.id)}>
+          <IconButton tabIndex={-1} title="Disconnect" onClick={() => void disconnect(profile.id)}>
             <Unplug size={13} />
           </IconButton>
         ) : (
           <IconButton
+            tabIndex={-1}
             title={retry ? "Reconnect" : "Connect"}
             onClick={() => void connect(profile.id)}
           >
             {retry ? <RefreshCw size={13} /> : <Plug size={13} />}
           </IconButton>
         )}
-        <IconButton title="Edit" onClick={() => openDialog(profile)}>
+        <IconButton tabIndex={-1} title="Edit" onClick={() => openDialog(profile)}>
           <Pencil size={13} />
         </IconButton>
-        <IconButton title="Delete" onClick={() => requestDeleteProfile(profile.id)}>
+        <IconButton tabIndex={-1} title="Delete" onClick={() => requestDeleteProfile(profile.id)}>
           <Trash2 size={13} />
         </IconButton>
       </div>
@@ -236,6 +268,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
       </ContextMenuItem>
       <ContextMenuItem icon={Pencil} onClick={() => openDialog(profile)}>
         Edit…
+        <ContextMenuShortcut>{isMac ? "⌘E" : "Ctrl+E"}</ContextMenuShortcut>
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem
@@ -244,6 +277,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
         onClick={() => requestDeleteProfile(profile.id)}
       >
         Delete
+        <ContextMenuShortcut>{isMac ? "⌫" : "Del"}</ContextMenuShortcut>
       </ContextMenuItem>
     </ContextMenuContent>
     </ContextMenu>
@@ -357,9 +391,23 @@ export function Launcher() {
           {profiles.length > 0 ? (
             <>
               <div className="flex items-center gap-2 pb-4">
+                {/* the button sits BEFORE the input in the DOM (order-first flips
+                    them back visually) so Tab from the filter lands on the first
+                    connection card, not here; the button stays on Shift+Tab.
+                    While filtering it disappears entirely: the user is picking a
+                    connection, so Tab should only walk the matching cards */}
+                {!needle && (
+                  <button
+                    className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-[12px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                    onClick={() => openDialog()}
+                  >
+                    <Plus size={13} /> New connection
+                  </button>
+                )}
                 <Input
                   ref={filterRef}
                   autoFocus
+                  className="order-first"
                   placeholder={isMac ? "Filter connections…  ⌘F" : "Filter connections…  Ctrl+F"}
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
@@ -370,12 +418,6 @@ export function Launcher() {
                     }
                   }}
                 />
-                <button
-                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-[12px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
-                  onClick={() => openDialog()}
-                >
-                  <Plus size={13} /> New connection
-                </button>
               </div>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5">
                 {grouped.named.map(([group, ps]) => (
