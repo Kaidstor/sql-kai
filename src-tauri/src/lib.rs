@@ -296,6 +296,21 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
 pub fn run() {
     let broker_state = std::sync::Arc::new(broker::BrokerState::default());
     tauri::Builder::default()
+        // Геометрия окна между запусками. Окно в конфиге создаётся скрытым,
+        // плагин восстанавливает размер/позицию до show() в setup — без
+        // прыжка из дефолтной геометрии. VISIBLE не сохраняем: close прячет
+        // окно в трей, и quit со спрятанным окном записал бы «невидимость»
+        // в стейт следующего запуска. FULLSCREEN/DECORATIONS тоже вне флагов
+        // (глючное восстановление нативного fullscreen на macOS).
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -312,6 +327,13 @@ pub fn run() {
             setup_tray(app)?;
             #[cfg(unix)]
             start_broker(app, &broker_state);
+            // Окно создано скрытым (visible: false в tauri.conf.json), а
+            // window-state уже восстановил его геометрию на on_window_ready —
+            // показываем готовое окно один раз, без прыжка.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
             let _ = &app;
             Ok(())
         })

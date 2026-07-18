@@ -15,6 +15,7 @@
         "title": "sql-kai — Postgres client",
         "width": 1280,
         "height": 820,
+        "visible": false,
         "minWidth": 900,
         "minHeight": 600,
         "titleBarStyle": "Overlay",
