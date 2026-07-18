@@ -1,6 +1,7 @@
 import { CircleStop, Loader2, OctagonX } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errText } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { fmtDuration } from "../lib/format";
 import {
   useApp,
@@ -8,6 +9,7 @@ import {
   type ActivityTabState,
   type Tab,
 } from "../lib/store";
+import { CellDialog, type CellDialogState } from "./grid/CellDialog";
 import { TabError } from "./TabError";
 import { IconButton, RefreshButton, Select, cn } from "./ui";
 
@@ -18,6 +20,20 @@ function stateColor(state: string): string {
   return "text-zinc-400";
 }
 
+/** Колонки грида: подпись заголовка и текст ячейки — он же уходит в ⌘C
+ *  и в read-only просмотр по ⌘⏎ (декорации вроде ⛔/— не копируются). */
+const COLS: { label: string; value: (r: ActivityRow) => string }[] = [
+  { label: "pid", value: (r) => r.pid },
+  { label: "state", value: (r) => r.state },
+  { label: "duration", value: (r) => fmtDuration(r.querySec) },
+  { label: "user", value: (r) => r.user },
+  { label: "db", value: (r) => r.db },
+  { label: "app", value: (r) => r.app },
+  { label: "client", value: (r) => r.client },
+  { label: "wait / blocked by", value: (r) => r.blockedBy || r.wait },
+  { label: "query", value: (r) => r.query },
+];
+
 export function ActivityTab({ tab }: { tab: Tab }) {
   const state = tab.state as ActivityTabState;
   const sessions = useApp((s) => s.sessions);
@@ -27,6 +43,12 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   const confirmDialog = useApp((s) => s.confirmDialog);
   const session = sessions[tab.profileId];
   const connected = Boolean(session);
+
+  // Фокус ячейки привязан к pid, а не к индексу строки: авто-refresh каждые
+  // 2–15 сек переставляет строки, и индекс уезжал бы на соседний backend.
+  const [focus, setFocus] = useState<{ pid: string; col: number } | null>(null);
+  const [dialog, setDialog] = useState<CellDialogState | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   // First load + auto-refresh. The tab only renders while active, so the
   // interval dies with the unmount when the user switches away.
@@ -76,6 +98,67 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   const rows = state.rows ?? [];
   const blocked = rows.filter((r) => r.blockedBy).length;
 
+  const copyAndToast = (text: string) =>
+    void copyText(text).then((ok) => ok && showToast("Cell copied", "info"));
+
+  const openDialog = (ri: number, ci: number) => {
+    const r = rows[ri];
+    if (r) setDialog({ row: ri, col: ci, text: COLS[ci].value(r), isJson: false });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!focus) return;
+    const ri = rows.findIndex((r) => r.pid === focus.pid);
+    if (ri < 0) return;
+    if ((e.metaKey || e.ctrlKey) && e.key === "c") {
+      e.preventDefault();
+      copyAndToast(COLS[focus.col].value(rows[ri]));
+    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      openDialog(ri, focus.col);
+    } else if (e.key === "Escape") {
+      setFocus(null);
+    } else if (
+      e.key === "ArrowUp" ||
+      e.key === "ArrowDown" ||
+      e.key === "ArrowLeft" ||
+      e.key === "ArrowRight"
+    ) {
+      e.preventDefault();
+      const nr =
+        e.key === "ArrowDown"
+          ? Math.min(ri + 1, rows.length - 1)
+          : e.key === "ArrowUp"
+            ? Math.max(ri - 1, 0)
+            : ri;
+      const nc =
+        e.key === "ArrowRight"
+          ? Math.min(focus.col + 1, COLS.length - 1)
+          : e.key === "ArrowLeft"
+            ? Math.max(focus.col - 1, 0)
+            : focus.col;
+      setFocus({ pid: rows[nr].pid, col: nc });
+    }
+  };
+
+  /** Обработчики выбора/просмотра для ячейки данных (ci — индекс в COLS). */
+  const cellProps = (r: ActivityRow, ri: number, ci: number) => ({
+    onMouseDown: (e: React.MouseEvent) => {
+      if (e.button !== 0) return;
+      // WKWebView тянет нативное текстовое выделение по drag — гасим его,
+      // фокус переводим на контейнер, чтобы работали ⌘C/⌘⏎/стрелки
+      e.preventDefault();
+      gridRef.current?.focus();
+      setFocus({ pid: r.pid, col: ci });
+    },
+    onDoubleClick: () => openDialog(ri, ci),
+  });
+
+  const focusCls = (r: ActivityRow, ci: number) =>
+    focus?.pid === r.pid &&
+    focus.col === ci &&
+    "bg-sky-500/20 shadow-[inset_0_0_0_1px_var(--color-sky-500)]";
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-zinc-800 px-2 py-1.5 text-[12px]">
@@ -124,7 +207,12 @@ export function ActivityTab({ tab }: { tab: Tab }) {
           <Loader2 size={13} className="animate-spin" /> loading…
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div
+          ref={gridRef}
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          className="min-h-0 flex-1 overflow-auto outline-none"
+        >
           <table className="w-full border-separate border-spacing-0 font-mono text-[12px]">
             <thead className="sticky top-0 z-10">
               <tr>
@@ -141,7 +229,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r, ri) => (
                 <tr
                   key={r.pid}
                   className={cn(
@@ -149,18 +237,27 @@ export function ActivityTab({ tab }: { tab: Tab }) {
                     r.blockedBy ? "bg-red-950/30" : "hover:bg-zinc-800/40",
                   )}
                 >
-                  <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-300">
+                  <td
+                    {...cellProps(r, ri, 0)}
+                    className={cn(
+                      "border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-300",
+                      focusCls(r, 0),
+                    )}
+                  >
                     {r.pid}
                   </td>
                   <td
+                    {...cellProps(r, ri, 1)}
                     className={cn(
                       "border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-nowrap",
                       stateColor(r.state),
+                      focusCls(r, 1),
                     )}
                   >
                     {r.state || "—"}
                   </td>
                   <td
+                    {...cellProps(r, ri, 2)}
                     title={
                       r.xactSec !== null
                         ? `query ${fmtDuration(r.querySec)} · tx ${fmtDuration(r.xactSec)}`
@@ -171,26 +268,55 @@ export function ActivityTab({ tab }: { tab: Tab }) {
                       (r.querySec ?? 0) >= 60 && r.state === "active"
                         ? "text-amber-400"
                         : "text-zinc-400",
+                      focusCls(r, 2),
                     )}
                   >
                     {fmtDuration(r.querySec)}
                   </td>
-                  <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-400">
+                  <td
+                    {...cellProps(r, ri, 3)}
+                    className={cn(
+                      "border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-400",
+                      focusCls(r, 3),
+                    )}
+                  >
                     {r.user}
                   </td>
-                  <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-400">
+                  <td
+                    {...cellProps(r, ri, 4)}
+                    className={cn(
+                      "border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-400",
+                      focusCls(r, 4),
+                    )}
+                  >
                     {r.db}
                   </td>
                   <td
+                    {...cellProps(r, ri, 5)}
                     title={r.app}
-                    className="max-w-40 truncate border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-500"
+                    className={cn(
+                      "max-w-40 truncate border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-500",
+                      focusCls(r, 5),
+                    )}
                   >
                     {r.app}
                   </td>
-                  <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-500">
+                  <td
+                    {...cellProps(r, ri, 6)}
+                    className={cn(
+                      "border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-500",
+                      focusCls(r, 6),
+                    )}
+                  >
                     {r.client}
                   </td>
-                  <td className="border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-nowrap">
+                  <td
+                    {...cellProps(r, ri, 7)}
+                    className={cn(
+                      "border-b border-r border-zinc-800/70 px-2 py-0.5 whitespace-nowrap",
+                      focusCls(r, 7),
+                    )}
+                  >
                     {r.blockedBy ? (
                       <span
                         className="font-semibold text-red-400"
@@ -203,8 +329,12 @@ export function ActivityTab({ tab }: { tab: Tab }) {
                     )}
                   </td>
                   <td
+                    {...cellProps(r, ri, 8)}
                     title={r.query}
-                    className="max-w-140 truncate border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-300"
+                    className={cn(
+                      "max-w-140 truncate border-b border-r border-zinc-800/70 px-2 py-0.5 text-zinc-300",
+                      focusCls(r, 8),
+                    )}
                   >
                     {r.query}
                   </td>
@@ -234,6 +364,20 @@ export function ActivityTab({ tab }: { tab: Tab }) {
             </div>
           )}
         </div>
+      )}
+      {dialog && (
+        <CellDialog
+          dialog={dialog}
+          columnName={COLS[dialog.col].label}
+          canEdit={false}
+          onText={() => {}}
+          onStage={() => {}}
+          onClose={() => {
+            setDialog(null);
+            gridRef.current?.focus();
+          }}
+          onCopy={copyAndToast}
+        />
       )}
     </div>
   );
