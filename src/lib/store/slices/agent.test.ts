@@ -205,3 +205,27 @@ describe("agent process lifecycle", () => {
     expect(state.settings.agentProvider).toBe("gemini");
   });
 });
+
+describe("agent panel toggle", () => {
+  it("opens only over a live connection and always closes", () => {
+    const state = harness();
+
+    // нет активного профиля — панель не открывается
+    state.toggleAgentPanel();
+    expect(state.agentOpen).toBe(false);
+
+    // профиль выбран, но сессии нет (launcher / lost) — тоже нет
+    Object.assign(state, { activeProfileId: "a", sessions: {} });
+    state.toggleAgentPanel();
+    expect(state.agentOpen).toBe(false);
+
+    Object.assign(state, { sessions: { a: { sessionId: "s1" } } });
+    state.toggleAgentPanel();
+    expect(state.agentOpen).toBe(true);
+
+    // закрытие работает всегда, даже если соединение уже умерло
+    Object.assign(state, { sessions: {} });
+    state.toggleAgentPanel();
+    expect(state.agentOpen).toBe(false);
+  });
+});

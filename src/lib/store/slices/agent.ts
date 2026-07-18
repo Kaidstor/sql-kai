@@ -514,7 +514,13 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
     agentOpen: false,
     agentChats: {},
 
-    toggleAgentPanel: () => set((s) => ({ agentOpen: !s.agentOpen })),
+    toggleAgentPanel: () =>
+      set((s) => {
+        if (s.agentOpen) return { agentOpen: false };
+        // агенту нужен контекст подключения — без живой сессии не открывается
+        if (!s.activeProfileId || !s.sessions[s.activeProfileId]) return {};
+        return { agentOpen: true };
+      }),
 
     setAgentProvider: async (id) => {
       const settings = { ...get().settings, agentProvider: id };

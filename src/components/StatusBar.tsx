@@ -248,19 +248,21 @@ export function StatusBar() {
           copied
         </span>
       )}
-      <button
-        data-nocopy
-        onClick={toggleAgentPanel}
-        title="AI agent (⌘J)"
-        className={cn(
-          "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
-          "hover:bg-zinc-800/80 hover:text-zinc-300",
-          toast || copied ? "ml-1" : "ml-auto",
-          agentOpen && "text-violet-400",
-        )}
-      >
-        <Sparkles size={11} />
-      </button>
+      {profile && session && (
+        <button
+          data-nocopy
+          onClick={toggleAgentPanel}
+          title="AI agent (⌘J)"
+          className={cn(
+            "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+            "hover:bg-zinc-800/80 hover:text-zinc-300",
+            toast || copied ? "ml-1" : "ml-auto",
+            agentOpen && "text-violet-400",
+          )}
+        >
+          <Sparkles size={11} />
+        </button>
+      )}
       <button
         data-nocopy
         onClick={() => setSettingsOpen(true)}
@@ -268,6 +270,8 @@ export function StatusBar() {
         className={cn(
           "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
           "hover:bg-zinc-800/80 hover:text-zinc-300",
+          // без кнопки агента прижим вправо переезжает на этот блок
+          !(profile && session) && (toast || copied ? "ml-1" : "ml-auto"),
         )}
       >
         <Settings size={11} />

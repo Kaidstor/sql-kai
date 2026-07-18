@@ -352,7 +352,10 @@ function App() {
                 )}
               </div>
             </main>
-            {agentOpen && <AgentPanel />}
+            {/* агент требует живого подключения — на lost-сессии панель прячется */}
+            {agentOpen && activeProfileId && sessions[activeProfileId] && (
+              <AgentPanel />
+            )}
           </>
         )}
       </div>
