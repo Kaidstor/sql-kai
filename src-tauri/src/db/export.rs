@@ -139,6 +139,32 @@ pub async fn export_statement(
     })
 }
 
+/// Writes an already-materialized result — the grid's current selection, with
+/// staged edits applied — straight to `path` as XLSX. The streaming
+/// [`export_statement`] re-runs the SQL server-side and so can't see a
+/// client-side cell/row/column selection or unsaved edits; this takes the rows
+/// verbatim from the frontend. Reuses [`Writer`] so the on-disk shape (bold
+/// header, number heuristic, NULL→blank) matches the server export exactly.
+pub fn write_rows_xlsx(
+    path: &str,
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+) -> Result<u64, AppError> {
+    let mut writer = Writer::create(ExportFormat::Xlsx, path)?;
+    writer.begin(columns)?;
+    let mut n = 0u64;
+    for row in rows {
+        if writer.at_capacity(n) {
+            break; // XLSX sheet cap — same silent truncation as the streamer
+        }
+        let vals: Vec<Option<&str>> = row.iter().map(|v| v.as_deref()).collect();
+        writer.row(&vals)?;
+        n += 1;
+    }
+    writer.finish(path)?;
+    Ok(n)
+}
+
 enum Writer {
     Csv(BufWriter<File>),
     Json {
@@ -360,6 +386,26 @@ mod tests {
         w.finish(path).unwrap();
         let bytes = std::fs::read(path).unwrap();
         std::fs::remove_file(path).unwrap();
+        assert!(bytes.starts_with(b"PK"), "xlsx must be a zip container");
+    }
+
+    #[test]
+    fn write_rows_xlsx_from_selection() {
+        let path =
+            std::env::temp_dir().join(format!("sql-kai-sel-{}.xlsx", uuid::Uuid::new_v4()));
+        let path = path.to_str().unwrap();
+        let n = write_rows_xlsx(
+            path,
+            &["id".into(), "name".into()],
+            &[
+                vec![Some("1".into()), Some("Alice".into())],
+                vec![Some("2".into()), None], // NULL → blank cell
+            ],
+        )
+        .unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(n, 2);
         assert!(bytes.starts_with(b"PK"), "xlsx must be a zip container");
     }
 

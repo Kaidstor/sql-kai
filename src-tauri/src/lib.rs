@@ -110,6 +110,28 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Показывает главное окно на старте (первый показ скрытого окна). На macOS
+/// повторно использует show_main_window (Regular-политика + фокус), на других
+/// платформах — простой show + focus.
+fn reveal_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    show_main_window(app);
+    #[cfg(not(target_os = "macos"))]
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Фронтенд вызывает это после первого кадра отрисовки. Окно создаётся
+/// скрытым (visible: false), геометрию восстанавливает window-state-плагин —
+/// показ уже готового содержимого убирает «растягивание» окна из дефолтной
+/// геометрии на запуске и при перезапуске после автообновления.
+#[tauri::command]
+fn reveal_main_window(app: tauri::AppHandle) {
+    reveal_window(&app);
+}
+
 /// Иконка в menu bar: приложение живёт в трее, даже когда окно закрыто
 /// (close прячет окно, см. on_window_event ниже).
 #[cfg(target_os = "macos")]
@@ -328,13 +350,23 @@ pub fn run() {
             #[cfg(unix)]
             start_broker(app, &broker_state);
             // Окно создано скрытым (visible: false в tauri.conf.json), а
-            // window-state уже восстановил его геометрию на on_window_ready —
-            // показываем готовое окно один раз, без прыжка.
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
-            let _ = &app;
+            // window-state уже восстановил его геометрию. Показ отдан фронтенду
+            // (команда reveal_main_window, вызывается после первого кадра
+            // отрисовки) — так окно появляется уже с готовым содержимым и
+            // восстановленной геометрией, без «растягивания» из дефолта. Тот же
+            // путь проходит холодный старт и перезапуск после автообновления.
+            // Страховка: если фронтенд не показал окно (ошибка JS, зависание
+            // загрузки) — показываем сами по таймауту, чтобы окно не осталось
+            // навсегда невидимым.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if let Some(win) = handle.get_webview_window("main") {
+                    if !win.is_visible().unwrap_or(true) {
+                        reveal_window(&handle);
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -398,6 +430,7 @@ pub fn run() {
             commands::list_policies,
             commands::get_table_page,
             commands::save_text_file,
+            commands::save_rows_xlsx,
             commands::copy_text_concealed,
             commands::list_cli_sessions,
             commands::install_cli,
@@ -405,6 +438,7 @@ pub fn run() {
             commands::cli_bin_path,
             commands::agent_gui_reply,
             sync_tray_connections,
+            reveal_main_window,
             acp::acp_spawn,
             acp::acp_send,
             acp::acp_kill,

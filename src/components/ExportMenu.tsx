@@ -5,7 +5,7 @@
 import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { copyText } from "../lib/clipboard";
-import { toCsv, toJson, toMarkdown, toTsv } from "../lib/export";
+import { toCsv, toJson, toTsv } from "../lib/export";
 import { promptExportPath } from "../lib/exportFile";
 import { dangerousStatements } from "../lib/sql";
 import { useApp } from "../lib/store";
@@ -16,13 +16,11 @@ const COPY_FORMATS = [
   { label: "CSV", make: toCsv },
   { label: "TSV", make: toTsv },
   { label: "JSON", make: toJson },
-  { label: "Markdown", make: toMarkdown },
 ] as const;
 
 const FILE_FORMATS: { label: string; format: ExportFormat }[] = [
   { label: "CSV…", format: "csv" },
   { label: "JSON…", format: "json" },
-  { label: "Markdown…", format: "md" },
   { label: "Excel (XLSX)…", format: "xlsx" },
 ];
 

@@ -216,10 +216,18 @@ function ResultsGridImpl({
   const handleCellContext = (ri: number, ci: number) => {
     setMenuCell({ row: ri, col: ci });
     setMenuCol(null);
-    if (!selected.has(ri)) {
-      sel.setSelected(new Set([ri]));
-      sel.setAnchor(ri);
-    }
+    // Right-click inside the current cell rectangle (or on an already-selected
+    // row) keeps that selection so the menu acts on it. Anywhere else retargets
+    // to the clicked row — like clicking away — clearing any stale cell/column
+    // selection so its copy/export actions don't leak into the menu.
+    const insideRect = rectCount > 1 && inRect(ri, ci);
+    if (insideRect || selected.has(ri)) return;
+    sel.setSelected(new Set([ri]));
+    sel.setAnchor(ri);
+    sel.setCellSel(null);
+    sel.setFocused(null);
+    sel.setSelCols(new Set());
+    sel.setColAnchor(null);
   };
 
   const copy = makeCopyActions({
@@ -522,6 +530,11 @@ function ResultsGridImpl({
                         sel.setSelCols(new Set([i]));
                         sel.setColAnchor(i);
                       }
+                      // drop any cell/row selection so the column menu's export
+                      // acts on the columns, not a stale rectangle
+                      sel.setCellSel(null);
+                      sel.setSelected(new Set());
+                      sel.setAnchor(null);
                     }}
                     title={`${name} — click selects column (⇧ range, ⌘ toggle)`}
                     className={cn(

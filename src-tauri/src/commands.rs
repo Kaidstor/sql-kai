@@ -993,6 +993,20 @@ pub fn save_text_file(path: String, contents: String) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Writes the grid's current selection (already materialized on the client,
+/// staged edits included) to `path` as XLSX. The binary counterpart of
+/// [`save_text_file`] — the grid builds CSV/JSON text itself, but XLSX needs
+/// the workbook writer, so the rows come over verbatim.
+#[tauri::command]
+pub fn save_rows_xlsx(
+    path: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<Option<String>>>,
+) -> Result<(), AppError> {
+    db::write_rows_xlsx(&path, &columns, &rows)?;
+    Ok(())
+}
+
 /// Copies text marked as concealed (`org.nspasteboard.ConcealedType` on macOS)
 /// so clipboard-history managers skip it.
 #[tauri::command]

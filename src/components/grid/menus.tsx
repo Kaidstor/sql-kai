@@ -14,6 +14,7 @@ import {
   Eraser,
   EyeOff,
   FileDown,
+  FileSpreadsheet,
   MoveHorizontal,
   Pencil,
   RotateCcw,
@@ -154,6 +155,28 @@ export function ColumnMenu({
       )}
       <ContextMenuSeparator />
       <ContextMenuItem
+        icon={FileDown}
+        disabled={!result.rows.length}
+        onClick={() => void copy.exportRows("csv")}
+      >
+        Export {selColList.length || 1} column(s) as CSV…
+      </ContextMenuItem>
+      <ContextMenuItem
+        icon={FileDown}
+        disabled={!result.rows.length}
+        onClick={() => void copy.exportRows("json")}
+      >
+        Export {selColList.length || 1} column(s) as JSON…
+      </ContextMenuItem>
+      <ContextMenuItem
+        icon={FileSpreadsheet}
+        disabled={!result.rows.length}
+        onClick={() => void copy.exportRows("xlsx")}
+      >
+        Export {selColList.length || 1} column(s) as Excel…
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem
         icon={MoveHorizontal}
         onClick={() =>
           (selColList.length > 1 ? selColList : [menuCol]).forEach(
@@ -230,6 +253,15 @@ export function CellMenu({
 }) {
   const n = selRows.length;
   const menuCellOk = Boolean(menuCell && menuCell.col >= 0);
+  // A rectangle of 2+ cells → the menu acts on those cells; otherwise on the
+  // selected rows. A lone right-click has already retargeted to the clicked
+  // row, so a single cell shows "rows scope" too (Copy row / Export row).
+  const cellsScope = rectCount > 1;
+  const rowsScope = !cellsScope && n > 0;
+  // Row mutations fall back to the right-clicked cell's row when no whole rows
+  // are selected (i.e. a cell-rectangle selection), so Delete/Duplicate stay
+  // reachable from any right-click.
+  const editRows = n > 0 ? selRows : menuCell ? [menuCell.row] : [];
   const copyCell = () => {
     if (!menuCell || menuCell.col < 0) return;
     copy.copyCellAt(menuCell.row, menuCell.col);
@@ -238,9 +270,12 @@ export function CellMenu({
     <>
       <ContextMenuItem icon={Copy} disabled={!menuCellOk} onClick={copyCell}>
         Copy cell
-        {rectCount <= 1 && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
+        {!cellsScope && !rowsScope && (
+          <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+        )}
       </ContextMenuItem>
-      {rectCount > 1 && (
+
+      {cellsScope && (
         <>
           <ContextMenuItem icon={Sheet} onClick={copy.copyCells}>
             Copy {rectCount} cells (TSV)
@@ -249,63 +284,80 @@ export function CellMenu({
           <ContextMenuItem icon={Sheet} onClick={() => copy.copyCellsAs("csv")}>
             Copy {rectCount} cells as CSV
           </ContextMenuItem>
-          <ContextMenuItem
-            icon={Braces}
-            onClick={() => copy.copyCellsAs("json")}
-          >
+          <ContextMenuItem icon={Braces} onClick={() => copy.copyCellsAs("json")}>
             Copy {rectCount} cells as JSON
           </ContextMenuItem>
-          <ContextMenuItem icon={Braces} onClick={() => copy.copyCellsAs("md")}>
-            Copy {rectCount} cells as Markdown
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={FileDown}
+            onClick={() => void copy.exportRows("csv")}
+          >
+            Export {rectCount} cells as CSV…
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={FileDown}
+            onClick={() => void copy.exportRows("json")}
+          >
+            Export {rectCount} cells as JSON…
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={FileSpreadsheet}
+            onClick={() => void copy.exportRows("xlsx")}
+          >
+            Export {rectCount} cells as Excel…
           </ContextMenuItem>
         </>
       )}
-      <ContextMenuItem icon={Copy} disabled={!n} onClick={() => copy.copyRows(" ", "")}>
-        Copy {rowsLabel}
-      </ContextMenuItem>
-      <ContextMenuItem icon={Sheet} disabled={!n} onClick={() => copy.copyRows("\t", "as TSV")}>
-        Copy {rowsLabel} as TSV
-      </ContextMenuItem>
-      <ContextMenuItem icon={Braces} disabled={!n} onClick={copy.copyJson}>
-        Copy {rowsLabel} as JSON
-      </ContextMenuItem>
-      {insertTarget && (
-        <ContextMenuItem icon={Database} disabled={!n} onClick={copy.copyInsert}>
-          Copy {rowsLabel} as INSERT
-        </ContextMenuItem>
+
+      {rowsScope && (
+        <>
+          <ContextMenuItem icon={Copy} onClick={() => copy.copyRows(" ", "")}>
+            Copy {rowsLabel}
+            <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={Sheet}
+            onClick={() => copy.copyRows("\t", "as TSV")}
+          >
+            Copy {rowsLabel} as TSV
+          </ContextMenuItem>
+          <ContextMenuItem icon={Braces} onClick={copy.copyJson}>
+            Copy {rowsLabel} as JSON
+          </ContextMenuItem>
+          {insertTarget && (
+            <ContextMenuItem icon={Database} onClick={copy.copyInsert}>
+              Copy {rowsLabel} as INSERT
+            </ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={FileDown}
+            onClick={() => void copy.exportRows("csv")}
+          >
+            Export {rowsLabel} as CSV…
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={FileDown}
+            onClick={() => void copy.exportRows("json")}
+          >
+            Export {rowsLabel} as JSON…
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={FileSpreadsheet}
+            onClick={() => void copy.exportRows("xlsx")}
+          >
+            Export {rowsLabel} as Excel…
+          </ContextMenuItem>
+        </>
       )}
+
       <ContextMenuSeparator />
-      <ContextMenuItem icon={Sheet} disabled={!result.rows.length} onClick={copy.copyAll}>
+      <ContextMenuItem
+        icon={Sheet}
+        disabled={!result.rows.length}
+        onClick={copy.copyAll}
+      >
         Copy all with header (TSV)
-      </ContextMenuItem>
-      <ContextMenuItem
-        icon={Braces}
-        disabled={!result.rows.length}
-        onClick={copy.copyMarkdown}
-      >
-        Copy {copy.exportLabel} as Markdown
-      </ContextMenuItem>
-      <ContextMenuSeparator />
-      <ContextMenuItem
-        icon={FileDown}
-        disabled={!result.rows.length}
-        onClick={() => void copy.exportRows("csv")}
-      >
-        Export {copy.exportLabel} as CSV…
-      </ContextMenuItem>
-      <ContextMenuItem
-        icon={FileDown}
-        disabled={!result.rows.length}
-        onClick={() => void copy.exportRows("json")}
-      >
-        Export {copy.exportLabel} as JSON…
-      </ContextMenuItem>
-      <ContextMenuItem
-        icon={FileDown}
-        disabled={!result.rows.length}
-        onClick={() => void copy.exportRows("md")}
-      >
-        Export {copy.exportLabel} as Markdown…
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem
@@ -362,8 +414,8 @@ export function CellMenu({
           )}
           <ContextMenuItem
             icon={CopyPlus}
-            disabled={!canEdit || !n}
-            onClick={() => editing.onDuplicate(selRows)}
+            disabled={!canEdit || !editRows.length}
+            onClick={() => editing.onDuplicate(editRows)}
             title="Copies stay pending until Apply; generated keys are regenerated"
           >
             Duplicate {rowsLabel}
@@ -372,8 +424,8 @@ export function CellMenu({
           <ContextMenuItem
             icon={allSelectedDeleted ? Undo2 : Trash2}
             iconClassName={allSelectedDeleted ? undefined : "text-red-400/80"}
-            disabled={!canEdit || !n}
-            onClick={() => editing.onToggleDelete(selRows, !allSelectedDeleted)}
+            disabled={!canEdit || !editRows.length}
+            onClick={() => editing.onToggleDelete(editRows, !allSelectedDeleted)}
           >
             {allSelectedDeleted ? "Restore" : "Delete"} {rowsLabel}
             <ContextMenuShortcut>⌫</ContextMenuShortcut>

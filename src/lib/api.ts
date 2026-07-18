@@ -72,6 +72,9 @@ export const api = {
   /** Бандл-CLI рядом с бинарём приложения (null — сборка без sidecar). */
   cliBinPath: () => invoke<string | null>("cli_bin_path"),
 
+  /** Показать главное окно (создаётся скрытым; фронтенд зовёт после отрисовки). */
+  revealWindow: () => invoke<void>("reveal_main_window"),
+
   logPath: () => invoke<string>("log_path"),
 
   /** Appends a UI-observed event to the backend diagnostics log. */
@@ -162,6 +165,15 @@ export const api = {
 
   saveTextFile: (path: string, contents: string) =>
     invoke<void>("save_text_file", { path, contents }),
+
+  /** Writes an in-memory selection (rows already materialized on the client,
+   *  staged edits included) to `path` as XLSX — CSV/JSON are built and saved
+   *  as text, but the binary workbook is written on the Rust side. */
+  saveRowsXlsx: (
+    path: string,
+    columns: string[],
+    rows: (string | null)[][],
+  ) => invoke<void>("save_rows_xlsx", { path, columns, rows }),
 
   getTableDdl: (sessionId: string, schema: string, table: string) =>
     invoke<string>("get_table_ddl", { sessionId, schema, table }),

@@ -4,7 +4,7 @@
 // copies what the user sees (the staged value), not the stale DB value.
 import { api, errText } from "../../lib/api";
 import { copyText } from "../../lib/clipboard";
-import { exportedMessage, toCsv, toJson, toMarkdown } from "../../lib/export";
+import { exportedMessage, toCsv, toJson } from "../../lib/export";
 import { promptExportPath } from "../../lib/exportFile";
 import { quoteIdent, quoteLit, relIdent } from "../../lib/sql";
 import type { StatementResult } from "../../lib/types";
@@ -138,9 +138,9 @@ export function makeCopyActions({
 
   /** The rectangular cell selection serialized in an export format, keyed by
    *  the selected columns' names — the Export menu's formats scoped to the
-   *  picked cells instead of whole rows. Includes a header row (CSV/Markdown)
-   *  or object keys (JSON), unlike the bare `copyCells`. */
-  const copyCellsAs = (kind: "csv" | "json" | "md") => {
+   *  picked cells instead of whole rows. Includes a header row (CSV) or object
+   *  keys (JSON), unlike the bare `copyCells`. */
+  const copyCellsAs = (kind: "csv" | "json") => {
     if (!rect) return;
     const cols: string[] = [];
     for (let c = rect.c1; c <= rect.c2; c++) cols.push(result.columns[c]);
@@ -149,14 +149,11 @@ export function makeCopyActions({
       if (!result.rows[r]) continue;
       rows.push(cols.map((_, i) => shownValue(r, rect.c1 + i)));
     }
-    const label = kind === "csv" ? "CSV" : kind === "json" ? "JSON" : "Markdown";
-    const text =
-      kind === "csv"
-        ? toCsv(cols, rows)
-        : kind === "json"
-          ? toJson(cols, rows)
-          : toMarkdown(cols, rows);
-    copyAndToast(text, `Copied ${rectCount} cell(s) as ${label}`);
+    const text = kind === "csv" ? toCsv(cols, rows) : toJson(cols, rows);
+    copyAndToast(
+      text,
+      `Copied ${rectCount} cell(s) as ${kind === "csv" ? "CSV" : "JSON"}`,
+    );
   };
 
   const copyAll = () => {
@@ -169,10 +166,30 @@ export function makeCopyActions({
     copyAndToast(text, `Copied ${result.rows.length} row(s) with header`);
   };
 
-  // --- Export (CSV / JSON / Markdown) ---------------------------------------
-  // Selected rows when a selection exists, the whole result otherwise;
-  // hidden columns are left out, mirroring what's on screen.
-  const exportable = () => {
+  // --- Export (CSV / JSON / Excel) ------------------------------------------
+  // Follows the on-screen selection so the export matches what the right-click
+  // targeted: a cell rectangle → those cells; selected columns → those columns
+  // (all rows); selected rows → those rows; nothing → the whole shown result
+  // (hidden columns left out, mirroring the grid).
+  const selectedData = () => {
+    if (rect && rectCount > 1) {
+      const cols: number[] = [];
+      for (let c = rect.c1; c <= rect.c2; c++) cols.push(c);
+      const rowIdxs: number[] = [];
+      for (let r = rect.r1; r <= rect.r2; r++) if (result.rows[r]) rowIdxs.push(r);
+      return {
+        columns: cols.map((c) => result.columns[c]),
+        rows: rowIdxs.map((ri) => cols.map((c) => shownValue(ri, c))),
+      };
+    }
+    if (selColList.length > 0) {
+      return {
+        columns: selColList.map((c) => result.columns[c]),
+        rows: result.rows.map((_, ri) =>
+          selColList.map((c) => shownValue(ri, c)),
+        ),
+      };
+    }
     const rowIdxs = n > 0 ? selRows : result.rows.map((_, i) => i);
     const visCols = result.columns
       .map((_, i) => i)
@@ -183,34 +200,23 @@ export function makeCopyActions({
     };
   };
 
-  // "shown", not "all": these act on the rows currently displayed (any
-  // client filter applied) — the toolbar's Export menu dumps the full result.
-  const exportLabel = n > 0 ? `${n} row(s)` : "shown";
-
-  const exportRows = async (kind: "csv" | "json" | "md") => {
-    const { columns, rows } = exportable();
-    const content =
-      kind === "csv"
-        ? toCsv(columns, rows)
-        : kind === "json"
-          ? toJson(columns, rows)
-          : toMarkdown(columns, rows);
+  const exportRows = async (kind: "csv" | "json" | "xlsx") => {
+    const { columns, rows } = selectedData();
     try {
       const path = await promptExportPath(insertTarget?.table ?? "result", kind);
       if (!path) return;
-      await api.saveTextFile(path, content);
+      if (kind === "xlsx") {
+        await api.saveRowsXlsx(path, columns, rows);
+      } else {
+        await api.saveTextFile(
+          path,
+          kind === "csv" ? toCsv(columns, rows) : toJson(columns, rows),
+        );
+      }
       toastCopied(exportedMessage(rows.length, path));
     } catch (e) {
       showToast(errText(e));
     }
-  };
-
-  const copyMarkdown = () => {
-    const { columns, rows } = exportable();
-    copyAndToast(
-      toMarkdown(columns, rows),
-      `Copied ${rows.length} row(s) as Markdown`,
-    );
   };
 
   return {
@@ -226,8 +232,6 @@ export function makeCopyActions({
     copyCells,
     copyCellsAs,
     copyAll,
-    exportLabel,
     exportRows,
-    copyMarkdown,
   };
 }
