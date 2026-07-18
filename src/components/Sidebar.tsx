@@ -11,6 +11,7 @@ import {
   Loader2,
   RefreshCw,
   Table2,
+  Unplug,
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -230,6 +231,7 @@ export function Sidebar() {
   const openActivityTab = useApp((s) => s.openActivityTab);
   const refreshTables = useApp((s) => s.refreshTables);
   const setLauncherOpen = useApp((s) => s.setLauncherOpen);
+  const disconnect = useApp((s) => s.disconnect);
   const profile = profiles.find((p) => p.id === activeProfileId);
   const cliSession = activeProfileId ? cliSessions[activeProfileId] : undefined;
   const activeSession = activeProfileId ? sessions[activeProfileId] : undefined;
@@ -270,12 +272,20 @@ export function Sidebar() {
           {profile?.production && <ProdBadge />}
           {cliSession && <CliBadge idleSec={cliSession.idleSec} />}
         </div>
-        <IconButton
-          title="All connections"
-          onClick={() => setLauncherOpen(true)}
-        >
-          <LayoutGrid size={14} />
-        </IconButton>
+        <div className="flex items-center gap-0.5">
+          <IconButton
+            title="Disconnect"
+            onClick={() => void disconnect(activeProfileId)}
+          >
+            <Unplug size={13} />
+          </IconButton>
+          <IconButton
+            title="All connections"
+            onClick={() => setLauncherOpen(true)}
+          >
+            <LayoutGrid size={14} />
+          </IconButton>
+        </div>
       </div>
 
       <div className="flex items-center justify-between pl-3 pr-4 pt-2 pb-1.5">

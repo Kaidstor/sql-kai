@@ -277,6 +277,28 @@ export function createConnectionsSlice(
       set((s) => {
         const byProfile = (key: string) => key.startsWith(`${profileId}|`);
         const tabs = s.tabs.filter((t) => t.profileId !== profileId);
+        // never jump to another connection's tab — the bar only shows the
+        // active connection's
+        const nextActive = {
+          activeProfileId: s.activeProfileId,
+          activeTabId: tabs.some((t) => t.id === s.activeTabId)
+            ? s.activeTabId
+            : null,
+        };
+        if (s.activeProfileId === profileId) {
+          // the active connection is going away — promote its neighbour in the
+          // switcher order (same list as Ctrl+1…9) and bring that connection's
+          // most recent tab forward; with no live connections left the
+          // launcher takes over via hasWorkspace. launcherOpen stays untouched
+          // so disconnecting from the launcher doesn't yank the user out of it.
+          const list = connectedProfiles(s.profiles, s.sessions);
+          const idx = list.findIndex((p) => p.id === profileId);
+          const rest = list.filter((p) => p.id !== profileId);
+          const next = rest[Math.min(Math.max(idx, 0), rest.length - 1)];
+          const own = tabs.filter((t) => t.profileId === next?.id);
+          nextActive.activeProfileId = next?.id ?? null;
+          nextActive.activeTabId = own[own.length - 1]?.id ?? null;
+        }
         return {
           sessions: without(s.sessions, profileId),
           lost: without(s.lost, profileId),
@@ -288,11 +310,7 @@ export function createConnectionsSlice(
           tableColumns: omitBy(s.tableColumns, byProfile),
           tableRelations: omitBy(s.tableRelations, byProfile),
           tabs,
-          // never jump to another connection's tab — the bar only shows the
-          // active connection, which just lost all of its tabs
-          activeTabId: tabs.some((t) => t.id === s.activeTabId)
-            ? s.activeTabId
-            : null,
+          ...nextActive,
         };
       });
     },

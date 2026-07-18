@@ -7,6 +7,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Unplug,
 } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
@@ -22,6 +23,7 @@ function ConnectionSwitcher() {
   const cliSessions = useApp((s) => s.cliSessions);
   const activeProfileId = useApp((s) => s.activeProfileId);
   const selectProfile = useApp((s) => s.selectProfile);
+  const disconnect = useApp((s) => s.disconnect);
   const setPalette = useApp((s) => s.setPalette);
   const setLauncherOpen = useApp((s) => s.setLauncherOpen);
   const [open, setOpen] = useState(false);
@@ -70,7 +72,7 @@ function ConnectionSwitcher() {
               selectProfile(p.id);
             }}
             className={cn(
-              "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
+              "group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
               p.id === activeProfileId ? "bg-zinc-800" : "hover:bg-zinc-800/60",
             )}
           >
@@ -92,7 +94,24 @@ function ConnectionSwitcher() {
                 {profileAddr(p)}
               </div>
             </div>
-            {i < 9 && <span className="shrink-0 text-[10px] text-zinc-600">⌃{i + 1}</span>}
+            {i < 9 && (
+              <span className="shrink-0 text-[10px] text-zinc-600 group-hover:hidden">
+                ⌃{i + 1}
+              </span>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                void disconnect(p.id);
+              }}
+              title={`Disconnect ${p.name}`}
+              className={cn(
+                "hidden shrink-0 rounded p-0.5 text-zinc-500 group-hover:block",
+                "hover:bg-zinc-700/60 hover:text-red-400 transition-colors",
+              )}
+            >
+              <Unplug size={12} />
+            </button>
           </div>
         );
       })}
