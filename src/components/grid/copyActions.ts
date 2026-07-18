@@ -120,7 +120,8 @@ export function makeCopyActions({
     copyAndToast(`(${list})`, `Copied ${seen.size} value(s) for IN`);
   };
 
-  /** TSV of the rectangular cell selection. */
+  /** TSV of the rectangular cell selection. Raw tab-join (no header) — the
+   *  plain "paste into a spreadsheet" shape ⌘C is expected to produce. */
   const copyCells = () => {
     if (!rect) return;
     const lines: string[] = [];
@@ -133,6 +134,29 @@ export function makeCopyActions({
       lines.push(cells.join("\t"));
     }
     copyAndToast(lines.join("\n"), `Copied ${rectCount} cell(s) as TSV`);
+  };
+
+  /** The rectangular cell selection serialized in an export format, keyed by
+   *  the selected columns' names — the Export menu's formats scoped to the
+   *  picked cells instead of whole rows. Includes a header row (CSV/Markdown)
+   *  or object keys (JSON), unlike the bare `copyCells`. */
+  const copyCellsAs = (kind: "csv" | "json" | "md") => {
+    if (!rect) return;
+    const cols: string[] = [];
+    for (let c = rect.c1; c <= rect.c2; c++) cols.push(result.columns[c]);
+    const rows = [];
+    for (let r = rect.r1; r <= rect.r2; r++) {
+      if (!result.rows[r]) continue;
+      rows.push(cols.map((_, i) => shownValue(r, rect.c1 + i)));
+    }
+    const label = kind === "csv" ? "CSV" : kind === "json" ? "JSON" : "Markdown";
+    const text =
+      kind === "csv"
+        ? toCsv(cols, rows)
+        : kind === "json"
+          ? toJson(cols, rows)
+          : toMarkdown(cols, rows);
+    copyAndToast(text, `Copied ${rectCount} cell(s) as ${label}`);
   };
 
   const copyAll = () => {
@@ -200,6 +224,7 @@ export function makeCopyActions({
     copyColumnValues,
     copyColumnIn,
     copyCells,
+    copyCellsAs,
     copyAll,
     exportLabel,
     exportRows,

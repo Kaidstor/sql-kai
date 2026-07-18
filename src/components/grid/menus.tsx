@@ -241,10 +241,24 @@ export function CellMenu({
         {rectCount <= 1 && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
       </ContextMenuItem>
       {rectCount > 1 && (
-        <ContextMenuItem icon={Sheet} onClick={copy.copyCells}>
-          Copy {rectCount} cells (TSV)
-          <ContextMenuShortcut>⌘C</ContextMenuShortcut>
-        </ContextMenuItem>
+        <>
+          <ContextMenuItem icon={Sheet} onClick={copy.copyCells}>
+            Copy {rectCount} cells (TSV)
+            <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem icon={Sheet} onClick={() => copy.copyCellsAs("csv")}>
+            Copy {rectCount} cells as CSV
+          </ContextMenuItem>
+          <ContextMenuItem
+            icon={Braces}
+            onClick={() => copy.copyCellsAs("json")}
+          >
+            Copy {rectCount} cells as JSON
+          </ContextMenuItem>
+          <ContextMenuItem icon={Braces} onClick={() => copy.copyCellsAs("md")}>
+            Copy {rectCount} cells as Markdown
+          </ContextMenuItem>
+        </>
       )}
       <ContextMenuItem icon={Copy} disabled={!n} onClick={() => copy.copyRows(" ", "")}>
         Copy {rowsLabel}
