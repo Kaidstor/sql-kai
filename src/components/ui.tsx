@@ -80,6 +80,7 @@ export function Popover({
   trigger,
   children,
   side = "bottom",
+  align = "left",
   panelClassName,
 }: {
   open: boolean;
@@ -87,6 +88,8 @@ export function Popover({
   trigger: ReactNode;
   children: ReactNode;
   side?: "bottom" | "top";
+  /** Which trigger edge the panel sticks to; "right" for triggers near the window's right edge. */
+  align?: "left" | "right";
   panelClassName?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -113,8 +116,9 @@ export function Popover({
       {open && (
         <div
           className={cn(
-            "absolute left-0 z-40 rounded-md border border-zinc-700",
+            "absolute z-40 rounded-md border border-zinc-700",
             "bg-zinc-900 shadow-xl shadow-black/40",
+            align === "left" ? "left-0" : "right-0",
             side === "bottom" ? "top-full mt-1" : "bottom-full mb-1",
             panelClassName,
           )}
