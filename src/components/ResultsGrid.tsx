@@ -623,7 +623,6 @@ function ResultsGridImpl({
               const tr = (
                 <tr
                   key={ri}
-                  onContextMenu={() => handleCellContext(ri, -1)}
                   className={cn(
                     isDeleted
                       ? "bg-red-950/40"
@@ -667,6 +666,11 @@ function ResultsGridImpl({
                       }
                     }}
                     onMouseEnter={() => sel.extendRowDrag(ri)}
+                    // Row-gutter right-click targets the row (no specific
+                    // column). Lives here, not on the <tr>, so a data-cell
+                    // right-click doesn't also bubble a col=-1 context that
+                    // would retarget and drop the cell selection.
+                    onContextMenu={() => handleCellContext(ri, -1)}
                     className={cn(
                       "cursor-pointer border-b border-r border-zinc-800/70 px-2 py-0.5 text-right",
                       isDeleted
