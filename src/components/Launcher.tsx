@@ -12,7 +12,7 @@ import {
   Unplug,
   X,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
@@ -117,15 +117,21 @@ function ProfileCard({ profile }: { profile: Profile }) {
       tabIndex={0}
       className={cn(
         "group relative flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2.5 transition-colors",
-        // the accent stripe is an inline box-shadow, so focus is a border, not a ring
-        "focus-visible:border-sky-500 focus-visible:outline-none",
+        // keyboard focus takes the connection's accent color so the border and
+        // the left stripe read as one highlight; colorless cards fall back to sky
+        "focus-visible:border-(--card-accent) focus-visible:outline-none",
         state === "connected"
           ? "border-emerald-500/40 bg-emerald-950/40 hover:border-emerald-500/60"
           : retry
             ? "border-red-900/70 bg-zinc-925 hover:border-red-800 hover:bg-zinc-900"
             : "border-zinc-800 bg-zinc-925 hover:border-zinc-600 hover:bg-zinc-900",
       )}
-      style={color ? { boxShadow: `inset 3px 0 0 ${color}` } : undefined}
+      style={
+        {
+          "--card-accent": color ?? "var(--color-sky-500)",
+          ...(color ? { boxShadow: `inset 3px 0 0 ${color}` } : null),
+        } as CSSProperties
+      }
       onClick={open}
       onKeyDown={(e) => {
         // card-level shortcuts replace tabbing into the hover-only action
