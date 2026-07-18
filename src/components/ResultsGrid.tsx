@@ -695,6 +695,9 @@ function ResultsGridImpl({
                         onClick={(e) => {
                           if (isFk && (e.metaKey || e.ctrlKey)) {
                             e.preventDefault();
+                            // ячейка-источник остаётся выделенной — иначе после
+                            // взгляда на превью непонятно, откуда оно открыто
+                            focusCell(ri, ci);
                             onFollowFk?.(ri, ci);
                             return;
                           }
