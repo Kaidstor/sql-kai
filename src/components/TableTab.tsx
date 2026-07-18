@@ -1,12 +1,15 @@
 import {
+  ArrowUpRight,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileCode2,
   Funnel,
+  Loader2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, errText } from "../lib/api";
 import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
 import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
 import {
@@ -14,6 +17,7 @@ import {
   type ColumnInfo,
   type RelationInfo,
   type SortSpec,
+  type StatementResult,
 } from "../lib/types";
 import { ExportMenu } from "./ExportMenu";
 import { FilterBar } from "./FilterBar";
@@ -133,8 +137,26 @@ export function TableTab({ tab }: { tab: Tab }) {
     return set;
   }, [state.data, fkByCol]);
 
-  /** Opens the referenced table filtered to the row the FK points at. */
-  const followFk = useCallback(
+  // FK preview (Drizzle-Studio-style): ⌘-клик показывает записи по ссылке
+  // в нижней панели — чаще всего нужна одна строка глазами, а не переход;
+  // переход остаётся кнопкой в шапке панели.
+  const [fkPreview, setFkPreview] = useState<{
+    target: { schema: string; table: string };
+    filter: string;
+    result: StatementResult | null;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
+  const previewSeq = useRef(0);
+
+  // Смена страницы/фильтра/таблицы делает превью неактуальным.
+  useEffect(() => {
+    previewSeq.current++;
+    setFkPreview(null);
+  }, [state.schema, state.table, state.filter, state.page]);
+
+  /** Показывает записи, на которые ссылается FK-ячейка, в нижней панели. */
+  const previewFk = useCallback(
     (ri: number, ci: number) => {
       const res = state.data?.result;
       if (!res) return;
@@ -150,9 +172,31 @@ export function TableTab({ tab }: { tab: Tab }) {
           ? `${quoteIdent(refCol)} IS NULL`
           : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
       });
-      openTableTab(tab.profileId, target.schema, target.table, parts.join(" AND "));
+      const filter = parts.join(" AND ");
+      const session = useApp.getState().sessions[tab.profileId];
+      if (!session) return;
+      const seq = ++previewSeq.current;
+      setFkPreview({ target, filter, result: null, loading: true });
+      void api
+        .executeSql(
+          session.sessionId,
+          `SELECT * FROM ${relIdent(target.schema, target.table)} WHERE ${filter} LIMIT 50`,
+          50,
+        )
+        .then((exec) => {
+          if (previewSeq.current !== seq) return;
+          setFkPreview((p) =>
+            p ? { ...p, result: exec.results[0] ?? null, loading: false } : p,
+          );
+        })
+        .catch((e) => {
+          if (previewSeq.current !== seq) return;
+          setFkPreview((p) =>
+            p ? { ...p, loading: false, error: errText(e) } : p,
+          );
+        });
     },
-    [state.data, fkByCol, openTableTab, tab.profileId],
+    [state.data, fkByCol, tab.profileId],
   );
   const hasPk = (cols ?? []).some((c) => c.isPk);
   // Views (and matviews) are read-only: no INSERT/UPDATE/DELETE through the grid.
@@ -429,7 +473,7 @@ export function TableTab({ tab }: { tab: Tab }) {
             columnNullable={columnNullable}
             insertTarget={insertTarget}
             fkColumns={fkColumns}
-            onFollowFk={followFk}
+            onFollowFk={previewFk}
             editing={editing}
           />
         ) : (
@@ -438,6 +482,68 @@ export function TableTab({ tab }: { tab: Tab }) {
           </div>
         )}
       </div>
+
+      {fkPreview && (
+        <div className="flex h-56 shrink-0 flex-col border-t border-zinc-800">
+          <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-925 px-2 py-1 text-[11px]">
+            <span className="shrink-0 font-mono font-medium text-zinc-200">
+              {fkPreview.target.schema === "public"
+                ? fkPreview.target.table
+                : `${fkPreview.target.schema}.${fkPreview.target.table}`}
+            </span>
+            <span
+              className="truncate font-mono text-zinc-500"
+              title={fkPreview.filter}
+            >
+              {fkPreview.filter}
+            </span>
+            {fkPreview.result && (
+              <span className="shrink-0 text-zinc-600">
+                {fkPreview.result.rows.length}
+                {fkPreview.result.truncated ? "+" : ""} row(s)
+              </span>
+            )}
+            <div className="ml-auto flex shrink-0 items-center gap-1">
+              <button
+                onClick={() => {
+                  openTableTab(
+                    tab.profileId,
+                    fkPreview.target.schema,
+                    fkPreview.target.table,
+                    fkPreview.filter,
+                  );
+                  setFkPreview(null);
+                }}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+                title="Open the referenced table as a tab with this filter"
+              >
+                <ArrowUpRight size={12} />
+                Open table
+              </button>
+              <IconButton title="Close preview" onClick={() => setFkPreview(null)}>
+                <X size={13} />
+              </IconButton>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1">
+            {fkPreview.loading ? (
+              <div className="flex h-full items-center justify-center gap-2 text-[12px] text-zinc-600">
+                <Loader2 size={13} className="animate-spin" /> loading…
+              </div>
+            ) : fkPreview.error ? (
+              <div className="selectable overflow-auto p-3 font-mono text-[12px] whitespace-pre-wrap text-red-400">
+                {fkPreview.error}
+              </div>
+            ) : fkPreview.result && fkPreview.result.rows.length > 0 ? (
+              <ResultsGrid result={fkPreview.result} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[12px] text-zinc-600">
+                no referenced rows
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
