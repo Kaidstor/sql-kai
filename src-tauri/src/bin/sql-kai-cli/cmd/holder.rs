@@ -67,6 +67,7 @@ async fn serve() -> Result<ExitCode, AppError> {
         changed: Box::new(|| {}),
         profiles_changed: Box::new(|| {}),
         open_in_gui: None, // headless: вкладку открыть некому
+        gui_selection: None,
         shutdown: Some(Box::new(move || {
             shutdown_state.clear();
             logging::log("holder", "погашен по shutdown (vault lock / holder stop)");

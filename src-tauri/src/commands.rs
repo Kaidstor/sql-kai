@@ -15,6 +15,9 @@ use crate::vault;
 #[derive(Default)]
 pub struct AppState {
     pub sessions: Mutex<HashMap<String, Session>>,
+    /// Открытые запросы «спроси GUI» (событие agent://gui-request →
+    /// команда agent_gui_reply): id запроса → отправитель ответа webview.
+    pub gui_requests: Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>,
 }
 
 #[derive(Serialize)]
@@ -1000,6 +1003,16 @@ pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     let set = arboard::SetExtApple::exclude_from_history(set);
     set.text(text).map_err(|e| AppError::Msg(e.to_string()))
+}
+
+/// Ответ webview на событие `agent://gui-request` (метод gui_selection
+/// брокера, MCP-tool `selection`). Опоздавший ответ (хук уже снял отправителя
+/// по таймауту) молча игнорируется.
+#[tauri::command]
+pub fn agent_gui_reply(state: State<AppState>, id: String, payload: serde_json::Value) {
+    if let Some(tx) = state.gui_requests.lock().unwrap().remove(&id) {
+        let _ = tx.send(payload);
+    }
 }
 
 /// Абсолютный путь к бандл-CLI (`sql-kai-cli` рядом с бинарём приложения) —

@@ -21,6 +21,7 @@ import { UpdateToast } from "./components/UpdateToast";
 import { WhatsNewDialog } from "./components/WhatsNewDialog";
 import { VaultGate } from "./components/VaultGate";
 import { api } from "./lib/api";
+import { buildGuiContext } from "./lib/guiContext";
 import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
@@ -293,6 +294,15 @@ function App() {
           s.openQueryTab(p.profileId, p.sql);
         }
       }),
+      // MCP-tool агента `selection`: собрать активную вкладку/выделение из
+      // стора и ответить брокеру (agent_gui_reply ждёт oneshot по id)
+      listen<{ id: string; kind: string; profileId: string }>(
+        "agent://gui-request",
+        (e) => {
+          const payload = buildGuiContext(useApp.getState(), e.payload.profileId);
+          void invoke("agent_gui_reply", { id: e.payload.id, payload });
+        },
+      ),
     ];
     return () => {
       for (const u of unlisten) void u.then((f) => f());

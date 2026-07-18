@@ -174,6 +174,12 @@ pub enum Method {
         profile_id: String,
         sql: String,
     },
+    /// Что пользователь сейчас видит и выделил в GUI: активная вкладка,
+    /// фильтр, выделенные строки/колонки/ячейки (MCP-tool `selection`).
+    GuiSelection {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+    },
 }
 
 /// Что открыть в интерфейсе по просьбе MCP-клиента (методы open_*).
@@ -342,6 +348,17 @@ impl BrokerState {
     }
 }
 
+/// Future-хук «спроси GUI»: profile_id → payload ответа webview (или текст
+/// ошибки). Ответ приезжает асинхронно (event → invoke), отсюда future.
+pub type GuiSelectionHook = Box<
+    dyn Fn(
+            String,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 /// Хост-специфика: как посмотреть GUI-сессии и как сообщить интерфейсу об
 /// изменениях. В Tauri это AppState-снапшот и emit события; в будущем демоне —
 /// пустой список и no-op.
@@ -356,6 +373,9 @@ pub struct BrokerHooks {
     /// Открыть вкладку в GUI (методы open_table/open_query от MCP-tools).
     /// None (holder) — метод отвергается: интерфейса нет.
     pub open_in_gui: Option<Box<dyn Fn(GuiOpen) + Send + Sync>>,
+    /// Текущая вкладка/выделение в GUI (метод gui_selection от MCP-tool
+    /// `selection`). None (holder) — метод отвергается: интерфейса нет.
+    pub gui_selection: Option<GuiSelectionHook>,
 }
 
 // --- Server ---------------------------------------------------------------------
@@ -530,6 +550,15 @@ async fn dispatch(
                 Ok(json!({}))
             }
             None => Err(method_err("unsupported", "GUI не запущен — вкладку открыть некому")),
+        },
+        Method::GuiSelection { profile_id } => match &hooks.gui_selection {
+            // таймаут — внутри хука (webview может не ответить); брокер
+            // просто ждёт future
+            Some(ask) => ask(profile_id).await.map_err(|e| method_err("gui", e)),
+            None => Err(method_err(
+                "unsupported",
+                "GUI не запущен — состояние интерфейса спросить не у кого",
+            )),
         },
     }
 }
@@ -749,6 +778,7 @@ mod tests {
             profiles_changed: Box::new(|| {}),
             shutdown: None,
             open_in_gui: None,
+            gui_selection: None,
         });
         tokio::spawn(serve(listener, state, hooks));
 
@@ -796,6 +826,7 @@ mod tests {
             profiles_changed: Box::new(move || f.store(true, Ordering::Relaxed)),
             shutdown: None,
             open_in_gui: None,
+            gui_selection: None,
         });
         tokio::spawn(serve(listener, Arc::new(BrokerState::default()), hooks));
 
@@ -825,6 +856,7 @@ mod tests {
             profiles_changed: Box::new(|| {}),
             shutdown: Some(Box::new(move || f.store(true, Ordering::Relaxed))),
             open_in_gui: None,
+            gui_selection: None,
         });
         let state = Arc::new(BrokerState::default());
         let r = dispatch(Method::Shutdown, &state, &with_hook).await;
@@ -837,6 +869,7 @@ mod tests {
             profiles_changed: Box::new(|| {}),
             shutdown: None,
             open_in_gui: None,
+            gui_selection: None,
         });
         let r = dispatch(Method::Shutdown, &state, &without_hook).await;
         assert!(matches!(r, Err(e) if e.code == "unsupported"));
@@ -859,6 +892,7 @@ mod tests {
                     .unwrap()
                     .push(serde_json::to_string(&open).unwrap());
             })),
+            gui_selection: None,
         });
         let state = Arc::new(BrokerState::default());
         let r = dispatch(
@@ -885,9 +919,56 @@ mod tests {
             profiles_changed: Box::new(|| {}),
             shutdown: None,
             open_in_gui: None,
+            gui_selection: None,
         });
         let r = dispatch(
             Method::OpenQuery { profile_id: "p1".into(), sql: "SELECT 1".into() },
+            &state,
+            &without_hook,
+        )
+        .await;
+        assert!(matches!(r, Err(e) if e.code == "unsupported"));
+    }
+
+    /// gui_selection: с хуком (GUI) — payload webview уходит как result;
+    /// без хука (holder) — unsupported. Контракт для MCP-tool `selection`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gui_selection_dispatch_by_hook() {
+        let with_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: None,
+            open_in_gui: None,
+            gui_selection: Some(Box::new(|profile_id| {
+                Box::pin(async move {
+                    Ok(json!({ "profileId": profile_id, "selection": { "kind": "none" } }))
+                })
+            })),
+        });
+        let state = Arc::new(BrokerState::default());
+        let r = dispatch(
+            Method::GuiSelection { profile_id: "p1".into() },
+            &state,
+            &with_hook,
+        )
+        .await;
+        let Ok(v) = r else {
+            panic!("gui_selection with hook should succeed");
+        };
+        assert_eq!(v["profileId"], "p1");
+
+        let without_hook = Arc::new(BrokerHooks {
+            gui_sessions: Box::new(Vec::new),
+            changed: Box::new(|| {}),
+            profiles_changed: Box::new(|| {}),
+            shutdown: None,
+            open_in_gui: None,
+            gui_selection: None,
+        });
+        let r = dispatch(
+            Method::GuiSelection { profile_id: "p1".into() },
             &state,
             &without_hook,
         )

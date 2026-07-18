@@ -237,6 +237,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
     let notify = app.handle().clone();
     let notify_profiles = app.handle().clone();
     let notify_open = app.handle().clone();
+    let ask_gui = app.handle().clone();
     let hooks = std::sync::Arc::new(broker::BrokerHooks {
         gui_sessions: Box::new(move || {
             let state = gui.state::<AppState>();
@@ -256,6 +257,36 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
         shutdown: None, // GUI-брокер по сокету не гасится
         open_in_gui: Some(Box::new(move |open| {
             let _ = notify_open.emit("agent://open", &open);
+        })),
+        gui_selection: Some(Box::new(move |profile_id| {
+            let app = ask_gui.clone();
+            Box::pin(async move {
+                // event в webview с id запроса; фронт собирает состояние из
+                // стора и отвечает командой agent_gui_reply — oneshot
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let id = uuid::Uuid::new_v4().to_string();
+                app.state::<AppState>()
+                    .gui_requests
+                    .lock()
+                    .unwrap()
+                    .insert(id.clone(), tx);
+                let _ = app.emit(
+                    "agent://gui-request",
+                    serde_json::json!({ "id": id, "kind": "selection", "profileId": profile_id }),
+                );
+                let res = match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await
+                {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(_)) => Err("GUI отменил запрос".to_string()),
+                    Err(_) => Err("GUI не ответил на запрос состояния".to_string()),
+                };
+                app.state::<AppState>()
+                    .gui_requests
+                    .lock()
+                    .unwrap()
+                    .remove(&id);
+                res
+            })
         })),
     });
     tauri::async_runtime::spawn(broker::serve(listener, state.clone(), hooks));
@@ -350,6 +381,7 @@ pub fn run() {
             commands::install_cli,
             commands::relaunch_app,
             commands::cli_bin_path,
+            commands::agent_gui_reply,
             sync_tray_connections,
             acp::acp_spawn,
             acp::acp_send,

@@ -299,6 +299,17 @@ impl BrokerClient {
             .await
             .map(|_| ())
     }
+
+    /// Текущая вкладка/выделение пользователя в GUI (метод `gui_selection`,
+    /// MCP-tool `selection`). Работает только через GUI-брокер: holder
+    /// ответит unsupported. Возвращает payload как JSON-строку — ответ
+    /// читает модель, а не код.
+    pub async fn gui_selection(&mut self, profile_id: &str) -> Result<String, BrokerError> {
+        let v = self
+            .request("gui_selection", json!({ "profileId": profile_id }))
+            .await?;
+        serde_json::to_string(&v).map_err(|e| BrokerError::Transport(e.to_string()))
+    }
 }
 
 /// Сообщить запущенному GUI, что состав профилей изменился (discover/rm),

@@ -17,6 +17,34 @@ interface SelectionSnapshot {
 }
 const snapshots = new WeakMap<StatementResult, SelectionSnapshot>();
 
+/** Выделение result-грида для внешних читателей (MCP-тул `selection`):
+ *  плоские данные без хук-состояния, границы уже ужаты под result.
+ *  Null — грид этого result'а выделения не имел. */
+export function readSelectionSnapshot(result: StatementResult): {
+  rows: number[];
+  cols: number[];
+  cellRect: { r1: number; r2: number; c1: number; c2: number } | null;
+} | null {
+  const s = snapshots.get(result);
+  if (!s) return null;
+  return {
+    rows: [...s.selected]
+      .sort((a, b) => a - b)
+      .filter((i) => i < result.rows.length),
+    cols: [...s.selCols]
+      .filter((c) => c >= 0 && c < result.columns.length)
+      .sort((a, b) => a - b),
+    cellRect: s.cellSel
+      ? {
+          r1: Math.min(s.cellSel.a.row, s.cellSel.b.row),
+          r2: Math.max(s.cellSel.a.row, s.cellSel.b.row),
+          c1: Math.min(s.cellSel.a.col, s.cellSel.b.col),
+          c2: Math.max(s.cellSel.a.col, s.cellSel.b.col),
+        }
+      : null,
+  };
+}
+
 /**
  * The grid's selection model: whole rows (number gutter), whole columns
  * (header click), a focused cell and a rectangular cell range — the three

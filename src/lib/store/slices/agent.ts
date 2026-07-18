@@ -14,6 +14,11 @@ import {
   type ToolCallUpdate,
 } from "../../acp";
 import { ensureAdapter, NODE_NET_ENV, type NpmAdapter } from "../../agentInstall";
+import {
+  normalizeToolResult,
+  type AgentToolDiff,
+  type AgentToolOutput,
+} from "../../agentTool";
 import { api, errText } from "../../api";
 import type { Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
@@ -94,6 +99,12 @@ export interface AgentToolItem {
   title: string;
   toolKind: string;
   status: "pending" | "in_progress" | "completed" | "failed";
+  /** Аргументы вызова как их прислал адаптер (SQL, команда, таблица…). */
+  rawInput?: unknown;
+  /** Нормализованный результат (lib/agentTool): таблица или текст, с капом. */
+  output?: AgentToolOutput;
+  /** diff-блоки ACP-контента (файловые правки агента). */
+  diffs?: AgentToolDiff[];
 }
 
 export interface AgentPlanItem {
@@ -107,7 +118,7 @@ export type AgentChatItem = AgentChatItemBody & { id: number };
 export interface AgentPermission {
   title: string;
   toolKind?: string;
-  /** Raw command for execute-калls, когда адаптер его прислал. */
+  /** Команда (execute) или SQL (sql-kai-тулы) из rawInput, когда есть. */
   detail?: string;
   options: PermissionOption[];
 }
@@ -176,7 +187,8 @@ function connectionContext(p: Profile, mcp: boolean): string {
   const viaMcp = [
     "Use the MCP tools of the `sql-kai` server to work with the database:",
     "  query / tables / columns / ddl / indexes — SQL and schema discovery;",
-    "  open_table / open_query — show a table or a prepared query to the user as a tab in the sql-kai GUI.",
+    "  open_table / open_query — show a table or a prepared query to the user as a tab in the sql-kai GUI;",
+    "  selection — what the user currently sees in the GUI: active tab (table/filter or query SQL) and the rows/columns/cells they selected, with data. Call it whenever the user refers to what's on their screen (\"this row\", \"the selected rows\", \"эта колонка\").",
     "The sql-kai CLI is also available in the shell as a fallback:",
     `  sql-kai q ${alias} -c "SELECT ..." --json`,
   ];
@@ -269,12 +281,16 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
         }
         return;
       case "tool_call": {
+        const { output, diffs } = normalizeToolResult(update);
         pushItem(profileId, {
           kind: "tool",
           toolCallId: update.toolCallId,
           title: update.title ?? update.toolCallId,
           toolKind: update.kind ?? "other",
           status: update.status ?? "pending",
+          rawInput: update.rawInput,
+          output,
+          diffs,
         });
         return;
       }
@@ -282,12 +298,18 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
         set((s) => {
           const chat = s.agentChats[profileId];
           if (!chat) return {};
+          // результат обычно приезжает частями (in_progress → completed
+          // с content/rawOutput) — поля мержатся, а не затираются
+          const { output, diffs } = normalizeToolResult(update);
           const items = chat.items.map((it) =>
             it.kind === "tool" && it.toolCallId === update.toolCallId
               ? {
                   ...it,
                   status: update.status ?? it.status,
                   title: update.title ?? it.title,
+                  rawInput: update.rawInput ?? it.rawInput,
+                  output: output ?? it.output,
+                  diffs: diffs ?? it.diffs,
                 }
               : it,
           );
@@ -329,11 +351,19 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
 
   /** Описание permission-запроса для карточки в панели. */
   const permissionOf = (toolCall: ToolCallUpdate): Omit<AgentPermission, "options"> => {
-    const raw = toolCall.rawInput as { command?: unknown } | undefined;
+    const raw = toolCall.rawInput as
+      | { command?: unknown; sql?: unknown }
+      | undefined;
+    const detail =
+      typeof raw?.command === "string"
+        ? raw.command
+        : typeof raw?.sql === "string"
+          ? raw.sql
+          : undefined;
     return {
       title: toolCall.title ?? "Tool call",
       toolKind: toolCall.kind,
-      detail: typeof raw?.command === "string" ? raw.command : undefined,
+      detail,
     };
   };
 

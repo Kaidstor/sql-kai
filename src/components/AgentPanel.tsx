@@ -2,23 +2,15 @@
 // call cards and permission prompts. One chat per connection profile — the
 // store slice (slices/agent.ts) owns the agent process and the protocol.
 import {
-  Brain,
-  Check,
-  Circle,
   CircleStop,
-  Eye,
-  Globe,
   Loader2,
-  Pencil,
   RotateCcw,
-  Search,
   ShieldAlert,
   Sparkles,
-  Terminal,
-  Wrench,
   X,
 } from "lucide-react";
 import { memo, useState } from "react";
+import { parseMcpTitle } from "../lib/agentTool";
 import {
   activeProvider,
   AGENT_PROVIDERS,
@@ -28,26 +20,16 @@ import {
 import { useApp } from "../lib/store";
 import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
+import { ToolCard, ToolStatusIcon } from "./agent/ToolCard";
 import { Button, cn, IconButton, Input, Select } from "./ui";
 
 /** Panel width survives close/open within the session (not persisted). */
 let savedWidth = 400;
 
-const TOOL_ICONS: Record<string, typeof Wrench> = {
-  execute: Terminal,
-  read: Eye,
-  edit: Pencil,
-  search: Search,
-  fetch: Globe,
-  think: Brain,
-};
-
-function ToolStatusIcon({ status }: { status: string }) {
-  if (status === "completed") return <Check size={12} className="text-emerald-500" />;
-  if (status === "failed") return <X size={12} className="text-red-400" />;
-  if (status === "in_progress")
-    return <Loader2 size={12} className="animate-spin text-amber-400" />;
-  return <Circle size={9} className="text-zinc-600" />;
+/** mcp__sql-kai__query → «sql-kai · query» в permission-карточке. */
+function prettyPermTitle(title: string): string {
+  const mcp = parseMcpTitle(title);
+  return mcp ? `${mcp.server} · ${mcp.tool}` : title;
 }
 
 // memo: стрим дописывает только последний элемент — готовые сообщения
@@ -85,19 +67,8 @@ const ItemView = memo(function ItemView({ item }: { item: AgentChatItem }) {
           ))}
         </div>
       );
-    case "tool": {
-      const Icon = TOOL_ICONS[item.toolKind] ?? Wrench;
-      return (
-        <div
-          title={item.title}
-          className="flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 text-[11px] text-zinc-400"
-        >
-          <Icon size={12} className="shrink-0 text-zinc-500" />
-          <span className="min-w-0 flex-1 truncate">{item.title}</span>
-          <ToolStatusIcon status={item.status} />
-        </div>
-      );
-    }
+    case "tool":
+      return <ToolCard item={item} />;
   }
 });
 
@@ -113,7 +84,9 @@ function PermissionCard({
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-amber-300">
         <ShieldAlert size={12} /> Agent asks for permission
       </div>
-      <div className="text-[12px] break-words text-zinc-200">{perm.title}</div>
+      <div className="text-[12px] break-words text-zinc-200">
+        {prettyPermTitle(perm.title)}
+      </div>
       {perm.detail && (
         <pre className="selectable mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded border border-zinc-800 bg-zinc-900 p-1.5 font-mono text-[11px] text-zinc-300">
           {perm.detail}

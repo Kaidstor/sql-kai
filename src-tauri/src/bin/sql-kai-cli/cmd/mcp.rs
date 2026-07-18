@@ -153,6 +153,11 @@ fn tool_definitions() -> Value {
                 "required": ["sql"],
             },
         },
+        {
+            "name": "selection",
+            "description": "What the user currently sees in the sql-kai GUI: the active tab (table with its filter/sort/page, or query with its SQL) and the rows, columns or cells they have selected — with the selected data. Use when the user refers to what's on their screen: 'this row', 'the selected rows', 'this column', 'что я выделил' etc.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
     ])
 }
 
@@ -237,6 +242,10 @@ async fn dispatch_tool(profile: &Profile, name: &str, args: &Value) -> Result<St
                 .await
                 .map(|_| "opened a query tab in sql-kai (not executed)".to_string())
                 .map_err(|e| e.to_string())
+        }
+        "selection" => {
+            let mut b = connect_broker().await?;
+            b.gui_selection(&profile.id).await.map_err(|e| e.to_string())
         }
         other => Err(format!("unknown tool: {other}")),
     }
