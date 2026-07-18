@@ -75,6 +75,12 @@ useApp.subscribe(() => {
 
 window.addEventListener("beforeunload", flushPersist);
 
+// Dev-хук для браузерной верификации (скилл verify): доступ к стору из
+// консоли/автоматизации, чтобы инжектить состояние без Tauri-бэкенда.
+if (import.meta.env.DEV) {
+  (window as unknown as { __useApp?: typeof useApp }).__useApp = useApp;
+}
+
 // HMR would re-create the store with empty state (init() doesn't re-run) —
 // reload instead; live sessions are re-adopted via list_sessions on boot.
 if (import.meta.hot) {
