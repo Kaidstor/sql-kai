@@ -1,6 +1,6 @@
 [package]
 name = "sql-kai"
-version = "1.13.11"
+version = "1.14.0"
 description = "Postgres client with SSH tunnels"
 authors = ["kaidstor"]
 edition = "2021"
