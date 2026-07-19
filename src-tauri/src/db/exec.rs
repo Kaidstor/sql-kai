@@ -1,10 +1,11 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 use serde::Serialize;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-use super::sqltext::split_statements;
+use super::sqltext::{advance_tx, split_statements, TxStatus};
 use crate::error::AppError;
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -77,6 +78,43 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
         results,
         duration_ms: start.elapsed().as_millis() as u64,
     })
+}
+
+/// Runs SQL on a session while keeping its heuristic transaction status
+/// ([`Session::tx`](super::Session)) in sync: load → execute → advance_tx →
+/// store. The single query path shared by the GUI commands and the broker,
+/// which used to carry a copy of this bookkeeping each.
+pub struct QueryExecutor<'a> {
+    client: &'a Client,
+    tx: &'a AtomicU8,
+}
+
+impl<'a> QueryExecutor<'a> {
+    pub fn new(client: &'a Client, tx: &'a AtomicU8) -> Self {
+        QueryExecutor { client, tx }
+    }
+
+    /// Current (heuristic) transaction status of the session.
+    pub fn status(&self) -> TxStatus {
+        TxStatus::from_u8(self.tx.load(Ordering::Relaxed))
+    }
+
+    /// Advances the tracked status after `sql` ran with outcome `ok`. Public
+    /// separately from [`Self::execute`] for callers that run their SQL some
+    /// other way (export streams rows to a file) but must track it the same.
+    pub fn advance(&self, before: TxStatus, sql: &str, ok: bool) {
+        self.tx
+            .store(advance_tx(before, sql, ok) as u8, Ordering::Relaxed);
+    }
+
+    /// [`execute`] + status tracking, on success or failure both — a failed
+    /// statement inside a tx leaves it aborted, which the status surfaces.
+    pub async fn execute(&self, sql: &str, max_rows: usize) -> Result<ExecResult, AppError> {
+        let before = self.status();
+        let result = execute(self.client, sql, max_rows).await;
+        self.advance(before, sql, result.is_ok());
+        result
+    }
 }
 
 /// Cell text at `i`; "" for NULL or a missing column.

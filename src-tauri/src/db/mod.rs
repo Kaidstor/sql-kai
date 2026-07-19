@@ -16,7 +16,7 @@ pub use catalog::{
 pub use connect::{connect, ConnectOptions, Connected, Session};
 pub use exec::{
     cell, cell_bool, execute, query_rows, query_scalar, statement_column_types, ExecResult,
-    StatementResult,
+    QueryExecutor, StatementResult,
 };
 pub use export::{
     export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportOutcome,
