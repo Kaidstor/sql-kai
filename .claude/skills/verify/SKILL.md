@@ -98,6 +98,48 @@ tool-карточки, permission-запросы, ошибки), через ши
   reload): шим из `initScript` переживает reload, а вот стор-инжект
   повторяй заново.
 
+## Результат запроса в гриде (проверка ResultsGrid)
+
+Чтобы довести query-таб до отрисованного грида, не угадывай имена полей —
+они такие:
+
+- SQL в таб кладётся экшеном **`setTabSql(tabId, sql)`** (не
+  `updateQuerySql`), выполняется **`runQuery(tabId)`**.
+- Результат лежит в **`tab.state.result`** (единственное число, тип
+  `ExecResult`), не `results`. Рядом: `running`, `error`, `resultSql`,
+  `explain`.
+- Грид рендерится только у **активной** вкладки — если запускал запрос не в
+  ней, переключись: `setState({ activeTabId: <id> })` (или экшен
+  `setActiveTab`, если есть), иначе `tbody` в DOM будет пустой при живом
+  `state.result`.
+
+`execute_sql` удобнее не зашивать в initScript, а домешивать поверх уже
+стоящего шима (данные под конкретную проверку):
+
+```js
+const orig = window.__TAURI_INTERNALS__.invoke;
+window.__TAURI_INTERNALS__.invoke = (cmd, args) => {
+  if (cmd === "execute_sql")
+    return Promise.resolve({
+      results: [{ columns: ["id", "email"],
+                  rows: [["1", "a@b.c"], ["2", null]],
+                  rowsAffected: null, truncated: false }],
+      durationMs: 4,
+    });
+  if (cmd === "record_history") return Promise.resolve([]);
+  if (cmd === "session_tx_status") return Promise.resolve("idle");
+  return orig(cmd, args);
+};
+const s = window.__useApp.getState();
+const tab = s.tabs.find((t) => t.state.kind === "query");
+s.setTabSql(tab.id, "SELECT id, email FROM users");
+await s.runQuery(tab.id);
+```
+
+Гоча: первый `runQuery` сразу после override иногда отрабатывает вхолостую
+(результата нет, ошибки нет) — просто повтори вызов в следующем
+`evaluate_script`, второй проход стабилен.
+
 ## Фолбэк без MCP (playwright-core)
 
 MCP — не единственный способ довести браузер до страницы; шим, набор
