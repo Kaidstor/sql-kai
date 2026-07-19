@@ -631,6 +631,10 @@ function ResultsGridImpl({
             {result.rows.map((row, ri) => {
               const isSelected = selected.has(ri);
               const isDeleted = deletedRows.has(ri);
+              // The active cell's row (single focus or a spanned cell range):
+              // tint its number gutter faintly, like Excel highlights the row
+              // header of the selected cell — lighter than a whole-row select.
+              const cellInRow = rect !== null && ri >= rect.r1 && ri <= rect.r2;
               const dups = insertsAfter.get(ri);
               const tr = (
                 <tr
@@ -689,7 +693,9 @@ function ResultsGridImpl({
                         ? "text-red-400/70"
                         : isSelected
                           ? "text-sky-400"
-                          : "text-zinc-600 hover:text-zinc-400",
+                          : cellInRow
+                            ? "bg-sky-500/10 text-sky-400/80"
+                            : "text-zinc-600 hover:text-zinc-400",
                     )}
                   >
                     {ri + 1}
