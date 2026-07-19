@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { structureDdl, tableDml } from "./sqlgen";
+import { buildStructureDdl, buildTableDml } from "./mutationSql";
 import type { StructureTabState, TableTabState } from "./store";
 import type { ColumnInfo, TablePage } from "./types";
 
-// --- structureDdl ---------------------------------------------------------
+// --- buildStructureDdl ---------------------------------------------------------
 
 const structureState = (
   patch: Partial<StructureTabState>,
@@ -19,9 +19,9 @@ const structureState = (
   ...patch,
 });
 
-describe("structureDdl", () => {
+describe("buildStructureDdl", () => {
   it("emits one ALTER per staged field, rename last", () => {
-    const stmts = structureDdl(
+    const stmts = buildStructureDdl(
       structureState({
         colEdits: {
           age: { type: "bigint", nullable: true, name: "years" },
@@ -36,7 +36,7 @@ describe("structureDdl", () => {
   });
 
   it("SET/DROP DEFAULT and comment set/clear", () => {
-    const stmts = structureDdl(
+    const stmts = buildStructureDdl(
       structureState({
         colEdits: {
           a: { default: "now()", comment: "when" },
@@ -53,7 +53,7 @@ describe("structureDdl", () => {
   });
 
   it("skips edits of dropped columns and emits drops + adds", () => {
-    const stmts = structureDdl(
+    const stmts = buildStructureDdl(
       structureState({
         colEdits: { legacy: { type: "text" } },
         colDrops: ["legacy"],
@@ -71,7 +71,7 @@ describe("structureDdl", () => {
   });
 
   it("SET NOT NULL when nullable staged to false", () => {
-    const stmts = structureDdl(
+    const stmts = buildStructureDdl(
       structureState({ colEdits: { a: { nullable: false } } }),
     );
     expect(stmts).toEqual([
@@ -80,7 +80,7 @@ describe("structureDdl", () => {
   });
 });
 
-// --- tableDml -------------------------------------------------------------
+// --- buildTableDml -------------------------------------------------------------
 
 const page = (
   columns: string[],
@@ -113,7 +113,7 @@ const tableState = (patch: Partial<TableTabState>): TableTabState => ({
   ...patch,
 });
 
-describe("tableDml", () => {
+describe("buildTableDml", () => {
   const cols = [col("id", true), col("name"), col("note")];
   const data = page(
     ["id", "name", "note"],
@@ -124,7 +124,7 @@ describe("tableDml", () => {
   );
 
   it("refuses UPDATE/DELETE without a primary key", () => {
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({ edits: { 0: { 1: "new" } } }),
       data,
       [col("id"), col("name")],
@@ -135,7 +135,7 @@ describe("tableDml", () => {
   });
 
   it("refuses when a pk column is missing from the page", () => {
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({ deletes: [0] }),
       page(["name"], [["ann"]]),
       cols,
@@ -146,7 +146,7 @@ describe("tableDml", () => {
   });
 
   it("builds UPDATE by original pk value even when the pk cell is edited", () => {
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({ edits: { 0: { 0: "99", 2: null } } }),
       data,
       cols,
@@ -162,7 +162,7 @@ describe("tableDml", () => {
 
   it("DELETE wins over an edit of the same row; NULL pk compares with IS NULL", () => {
     const nullPkData = page(["id", "name"], [[null, "ann"]]);
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({ edits: { 0: { 1: "x" } }, deletes: [0] }),
       nullPkData,
       [col("id", true), col("name")],
@@ -175,7 +175,7 @@ describe("tableDml", () => {
   });
 
   it("INSERT skips undefined (generated) cells; all-undefined → DEFAULT VALUES", () => {
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({
         inserts: [
           { values: [undefined, "carl", null] },
@@ -196,7 +196,7 @@ describe("tableDml", () => {
   });
 
   it("inserts need no primary key", () => {
-    const dml = tableDml(
+    const dml = buildTableDml(
       tableState({ inserts: [{ values: [undefined, "x", null] }] }),
       data,
       [col("id"), col("name"), col("note")],

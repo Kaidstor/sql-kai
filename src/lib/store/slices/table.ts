@@ -1,7 +1,7 @@
 // Table-tab data: page loading and the staged-edit lifecycle (cell edits,
 // row deletes, duplicated-row inserts) up to the transactional Apply.
 import { api, isSessionLost } from "../../api";
-import { tableDml } from "../../sqlgen";
+import { buildTableDml } from "../../mutationSql";
 import type { Get, Set, StoreContext } from "../context";
 import { columnsKey, noTableEdits } from "../helpers";
 import type { InsertRow, TableTabState } from "../types";
@@ -199,7 +199,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       if (!data) return;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return;
-      const dml = tableDml(
+      const dml = buildTableDml(
         st,
         data,
         get().tableColumns[columnsKey(tab.profileId, st.schema, st.table)],

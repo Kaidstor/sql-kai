@@ -1,6 +1,6 @@
 // Pure DDL builders for the Structure tab's index/FK/trigger/policy actions.
 // These run immediately (confirm → execute_sql), unlike the staged column DDL
-// in sqlgen.ts.
+// in mutationSql.ts.
 import { quoteIdent, relIdent } from "./sql";
 
 const PLAIN_IDENT = /^[a-zA-Z_][a-zA-Z0-9_$]*$/;

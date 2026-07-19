@@ -9,7 +9,7 @@ const lit = (v: string | null) => (v === null ? "NULL" : quoteLit(v));
 
 /** Staged structure changes → DDL statements. Edits reference the ORIGINAL
  *  column name (renames run last), edits of dropped columns are skipped. */
-export function structureDdl(st: StructureTabState): string[] {
+export function buildStructureDdl(st: StructureTabState): string[] {
   const rel = relIdent(st.schema, st.table);
   const alter = (rest: string) => `ALTER TABLE ${rel} ${rest}`;
   const drops = new Set(st.colDrops);
@@ -61,7 +61,7 @@ export type TableDml =
 /** Staged table edits → INSERT/UPDATE/DELETE statements. UPDATE/DELETE match
  *  rows by primary key (always the ORIGINAL row values, even if a pk cell was
  *  edited); INSERTs don't need one. */
-export function tableDml(
+export function buildTableDml(
   st: TableTabState,
   data: TablePage,
   cols: ColumnInfo[] | undefined,

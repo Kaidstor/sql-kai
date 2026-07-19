@@ -1,5 +1,5 @@
 // Tab-state model shared by every slice and by consumers outside the store
-// (persist snapshots, sqlgen, components). AppStore is assembled at the
+// (persist snapshots, mutationSql, components). AppStore is assembled at the
 // bottom from the slice interfaces — each slice file owns its own contract.
 import type { SavedQuery } from "../types";
 import type { ActivitySlice } from "./slices/activity";

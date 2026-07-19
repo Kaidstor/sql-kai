@@ -1,7 +1,7 @@
 // Structure-tab: section loading (columns/indexes/relations/triggers), ad-hoc
 // DDL and the staged column-DDL lifecycle up to the transactional Apply.
 import { api, isSessionLost } from "../../api";
-import { structureDdl } from "../../sqlgen";
+import { buildStructureDdl } from "../../mutationSql";
 import type { Get, Set, StoreContext } from "../context";
 import { columnsKey, noStructureEdits, without } from "../helpers";
 import type {
@@ -175,7 +175,7 @@ export function createStructureSlice(
     applyStructureEdits: async (tabId) => {
       const tab = tabOf(tabId, "structure");
       if (!tab || tab.state.loading) return;
-      const stmts = structureDdl(tab.state);
+      const stmts = buildStructureDdl(tab.state);
       if (stmts.length === 0) return;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return;
