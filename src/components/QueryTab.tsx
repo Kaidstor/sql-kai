@@ -20,7 +20,8 @@ import { format } from "sql-formatter";
 import { copyText, readClipboardText } from "../lib/clipboard";
 import { searchExtensions } from "../lib/editorSearch";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
-import { editorThemes, themeById } from "../lib/themes";
+import { editorThemes } from "../lib/editorTheme";
+import { themeById } from "../lib/themes";
 import type { SortSpec, StatementResult } from "../lib/types";
 import {
   ContextMenu,

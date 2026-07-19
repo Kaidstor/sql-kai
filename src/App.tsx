@@ -1,15 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
-import { AgentPanel } from "./components/AgentPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
 import { LogViewer } from "./components/LogViewer";
 import { Palette } from "./components/Palette";
-import { QueryTab } from "./components/QueryTab";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ShortcutSections, ShortcutsOverlay } from "./components/ShortcutsHelp";
 import { Sidebar } from "./components/Sidebar";
@@ -26,6 +24,17 @@ import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
 import { initUpdater, useUpdater } from "./lib/updater";
+
+// Тяжёлые куски UI — отдельными чанками: QueryTab тянет CodeMirror и
+// sql-formatter, AgentPanel — react-markdown. Ленивая загрузка убирает их из
+// стартового бандла (быстрее первый кадр — окно показывается после него),
+// а прогрев ниже докачивает чанки сразу после старта, до первого клика.
+const QueryTab = lazy(() =>
+  import("./components/QueryTab").then((m) => ({ default: m.QueryTab })),
+);
+const AgentPanel = lazy(() =>
+  import("./components/AgentPanel").then((m) => ({ default: m.AgentPanel })),
+);
 
 // ⌘K chord window: a ⌘W within this many ms closes ALL tabs.
 const CHORD_MS = 5000;
@@ -93,6 +102,16 @@ function App() {
   }, []);
 
   useEffect(() => initUpdater(), []);
+
+  // Прогрев ленивых чанков (см. lazy выше): к моменту первого ⌘N или ⌘J
+  // import() уже разрешён — вкладка/панель открывается без пустого кадра.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void import("./components/QueryTab");
+      void import("./components/AgentPanel");
+    }, 300);
+    return () => clearTimeout(t);
+  }, []);
 
   // The native menu-bar switcher mirrors the live connections shown in the
   // status bar. Rebuilding it also updates the checkmark when selection moves.
@@ -414,7 +433,9 @@ function App() {
               <div className="flex-1 min-h-0">
                 {activeTab ? (
                   activeTab.state.kind === "query" ? (
-                    <QueryTab key={activeTab.id} tab={activeTab} />
+                    <Suspense fallback={null}>
+                      <QueryTab key={activeTab.id} tab={activeTab} />
+                    </Suspense>
                   ) : activeTab.state.kind === "table" ? (
                     <TableTab key={activeTab.id} tab={activeTab} />
                   ) : activeTab.state.kind === "activity" ? (
@@ -435,7 +456,9 @@ function App() {
             </main>
             {/* агент требует живого подключения — на lost-сессии панель прячется */}
             {agentOpen && activeProfileId && sessions[activeProfileId] && (
-              <AgentPanel />
+              <Suspense fallback={null}>
+                <AgentPanel />
+              </Suspense>
             )}
           </>
         )}

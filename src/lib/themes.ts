@@ -3,9 +3,6 @@
 // utilities to `var(--color-*)`, so a theme is just a set of CSS-variable
 // overrides on <html> — no component changes needed. Light themes invert the
 // scale: zinc-950 stays "app background" and zinc-100 stays "primary text".
-import { EditorView } from "@codemirror/view";
-import { vscodeDarkInit, vscodeLightInit } from "@uiw/codemirror-theme-vscode";
-
 export interface Theme {
   id: string;
   label: string;
@@ -220,37 +217,3 @@ export function applyCachedTheme() {
     applyTheme(null);
   }
 }
-
-/** Themes the search-match highlights (from editorSearch.ts) to the app's UI
- *  kit. Colors ride the theme CSS variables, so every app theme — including
- *  light ones — gets its own palette from this one extension. */
-const searchTheme = EditorView.theme({
-  ".cm-searchMatch": {
-    backgroundColor: "color-mix(in srgb, var(--color-amber-400) 28%, transparent)",
-    borderRadius: "2px",
-  },
-  ".cm-searchMatch-selected": {
-    backgroundColor: "color-mix(in srgb, var(--color-sky-500) 55%, transparent)",
-    outline: "1px solid var(--color-sky-400)",
-  },
-  ".cm-selectionMatch": {
-    backgroundColor: "color-mix(in srgb, var(--color-zinc-400) 22%, transparent)",
-  },
-});
-
-/** SQL editor palettes with a transparent background so the app theme shows
- *  through; the syntax colors come from the vscode presets. */
-export const editorThemes = {
-  dark: [
-    vscodeDarkInit({
-      settings: { background: "transparent", gutterBackground: "transparent" },
-    }),
-    searchTheme,
-  ],
-  light: [
-    vscodeLightInit({
-      settings: { background: "transparent", gutterBackground: "transparent" },
-    }),
-    searchTheme,
-  ],
-};
