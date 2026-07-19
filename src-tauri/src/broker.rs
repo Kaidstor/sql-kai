@@ -585,18 +585,55 @@ async fn do_query(
     *entry.last_used.lock().unwrap() = Instant::now();
 
     let client = &entry.session.client;
-    // Сессия постоянно read-only; --write снимает флаг только на время запроса.
-    if write {
-        let _ = db::execute(client, "SET default_transaction_read_only = off", 1).await;
-    }
+    // Сессия постоянно read-only (default_transaction_read_only = on); --write
+    // снимает флаг только на время запроса. Но default_transaction_read_only
+    // действует лишь на НОВУЮ транзакцию: если --write оставил открытую
+    // read-write транзакцию (BEGIN без COMMIT), обычный запрос продолжит её и
+    // сможет писать. Поэтому дополнительно трекаем режим открытой транзакции и
+    // не пускаем read-only вызов внутрь read-write транзакции.
     let before = TxStatus::from_u8(entry.session.tx.load(Ordering::Relaxed));
-    let result = db::execute(client, sql, max_rows.clamp(1, 100_000)).await;
-    entry.session.tx.store(
-        db::advance_tx(before, sql, result.is_ok()) as u8,
-        Ordering::Relaxed,
-    );
+    let before_write = entry.session.tx_write.load(Ordering::Relaxed);
+    if !write && before != TxStatus::Idle && before_write && !db::is_tx_control_only(sql) {
+        return Err(MethodError {
+            code: "read_only_tx",
+            message: "открыта read-write транзакция (её начал вызов с --write). \
+                      Заверши её COMMIT/ROLLBACK или повтори запрос с --write."
+                .into(),
+            // read_only_sql_transaction — ближайший по смыслу SQLSTATE
+            sqlstate: Some("25006".into()),
+        });
+    }
+
     if write {
-        let _ = db::execute(client, "SET default_transaction_read_only = on", 1).await;
+        // Ошибку снятия read-only больше не игнорируем: если флаг не снят,
+        // выполнять write-запрос нельзя — вернём ошибку вместо тихой записи в
+        // (казалось бы) read-only сессии.
+        db::execute(client, "SET default_transaction_read_only = off", 1)
+            .await
+            .map_err(|e| method_err("write_setup", format!("не удалось включить режим записи: {e}")))?;
+    }
+
+    let result = db::execute(client, sql, max_rows.clamp(1, 100_000)).await;
+    let after = db::advance_tx(before, sql, result.is_ok());
+    entry.session.tx.store(after as u8, Ordering::Relaxed);
+    // Открытая транзакция read-write, если её открыл (или продолжил) --write.
+    let after_write = after != TxStatus::Idle && (write || before_write);
+    entry.session.tx_write.store(after_write, Ordering::Relaxed);
+
+    // Возвращаем read-only default, как только вернулись в чистый idle — тогда
+    // следующая неявная транзакция снова read-only. Внутри открытой/aborted
+    // транзакции SET бессмыслен (упал бы с 25P02), там охраняет gate выше.
+    if after == TxStatus::Idle && (write || before_write) {
+        if let Err(e) = db::execute(client, "SET default_transaction_read_only = on", 1).await {
+            // Не удалось восстановить read-only на живой сессии — не рискуем:
+            // выкидываем её, следующий вызов откроет свежую (снова read-only).
+            logging::log(
+                "broker",
+                &format!("\"{profile_id}\": failed to re-arm read-only ({e}); dropping session"),
+            );
+            state.remove_entry(profile_id);
+            (hooks.changed)();
+        }
     }
     *entry.last_used.lock().unwrap() = Instant::now();
 
@@ -659,7 +696,13 @@ async fn get_or_open(
     .await?;
     let mut session = connected.session;
     let closed_rx = session.closed_rx.take();
-    let _ = db::execute(&session.client, "SET default_transaction_read_only = on", 1).await;
+    // Не встал read-only default — сессию не отдаём: иначе она молча
+    // окажется read-write (тот же принцип, что у write-SET'а в do_query).
+    db::execute(&session.client, "SET default_transaction_read_only = on", 1)
+        .await
+        .map_err(|e| {
+            AppError::Msg(format!("не удалось перевести cli-сессию в read-only: {e}"))
+        })?;
     let entry = Arc::new(CliEntry {
         session,
         busy: tokio::sync::Mutex::new(()),

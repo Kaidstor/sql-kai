@@ -23,6 +23,31 @@ pub struct SshConfig {
     pub keepalive_interval: Option<u32>,
 }
 
+/// TLS settings for a *direct* connection (no SSH tunnel). Absent or
+/// `enabled: false` — plaintext (the default). Ignored when the connection
+/// goes through an SSH tunnel or targets a loopback host — there the transport
+/// is already local/secured, so [`db::connect`](crate::db::connect) stays on
+/// plaintext.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SslConfig {
+    /// Master switch. Kept alongside the paths so toggling SSL off in the UI
+    /// doesn't wipe them.
+    pub enabled: bool,
+    /// PEM file with the CA to trust (self-signed / internal CA / RDS).
+    /// Empty — verify against the system trust store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<String>,
+    /// PEM client certificate + private key (mTLS) — both or neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<String>,
+    /// Verify the server certificate (chain + hostname). Off — encrypt only,
+    /// any certificate accepted (libpq's `require`).
+    pub reject_unauthorized: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -45,6 +70,10 @@ pub struct Profile {
     /// Production database: the UI asks before running data-modifying SQL.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub production: bool,
+    /// TLS settings for direct (non-tunnel) connections; see [`SslConfig`].
+    /// None — plaintext.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssl: Option<SslConfig>,
     /// Whether a DB password is stored in the vault for this profile. Cached
     /// here for offline display; the vault is the source of truth.
     #[serde(default)]
@@ -131,6 +160,9 @@ pub fn upsert_profile(
     password: Option<String>,
     ssh_passphrase: Option<String>,
 ) -> Result<Profile, AppError> {
+    // Hold the config lock across secret write + load/modify/save so a
+    // concurrent GUI/CLI writer can't lost-update profiles.json or the vault.
+    let _lock = crate::fsio::lock_config()?;
     // display-only mark the frontend may echo back — keep profiles.json clean
     profile.last_connected = None;
     if profile.id.is_empty() {
@@ -175,6 +207,7 @@ pub fn upsert_profile(
 /// no group yet, both get group = original name, so the pair shares saved
 /// queries; the copy also inherits the stored password.
 pub fn duplicate_profile(id: &str) -> Result<Profile, AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_profiles()?;
     let original = all
         .iter_mut()
@@ -207,6 +240,7 @@ pub fn duplicate_profile(id: &str) -> Result<Profile, AppError> {
 }
 
 pub fn delete_profile(id: &str) -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_profiles()?;
     all.retain(|p| p.id != id);
     save_profiles(&all)?;
@@ -278,6 +312,7 @@ fn save_last_connected(map: &HashMap<String, LastConnected>) -> Result<(), AppEr
 /// a failed mark must never fail the connection itself. A corrupted marks file
 /// self-heals — it is replaced by a fresh map on the next write.
 pub fn record_last_connected(profile_id: &str, via: ConnectVia) -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut map = load_last_connected().unwrap_or_default();
     let slot = map.entry(profile_id.to_string()).or_default();
     match via {
@@ -312,6 +347,7 @@ pub fn save_queries(queries: &[SavedQuery]) -> Result<(), AppError> {
 
 /// Empty id = create; same name+scope overwrites that query's SQL.
 pub fn upsert_query(mut query: SavedQuery) -> Result<SavedQuery, AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_queries()?;
     if query.id.is_empty() {
         if let Some(existing) = all
@@ -336,6 +372,7 @@ pub fn upsert_query(mut query: SavedQuery) -> Result<SavedQuery, AppError> {
 }
 
 pub fn delete_query(id: &str) -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_queries()?;
     all.retain(|q| q.id != id);
     save_queries(&all)
@@ -410,6 +447,7 @@ pub fn save_history(entries: &[HistoryEntry]) -> Result<(), AppError> {
 /// it to the top. Returns the updated list. The SQL is redacted first so a
 /// literal password never lands on disk (see [`redact_secrets`]).
 pub fn record_history(mut entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppError> {
+    let _lock = crate::fsio::lock_config()?;
     entry.sql = redact_secrets(&entry.sql);
     let mut all = load_history()?;
     all.retain(|h| !(h.profile_id == entry.profile_id && h.sql == entry.sql));
@@ -457,36 +495,94 @@ pub fn redact_secrets(sql: &str) -> String {
             out.push(bytes[i] as char);
             i += 1;
         }
-        if i < bytes.len() && bytes[i] == b'\'' {
-            // single-quoted string, '' is an escaped quote
+        // Mask the credential value in any literal form ('…', E'…', $tag$…$tag$)
+        // so a dollar-quoted or E-string password can't slip through. A keyword
+        // NOT followed by a literal (e.g. `SELECT password FROM …`) is left
+        // untouched — literal_end returns None and copying just resumes.
+        if let Some(end) = literal_end(bytes, i) {
             out.push_str("'***'");
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\'' {
-                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            i = end;
         }
     }
     out
 }
 
+/// Index just past a string / dollar-quoted literal starting at `bytes[i]`, or
+/// `None` if no literal begins there. Recognizes the forms a password can hide
+/// in — `'…'`, `E'…'`/`e'…'` (backslash escapes), `U&'…'`/`u&'…'` and
+/// `$tag$…$tag$` — mirroring the quoting rules in `db::split_statements`.
+fn literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if i >= bytes.len() {
+        return None;
+    }
+    // dollar-quoted: $tag$ … $tag$ (a bare `$` or a `$1` parameter is not a tag)
+    if bytes[i] == b'$' {
+        let mut j = i + 1;
+        while bytes
+            .get(j)
+            .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            j += 1;
+        }
+        if bytes.get(j) != Some(&b'$') || bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            return None;
+        }
+        let tag = &bytes[i..=j];
+        let mut k = j + 1;
+        while k + tag.len() <= bytes.len() {
+            if &bytes[k..k + tag.len()] == tag {
+                return Some(k + tag.len());
+            }
+            k += 1;
+        }
+        return Some(bytes.len()); // unterminated — consume the rest
+    }
+    // plain / E-string / unicode-escape string — all terminate at a lone `'`,
+    // with `''` an escaped quote (E'…' additionally honors `\` escapes).
+    let (quote, backslash) = match bytes[i] {
+        b'\'' => (i, false),
+        b'E' | b'e' if bytes.get(i + 1) == Some(&b'\'') => (i + 1, true),
+        b'U' | b'u' if bytes.get(i + 1) == Some(&b'&') && bytes.get(i + 2) == Some(&b'\'') => {
+            (i + 2, false)
+        }
+        _ => return None,
+    };
+    let mut q = quote + 1;
+    while q < bytes.len() {
+        if backslash && bytes[q] == b'\\' {
+            q += 2;
+        } else if bytes[q] == b'\'' {
+            if bytes.get(q + 1) == Some(&b'\'') {
+                q += 2;
+            } else {
+                return Some(q + 1);
+            }
+        } else {
+            q += 1;
+        }
+    }
+    Some(bytes.len()) // unterminated
+}
+
 pub fn delete_history_entry(id: &str) -> Result<Vec<HistoryEntry>, AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_history()?;
     all.retain(|h| h.id != id);
     save_history(&all)?;
     Ok(all)
 }
 
+/// Replaces the whole history with `entries` (used by "clear history"). Under
+/// the config lock so it can't race a concurrent [`record_history`].
+pub fn replace_history(entries: &[HistoryEntry]) -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
+    save_history(entries)
+}
+
 /// One-time import of the pre-disk localStorage history: entries already on
 /// disk win, imported ones fill in behind by recency.
 pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, AppError> {
+    let _lock = crate::fsio::lock_config()?;
     let mut all = load_history()?;
     for mut e in entries {
         e.sql = redact_secrets(&e.sql);
@@ -536,6 +632,29 @@ mod tests {
             redact_secrets("PASSWORD 'a''b' NOT NULL"),
             "PASSWORD '***' NOT NULL"
         );
+        // E-string with a backslash-escaped quote
+        assert_eq!(
+            redact_secrets(r"PASSWORD E'a\'b' NOT NULL"),
+            "PASSWORD '***' NOT NULL"
+        );
+        // dollar-quoted, bare and tagged
+        assert_eq!(redact_secrets("PASSWORD $$se;cret$$"), "PASSWORD '***'");
+        assert_eq!(
+            redact_secrets("IDENTIFIED BY $pw$hunter'2$pw$ FOO"),
+            "IDENTIFIED BY '***' FOO"
+        );
+        // unicode-escape string
+        assert_eq!(redact_secrets("PASSWORD U&'d\\0061t'"), "PASSWORD '***'");
+    }
+
+    #[test]
+    fn password_keyword_without_literal_is_untouched() {
+        // not a credential-setting statement — no literal follows the keyword
+        assert_eq!(
+            redact_secrets("SELECT password FROM users"),
+            "SELECT password FROM users"
+        );
+        assert_eq!(redact_secrets("ALTER ROLE app PASSWORD NULL"), "ALTER ROLE app PASSWORD NULL");
     }
 
     #[test]

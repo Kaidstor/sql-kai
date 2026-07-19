@@ -331,7 +331,7 @@ pub fn delete_history_entry(id: String) -> Result<Vec<HistoryEntry>, AppError> {
 
 #[tauri::command]
 pub fn clear_history() -> Result<(), AppError> {
-    store::save_history(&[])
+    store::replace_history(&[])
 }
 
 #[tauri::command]
@@ -905,6 +905,10 @@ pub struct SortSpec {
     pub dir: Option<String>,
 }
 
+// Args mirror the frontend IPC call (schema/table/paging/sort/filter) — a Tauri
+// command's parameters are its wire contract, so grouping them into a struct
+// here would just move the arg list into the JSON payload.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn get_table_page(
     state: State<'_, AppState>,
@@ -1077,15 +1081,21 @@ pub fn install_cli() -> Result<String, AppError> {
 
         // Slow path: the dir is root-owned. Escalate via the native auth
         // dialog; `ln -sf` handles a pre-existing root-owned symlink.
-        let script = format!(
-            "do shell script \"mkdir -p /usr/local/bin && ln -sf '{}' '{}'\" \
-             with administrator privileges",
-            src.display(),
-            target.display()
-        );
+        //
+        // src/target are passed as osascript `argv` (never interpolated into
+        // the script text) and shell-escaped inside AppleScript with `quoted
+        // form of` — so a bundle path containing a quote or space can't break
+        // out of the privileged shell command.
+        const INSTALL_SCRIPT: &str = "on run argv\n\
+            do shell script \"mkdir -p /usr/local/bin && ln -sf \" \
+            & quoted form of (item 1 of argv) & \" \" \
+            & quoted form of (item 2 of argv) with administrator privileges\n\
+            end run";
         let out = std::process::Command::new("osascript")
             .arg("-e")
-            .arg(&script)
+            .arg(INSTALL_SCRIPT)
+            .arg(&src)
+            .arg(target)
             .output()?;
         if out.status.success() {
             return Ok(target.display().to_string());

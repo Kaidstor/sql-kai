@@ -3,6 +3,7 @@
 
 use clap::Args;
 use sql_kai_lib::db::{ExecResult, StatementResult, Type};
+use sql_kai_lib::format::csv_field;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -260,14 +261,6 @@ fn print_csv(r: &StatementResult) {
             .map(|c| csv_field(c.as_deref().unwrap_or("")))
             .collect();
         println!("{}", vals.join(","));
-    }
-}
-
-fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
     }
 }
 

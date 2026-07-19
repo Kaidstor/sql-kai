@@ -1,9 +1,87 @@
 //! Filesystem helpers shared by the config store and the vault.
 
-use std::fs;
+use std::cell::Cell;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::error::AppError;
+
+const LOCK_FILE: &str = ".config.lock";
+
+/// In-process gate: the outermost [`lock_config`] guard on a thread holds this
+/// for its whole critical section, and the OS `flock` rides along with it — so
+/// within one process only one thread at a time even attempts the flock.
+static PROC_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// Reentrancy depth for the current thread. `upsert_profile` takes the lock
+    /// and then calls `vault::set_secret`, which takes it again — a plain flock
+    /// self-deadlocks on a second exclusive acquire, so nested acquisitions on
+    /// the same thread are ref-counted no-ops.
+    static LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// RAII guard for the cross-process config lock (see [`lock_config`]). The
+/// outermost guard on a thread owns the process mutex + the flock'd file;
+/// nested guards own nothing and only decrement the reentrancy depth on drop.
+pub struct ConfigLock {
+    // File first so its Drop (releasing the flock) runs before the mutex frees.
+    _held: Option<(File, MutexGuard<'static, ()>)>,
+}
+
+/// Acquires an exclusive, cross-process advisory lock over all config writes
+/// (the vault and the JSON store), so a GUI and a CLI process can't lost-update
+/// each other's files. Reentrant within a thread; blocks until granted. Hold
+/// the returned guard for the whole read-modify-write sequence.
+///
+/// Lock order: this is always the OUTERMOST lock — acquire it before the vault
+/// mutex (and before any store file op), never the other way round.
+pub fn lock_config() -> Result<ConfigLock, AppError> {
+    if LOCK_DEPTH.with(Cell::get) > 0 {
+        LOCK_DEPTH.with(|d| d.set(d.get() + 1));
+        return Ok(ConfigLock { _held: None });
+    }
+    // A poisoned PROC_LOCK guards only () — nothing to corrupt, so recover.
+    let guard = PROC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = config_path(LOCK_FILE)?;
+    // Only the flock matters — never truncate/read the lock file's contents.
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    os_lock_exclusive(&file)?;
+    LOCK_DEPTH.with(|d| d.set(1));
+    Ok(ConfigLock {
+        _held: Some((file, guard)),
+    })
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        LOCK_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        // For the outermost guard `_held` drops here: closing the file releases
+        // the flock, then the process mutex frees. Nested guards hold nothing.
+    }
+}
+
+#[cfg(unix)]
+fn os_lock_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // LOCK_EX is released automatically when the fd closes (guard drop).
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn os_lock_exclusive(_file: &File) -> std::io::Result<()> {
+    Ok(()) // best-effort: no cross-process lock available
+}
 
 /// Path of `file` inside the app's config dir (created on demand).
 /// `SQL_KAI_CONFIG_DIR` overrides the location (isolated runs, tests).

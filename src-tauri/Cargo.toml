@@ -36,6 +36,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "process", "io-util", "io-std", "sync"] }
 tokio-postgres = "0.7"
+# TLS для прямых (без ssh-туннеля) подключений. native-tls на macOS = Secure
+# Transport (системная связка ключей для verify-full), без зависимости от OpenSSL.
+native-tls = "0.2"
+postgres-native-tls = "0.5"
 # SCRAM-verifier для `sql-kai rotate` — пароль не уходит на сервер открытым текстом
 postgres-protocol = "0.6"
 dirs = "6"
@@ -57,6 +61,8 @@ tauri-plugin-notification = "2.3.3"
 rust_xlsxwriter = "0.96.0"
 futures-util = "0.3.32"
 tauri-plugin-window-state = "2"
+# flock(2) для межпроцессной блокировки записи в конфиг (GUI ↔ CLI)
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

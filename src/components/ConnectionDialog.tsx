@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, errText } from "../lib/api";
 import { ACCENTS, accentColor } from "../lib/colors";
 import { useApp } from "../lib/store";
-import type { Profile } from "../lib/types";
+import type { Profile, SslConfig } from "../lib/types";
 import { Button, Field, IconButton, Input, Overlay, ProdBadge, cn } from "./ui";
 
 interface FormState {
@@ -18,6 +18,11 @@ interface FormState {
   password: string;
   /** Stages removal of the saved password (typing a new one overrides). */
   clearPassword: boolean;
+  useSsl: boolean;
+  sslCaCert: string;
+  sslClientCert: string;
+  sslClientKey: string;
+  sslRejectUnauthorized: boolean;
   useSsh: boolean;
   sshHost: string;
   sshUser: string;
@@ -39,6 +44,11 @@ const emptyForm: FormState = {
   user: "postgres",
   password: "",
   clearPassword: false,
+  useSsl: false,
+  sslCaCert: "",
+  sslClientCert: "",
+  sslClientKey: "",
+  sslRejectUnauthorized: true,
   useSsh: false,
   sshHost: "",
   sshUser: "",
@@ -61,6 +71,11 @@ function fromProfile(p: Profile): FormState {
     user: p.user,
     password: "",
     clearPassword: false,
+    useSsl: Boolean(p.ssl?.enabled),
+    sslCaCert: p.ssl?.caCert ?? "",
+    sslClientCert: p.ssl?.clientCert ?? "",
+    sslClientKey: p.ssl?.clientKey ?? "",
+    sslRejectUnauthorized: p.ssl?.rejectUnauthorized ?? true,
     useSsh: Boolean(p.ssh?.host),
     sshHost: p.ssh?.host ?? "",
     sshUser: p.ssh?.user ?? "",
@@ -126,6 +141,22 @@ function SecretInput({
   );
 }
 
+/** SSL block of the profile: null when untouched (off, no paths) — keeps
+ *  profiles.json clean; entered paths survive toggling SSL off. */
+function sslConfig(form: FormState): SslConfig | null {
+  const caCert = form.sslCaCert.trim();
+  const clientCert = form.sslClientCert.trim();
+  const clientKey = form.sslClientKey.trim();
+  if (!form.useSsl && !caCert && !clientCert && !clientKey) return null;
+  return {
+    enabled: form.useSsl,
+    caCert: caCert || null,
+    clientCert: clientCert || null,
+    clientKey: clientKey || null,
+    rejectUnauthorized: form.sslRejectUnauthorized,
+  };
+}
+
 function toProfile(form: FormState, existing?: Profile): Profile {
   return {
     id: existing?.id ?? "",
@@ -137,6 +168,7 @@ function toProfile(form: FormState, existing?: Profile): Profile {
     port: Number(form.port) || 5432,
     database: form.database.trim(),
     user: form.user.trim(),
+    ssl: sslConfig(form),
     ssh: form.useSsh
       ? {
           host: form.sshHost.trim(),
@@ -408,6 +440,66 @@ export function ConnectionDialog() {
                 <span className="text-zinc-400">from the SSH server</span> — e.g.{" "}
                 <code className="text-zinc-400">localhost:5432</code> for a DB
                 on the same box.
+              </p>
+            </div>
+          )}
+
+          {!form.useSsh && (
+            <label
+              className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer"
+              title="TLS for a direct connection. Not shown for SSH tunnels (the wire is already encrypted); ignored for localhost."
+            >
+              <input
+                type="checkbox"
+                checked={form.useSsl}
+                onChange={(e) => set({ useSsl: e.target.checked })}
+                className="accent-sky-600"
+              />
+              Encrypt with SSL / TLS
+            </label>
+          )}
+
+          {!form.useSsh && form.useSsl && (
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
+              <Field label="CA certificate (optional)">
+                <Input
+                  value={form.sslCaCert}
+                  onChange={(e) => set({ sslCaCert: e.target.value })}
+                  placeholder="~/certs/root-ca.pem — empty = system trust store"
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Client certificate (optional)">
+                  <Input
+                    value={form.sslClientCert}
+                    onChange={(e) => set({ sslClientCert: e.target.value })}
+                    placeholder="~/certs/client.pem"
+                  />
+                </Field>
+                <Field label="Client key (optional)">
+                  <Input
+                    value={form.sslClientKey}
+                    onChange={(e) => set({ sslClientKey: e.target.value })}
+                    placeholder="~/certs/client-key.pem"
+                  />
+                </Field>
+              </div>
+              <label
+                className="flex items-center gap-2 text-[12px] text-zinc-300 cursor-pointer"
+                title="Verify the server certificate chain and hostname (against the CA above or the system trust store). Off — encrypt only, any certificate accepted."
+              >
+                <input
+                  type="checkbox"
+                  checked={form.sslRejectUnauthorized}
+                  onChange={(e) => set({ sslRejectUnauthorized: e.target.checked })}
+                  className="accent-sky-600"
+                />
+                Verify server certificate
+              </label>
+              <p className="text-[11px] leading-relaxed text-zinc-500">
+                Certificate files are optional (PEM). Client certificate + key
+                are for mTLS setups only. For localhost the connection stays
+                plaintext.
               </p>
             </div>
           )}

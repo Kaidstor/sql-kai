@@ -21,4 +21,4 @@ pub use exec::{
 pub use export::{
     export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportOutcome,
 };
-pub use sqltext::{advance_tx, split_statements, TxStatus};
+pub use sqltext::{advance_tx, is_tx_control_only, split_statements, TxStatus};

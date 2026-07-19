@@ -18,6 +18,7 @@ fn test_profile() -> Profile {
         group: None,
         color: None,
         production: false,
+        ssl: None, // plaintext (and 127.0.0.1 is loopback anyway)
         has_password: false,
         has_ssh_passphrase: false,
         last_connected: None,
@@ -227,4 +228,70 @@ async fn connect_execute_paginate() {
         .await
         .expect("session usable right after failed batch");
     assert_eq!(intact.results[0].rows[0][0].as_deref(), Some("row 3"));
+}
+
+/// Verifies the PostgreSQL semantics the broker's read-only gate defends
+/// against: `default_transaction_read_only` applies only to a NEW transaction,
+/// so a read-write transaction left open by a `--write` call stays writable
+/// even after the default is flipped back on. That is exactly the hole the
+/// broker now closes by tracking the open transaction's access mode
+/// (`Session::tx_write`) and refusing read-only calls inside a read-write tx.
+#[tokio::test]
+#[ignore]
+async fn read_only_default_does_not_cover_open_transaction() {
+    let connected = db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
+    let client = connected.session.client.clone();
+
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS ro_probe; CREATE TABLE ro_probe (id int)",
+        10,
+    )
+    .await
+    .expect("setup");
+    db::execute(&client, "INSERT INTO ro_probe VALUES (1)", 10)
+        .await
+        .expect("seed");
+
+    // Broker baseline: session is read-only by default.
+    db::execute(&client, "SET default_transaction_read_only = on", 1)
+        .await
+        .expect("ro on");
+    // A --write call: flip the default off, open a tx, write, flip it back on —
+    // this is what leaves a read-write transaction open across broker calls.
+    db::execute(&client, "SET default_transaction_read_only = off", 1)
+        .await
+        .expect("ro off");
+    db::execute(&client, "BEGIN", 1).await.expect("begin");
+    db::execute(&client, "INSERT INTO ro_probe VALUES (2)", 10)
+        .await
+        .expect("write inside tx");
+    db::execute(&client, "SET default_transaction_read_only = on", 1)
+        .await
+        .expect("ro on again");
+
+    // The still-open transaction remains read-write despite the default: the
+    // exact condition the broker gate detects (before != Idle && tx_write).
+    let flag = db::execute(&client, "SHOW transaction_read_only", 1)
+        .await
+        .expect("show");
+    assert_eq!(
+        flag.results[0].rows[0][0].as_deref(),
+        Some("off"),
+        "leftover tx stays read-write even though default_transaction_read_only=on"
+    );
+    // Without the gate a plain (read-only) call would DELETE here — proving the
+    // guarantee needs the transaction-aware gate, not just the session default.
+    db::execute(&client, "DELETE FROM ro_probe WHERE id = 1", 10)
+        .await
+        .expect("delete slips through the leftover read-write tx");
+    db::execute(&client, "ROLLBACK", 1).await.expect("rollback");
 }

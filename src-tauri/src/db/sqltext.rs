@@ -199,7 +199,6 @@ pub fn advance_tx(cur: TxStatus, sql: &str, ok: bool) -> TxStatus {
         let (w0, w1) = head_keywords(&stmt);
         s = match w0.as_str() {
             "BEGIN" | "START" => TxStatus::Active,
-            "COMMIT" | "END" | "ABORT" => TxStatus::Idle,
             // ROLLBACK TO [SAVEPOINT] keeps the tx open (and un-aborts it);
             // plain ROLLBACK ends it
             "ROLLBACK" if w1 == "TO" => {
@@ -209,16 +208,82 @@ pub fn advance_tx(cur: TxStatus, sql: &str, ok: bool) -> TxStatus {
                     s
                 }
             }
-            "ROLLBACK" => TxStatus::Idle,
+            // `… AND CHAIN` ends the tx but instantly opens a new one with the
+            // same characteristics; outside a tx it's a warning-only no-op
+            "COMMIT" | "END" | "ABORT" | "ROLLBACK" => {
+                if s != TxStatus::Idle && chains_new_tx(&stmt) {
+                    TxStatus::Active
+                } else {
+                    TxStatus::Idle
+                }
+            }
             _ => s,
         };
     }
     s
 }
 
+/// True when every statement in `sql` is pure transaction control
+/// (`COMMIT`/`ROLLBACK`/`END`/`ABORT`) — the only thing a read-only caller is
+/// allowed to run to *close* a transaction that a previous `--write` call left
+/// open. Empty / comment-only input is false (nothing to run, nothing to
+/// permit). `ROLLBACK TO SAVEPOINT` is intentionally excluded: it keeps the
+/// (read-write) transaction open, so it must not slip past the read-only gate.
+/// So is `… AND CHAIN` (see [`chains_new_tx`]): it instantly opens a new
+/// transaction with the SAME (read-write) characteristics.
+pub fn is_tx_control_only(sql: &str) -> bool {
+    let stmts = split_statements(sql);
+    !stmts.is_empty()
+        && stmts.iter().all(|s| {
+            let (w0, w1) = head_keywords(s);
+            let closes = matches!(w0.as_str(), "COMMIT" | "END" | "ABORT")
+                || (w0 == "ROLLBACK" && w1 != "TO");
+            closes && !chains_new_tx(s)
+        })
+}
+
+/// True for `COMMIT/ROLLBACK/END/ABORT … AND CHAIN` (PG 12+): the statement
+/// ends the current transaction but immediately starts a new one with the same
+/// characteristics — including read-write mode, which is why the read-only gate
+/// must not treat it as a plain close. `AND NO CHAIN` is a plain close.
+fn chains_new_tx(stmt: &str) -> bool {
+    let words: Vec<String> = strip_leading_noise(stmt)
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_uppercase())
+        .collect();
+    words.windows(2).any(|w| w[0] == "AND" && w[1] == "CHAIN")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::split_statements;
+    use super::{is_tx_control_only, split_statements};
+
+    #[test]
+    fn tx_control_only_gate() {
+        // pure transaction-closing statements — allowed for a read-only caller
+        assert!(is_tx_control_only("COMMIT"));
+        assert!(is_tx_control_only("ROLLBACK"));
+        assert!(is_tx_control_only("  end  "));
+        assert!(is_tx_control_only("ABORT;"));
+        assert!(is_tx_control_only("-- done\nCOMMIT"));
+        assert!(is_tx_control_only("ROLLBACK; COMMIT"));
+        // anything that reads or writes — blocked
+        assert!(!is_tx_control_only("SELECT 1"));
+        assert!(!is_tx_control_only("DELETE FROM t"));
+        assert!(!is_tx_control_only("COMMIT; SELECT 1"));
+        // ROLLBACK TO keeps the (read-write) tx open — must not pass the gate
+        assert!(!is_tx_control_only("ROLLBACK TO SAVEPOINT sp"));
+        // AND CHAIN instantly opens a new tx with the same (read-write)
+        // characteristics — not a plain close, must not pass either
+        assert!(!is_tx_control_only("COMMIT AND CHAIN"));
+        assert!(!is_tx_control_only("ROLLBACK AND CHAIN"));
+        assert!(!is_tx_control_only("END WORK AND CHAIN"));
+        assert!(is_tx_control_only("COMMIT AND NO CHAIN"));
+        // nothing to run
+        assert!(!is_tx_control_only(""));
+        assert!(!is_tx_control_only("  -- just a comment"));
+    }
 
     #[test]
     fn splits_plain_statements() {
@@ -298,6 +363,14 @@ mod tests {
         assert_eq!(advance_tx(Failed, "SELECT 1", false), Failed);
         // ROLLBACK TO SAVEPOINT un-aborts but keeps the tx open
         assert_eq!(advance_tx(Failed, "ROLLBACK TO SAVEPOINT sp", true), Active);
+        // AND CHAIN: the old tx ends, a new one with the same characteristics
+        // opens immediately — the session never returns to idle
+        assert_eq!(advance_tx(Active, "COMMIT AND CHAIN", true), Active);
+        assert_eq!(advance_tx(Active, "ROLLBACK AND CHAIN", true), Active);
+        assert_eq!(advance_tx(Failed, "COMMIT WORK AND CHAIN", true), Active);
+        assert_eq!(advance_tx(Active, "COMMIT AND NO CHAIN", true), Idle);
+        // outside a tx AND CHAIN is a warning-only no-op — nothing opens
+        assert_eq!(advance_tx(Idle, "COMMIT AND CHAIN", true), Idle);
         // synonyms and a leading comment
         assert_eq!(advance_tx(Active, "END", true), Idle);
         assert_eq!(advance_tx(Idle, "START TRANSACTION", true), Active);

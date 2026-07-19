@@ -128,6 +128,7 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
             group: imp.group.filter(|g| !g.trim().is_empty()),
             color: imp.color.filter(|c| !c.trim().is_empty()),
             production: imp.production,
+            ssl: None,
             has_password: false,
             has_ssh_passphrase: false,
             last_connected: None,

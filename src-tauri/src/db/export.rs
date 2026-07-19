@@ -13,6 +13,7 @@ use serde::Serialize;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
 use crate::error::AppError;
+use crate::format::csv_field;
 
 /// Data rows fitting a sheet after the header (xlsx hard limit is 1_048_576).
 const XLSX_MAX_DATA_ROWS: u64 = 1_048_575;
@@ -294,16 +295,6 @@ impl Writer {
 
 fn xlsx_err(e: rust_xlsxwriter::XlsxError) -> AppError {
     AppError::Msg(format!("XLSX: {e}"))
-}
-
-/// RFC 4180 field, matching lib/export.ts: quote when the value contains a
-/// separator, quote or newline; NULL arrives here already as "".
-fn csv_field(v: &str) -> String {
-    if v.contains(['"', ',', '\n', '\r']) {
-        format!("\"{}\"", v.replace('"', "\"\""))
-    } else {
-        v.to_string()
-    }
 }
 
 /// JSON string literal (same escaping as JSON.stringify).

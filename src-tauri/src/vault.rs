@@ -57,7 +57,7 @@ impl Drop for Unlocked {
 
 static VAULT: Mutex<Option<Unlocked>> = Mutex::new(None);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct KdfParams {
     salt: String,
@@ -67,13 +67,13 @@ struct KdfParams {
 }
 
 /// AES-GCM ciphertext with its nonce, both base64.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Enc {
     nonce: String,
     ct: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct VaultFile {
     version: u32,
@@ -225,24 +225,29 @@ pub fn biometric_enrolled() -> bool {
 
 /// Puts a copy of the session DEK behind Touch ID. Vault must be unlocked.
 pub fn enable_biometric() -> Result<(), AppError> {
-    let mut guard = VAULT.lock().unwrap();
-    let v = guard
-        .as_mut()
-        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
-    biometric::store_dek(&v.dek).map_err(bio_err)?;
-    v.file.biometric = true;
-    write_file(&v.file)
+    // Copy the DEK into the biometric keychain (needs the unlocked vault).
+    {
+        let guard = VAULT.lock().unwrap();
+        let v = guard
+            .as_ref()
+            .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+        biometric::store_dek(&v.dek).map_err(bio_err)?;
+    }
+    // Flip the header flag under the config lock, preserving on-disk secrets.
+    mutate_vault(|file, _secrets| file.biometric = true)
 }
 
 /// Removes the Touch ID copy of the DEK; works locked or unlocked.
 pub fn disable_biometric() -> Result<(), AppError> {
     biometric::delete_dek();
-    let mut guard = VAULT.lock().unwrap();
-    if let Some(v) = guard.as_mut() {
-        v.file.biometric = false;
-        return write_file(&v.file);
+    // Unlocked: clear the flag via mutate_vault (config lock; preserves any
+    // secrets a concurrent writer added since we unlocked).
+    if is_unlocked() {
+        return mutate_vault(|file, _secrets| file.biometric = false);
     }
-    drop(guard);
+    // Locked: no DEK to re-encrypt with, so only flip the header bit — still
+    // under the config lock so it can't clobber a concurrent secret write.
+    let _lock = crate::fsio::lock_config()?;
     if let Ok(mut f) = read_file() {
         f.biometric = false;
         write_file(&f)?;
@@ -368,31 +373,52 @@ pub fn has_secret(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Persist the current in-memory secrets map, re-encrypting under the DEK;
-/// the header (kdf, pw_wrap, flags) is kept in memory, no disk re-read.
-fn persist(v: &mut Unlocked) -> Result<(), AppError> {
-    v.file.secrets = encrypt(&v.dek, &serde_json::to_vec(&v.secrets).unwrap())?;
-    write_file(&v.file)
+/// Applies `edit` to the *freshest on-disk* vault (header + decrypted secrets),
+/// re-encrypts and writes — all under the cross-process config lock, so a
+/// concurrent GUI/CLI writer can't clobber the file (the whole map was rewritten
+/// on every change, so a stale in-memory snapshot would drop the other side's
+/// secrets). Refreshes the in-memory session to match. Falls back to the
+/// in-memory state only if the on-disk file can't be read or decrypted (e.g. a
+/// concurrent master-password rotation changed the DEK).
+///
+/// Lock order: config lock first (it may already be held reentrantly by a store
+/// mutation calling us), then the vault mutex — never the reverse.
+fn mutate_vault(
+    edit: impl FnOnce(&mut VaultFile, &mut BTreeMap<String, String>),
+) -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
+    let mut guard = VAULT.lock().unwrap();
+    let v = guard
+        .as_mut()
+        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+    let (mut file, mut secrets) = match read_file() {
+        Ok(f) => match decrypt(&v.dek, &f.secrets) {
+            Ok(plain) => (
+                f,
+                serde_json::from_slice(&plain).unwrap_or_else(|_| v.secrets.clone()),
+            ),
+            Err(_) => (v.file.clone(), v.secrets.clone()),
+        },
+        Err(_) => (v.file.clone(), v.secrets.clone()),
+    };
+    edit(&mut file, &mut secrets);
+    file.secrets = encrypt(&v.dek, &serde_json::to_vec(&secrets).unwrap())?;
+    write_file(&file)?;
+    v.secrets = secrets;
+    v.file = file;
+    Ok(())
 }
 
 pub fn set_secret(key: &str, value: &str) -> Result<(), AppError> {
-    let mut guard = VAULT.lock().unwrap();
-    let v = guard
-        .as_mut()
-        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
-    v.secrets.insert(key.to_string(), value.to_string());
-    persist(v)
+    mutate_vault(|_file, secrets| {
+        secrets.insert(key.to_string(), value.to_string());
+    })
 }
 
 pub fn remove_secret(key: &str) -> Result<(), AppError> {
-    let mut guard = VAULT.lock().unwrap();
-    let v = guard
-        .as_mut()
-        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
-    if v.secrets.remove(key).is_some() {
-        persist(v)?;
-    }
-    Ok(())
+    mutate_vault(|_file, secrets| {
+        secrets.remove(key);
+    })
 }
 
 #[cfg(test)]

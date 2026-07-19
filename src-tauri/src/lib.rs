@@ -4,6 +4,7 @@ pub mod broker;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod format;
 pub mod fsio;
 pub mod logging;
 pub mod store;

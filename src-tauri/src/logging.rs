@@ -7,7 +7,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AppError;
@@ -19,6 +19,8 @@ const MAX_LEN: u64 = 1024 * 1024;
 
 /// Serializes writers (ssh stderr threads, async tasks, commands).
 static LOCK: Mutex<()> = Mutex::new(());
+/// One-shot migration of a pre-existing world/group-readable log to 0600.
+static TIGHTEN: Once = Once::new();
 
 pub fn log_path() -> Result<PathBuf, AppError> {
     config_path(LOG_FILE)
@@ -28,6 +30,18 @@ pub fn log_path() -> Result<PathBuf, AppError> {
 pub fn log(scope: &str, message: &str) {
     let Ok(path) = log_path() else { return };
     let _guard = LOCK.lock();
+    // The diagnostics log can hold ssh stderr / connection strings — keep it
+    // owner-only. New files are created 0600 below; tighten an existing broader
+    // one once per process.
+    #[cfg(unix)]
+    TIGHTEN.call_once(|| {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    });
     if let Ok(meta) = std::fs::metadata(&path) {
         if meta.len() > MAX_LEN {
             let _ = std::fs::rename(&path, path.with_extension("log.old"));
@@ -42,7 +56,14 @@ pub fn log(scope: &str, message: &str) {
         format_utc(secs),
         message.trim_end()
     );
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&path) {
         let _ = f.write_all(line.as_bytes());
     }
 }

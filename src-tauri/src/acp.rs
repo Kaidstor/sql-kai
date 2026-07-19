@@ -150,16 +150,12 @@ pub async fn acp_spawn(
     // stdout) → зачистить и сообщить код выхода.
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let _ = app.emit(
-                        "acp://msg",
-                        AcpLineEvent { agent_id: &agent_id, line: &line },
-                    );
-                }
-                Ok(None) | Err(_) => break,
-            }
+        // Ok(None) = EOF, Err = read error — both end the stream.
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = app.emit(
+                "acp://msg",
+                AcpLineEvent { agent_id: &agent_id, line: &line },
+            );
         }
         // дать процессу дожать выход, чтобы забрать код (127 = не найден)
         let mut code = None;

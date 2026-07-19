@@ -8,6 +8,20 @@ export interface SshConfig {
   keepaliveInterval?: number | null;
 }
 
+/** TLS settings for a direct (non-tunnel) connection. Absent or
+ *  `enabled: false` = plaintext (the default). */
+export interface SslConfig {
+  enabled: boolean;
+  /** PEM file with a CA to trust (self-signed / internal CA / RDS);
+   *  empty = system trust store. */
+  caCert?: string | null;
+  /** PEM client certificate + private key (mTLS) — both or neither. */
+  clientCert?: string | null;
+  clientKey?: string | null;
+  /** Verify the server certificate (chain + hostname); off = encrypt only. */
+  rejectUnauthorized: boolean;
+}
+
 export interface Profile {
   id: string;
   name: string;
@@ -16,6 +30,9 @@ export interface Profile {
   database: string;
   user: string;
   ssh?: SshConfig | null;
+  /** TLS settings for direct (non-tunnel) connections; see SslConfig.
+   *  Ignored over an SSH tunnel or to a loopback host. */
+  ssl?: SslConfig | null;
   /** Profiles sharing a group (e.g. prod/test of one service) share saved queries. */
   group?: string | null;
   /** Accent color name for telling connections apart (see lib/colors.ts). */
