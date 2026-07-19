@@ -30,6 +30,28 @@ import { initUpdater, useUpdater } from "./lib/updater";
 // ⌘K chord window: a ⌘W within this many ms closes ALL tabs.
 const CHORD_MS = 5000;
 
+type Store = ReturnType<typeof useApp.getState>;
+
+/** One app-wide key binding. Order in the table is match priority. */
+interface Hotkey {
+  /** Human-readable combo — documentation and grep anchor, not used at runtime. */
+  combo: string;
+  match: (e: KeyboardEvent) => boolean;
+  /** Returns false to pass the event through (no preventDefault) — for
+   *  bindings that only claim the key under a condition (e.g. Ctrl+C only
+   *  cancels while a query is running, so copy stays intact elsewhere). */
+  run: (s: Store, e: KeyboardEvent) => boolean | void;
+}
+
+const mod = (e: KeyboardEvent) => e.metaKey || e.ctrlKey;
+const ctrlOnly = (e: KeyboardEvent) => e.ctrlKey && !e.metaKey && !e.altKey;
+
+/** "All tabs" = the visible ones, i.e. the active connection's. */
+const closeAllVisibleTabs = (s: Store) =>
+  s.closeTabs(
+    s.tabs.filter((t) => t.profileId === s.activeProfileId).map((t) => t.id),
+  );
+
 function App() {
   const init = useApp((s) => s.init);
   const tabs = useApp((s) => s.tabs);
@@ -85,137 +107,189 @@ function App() {
     });
   }, [activeProfileId, profiles, sessions]);
 
-  // App-wide hotkeys: Ctrl+1..9 switch active connections, ⌘`/⌘~ cycle them,
-  // Ctrl+Tab and ⌘⇧]/⌘⇧[ cycle tabs, ⌘⌥O connection palette, ⌘P saved-queries
-  // palette, ⌘S save query, ⌘R refresh table/structure view, ⌘W/⌘⇧T close/reopen
-  // tab. Grid/editor hotkeys stay local.
+  // App-wide hotkeys — a declarative table, first match wins. Grid/editor
+  // hotkeys stay local to their components.
   useEffect(() => {
-    // On mac ⌘W/⌘⇧T arrive as native menu events (see lib.rs) — the menu
-    // accelerator consumes the keypress before the webview sees it.
+    // On mac ⌘W/⌘⇧T/⌘N arrive as native menu events (see lib.rs) — the menu
+    // accelerator consumes the keypress before the webview sees it; the
+    // trailing Ctrl+… bindings are the JS fallback for other platforms.
+    const hotkeys: Hotkey[] = [
+      {
+        combo: "Ctrl+1…9",
+        match: (e) => ctrlOnly(e) && /^[1-9]$/.test(e.key),
+        run: (s, e) => {
+          const target =
+            connectedProfiles(s.profiles, s.sessions)[Number(e.key) - 1];
+          if (!target) return false;
+          s.selectProfile(target.id);
+        },
+      },
+      {
+        // Terminal-style cancel of the active tab's running query. Only
+        // claimed while one is actually running, so copy stays intact on
+        // platforms where Ctrl+C is the copy shortcut.
+        combo: "Ctrl+C",
+        match: (e) => ctrlOnly(e) && !e.shiftKey && e.key.toLowerCase() === "c",
+        run: (s) => {
+          const tab = s.tabs.find((t) => t.id === s.activeTabId);
+          if (tab?.state.kind !== "query" || !tab.state.running) return false;
+          void s.cancelQuery(tab.id);
+        },
+      },
+      {
+        // Cycle through this connection's tabs like a browser (⇧ = back).
+        combo: "Ctrl+Tab / Ctrl+⇧Tab",
+        match: (e) => ctrlOnly(e) && e.key === "Tab",
+        run: (s, e) => s.cycleTab(e.shiftKey ? -1 : 1),
+      },
+      {
+        // Next / previous tab (browser-style, works from anywhere).
+        combo: "⌘⇧] / ⌘⇧[",
+        match: (e) =>
+          mod(e) &&
+          e.shiftKey &&
+          !e.altKey &&
+          (e.code === "BracketRight" || e.code === "BracketLeft"),
+        run: (s, e) => s.cycleTab(e.code === "BracketRight" ? 1 : -1),
+      },
+      {
+        // Next / previous connection — macOS window-cycle convention.
+        combo: "⌘` / ⌘~",
+        match: (e) => mod(e) && !e.altKey && e.code === "Backquote",
+        run: (s, e) => s.cycleProfile(e.shiftKey ? -1 : 1),
+      },
+      {
+        // e.code, not e.key — Option+O types "ø" on mac.
+        combo: "⌘⌥O",
+        match: (e) => mod(e) && e.altKey && e.code === "KeyO",
+        run: (s) =>
+          s.setPalette(s.palette === "connections" ? null : "connections"),
+      },
+      {
+        combo: "⌘P",
+        match: (e) => mod(e) && !e.altKey && e.key.toLowerCase() === "p",
+        run: (s) => s.setPalette(s.palette === "queries" ? null : "queries"),
+      },
+      {
+        // Symbols palette (tables / columns / functions) — needs a live session.
+        combo: "⌘T",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "t",
+        run: (s) => {
+          if (!s.activeProfileId || !s.sessions[s.activeProfileId]) return false;
+          s.setPalette(s.palette === "symbols" ? null : "symbols");
+        },
+      },
+      {
+        // On mac the menu accelerator normally consumes this first.
+        combo: "⌘,",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && e.key === ",",
+        run: (s) => s.setSettingsOpen(!s.settingsOpen),
+      },
+      {
+        // ⌘? (= ⌘⇧/) and plain ⌘/ both open the shortcuts cheat-sheet;
+        // defaultPrevented = the SQL editor already used ⌘/ as toggle-comment.
+        combo: "⌘? / ⌘/",
+        match: (e) =>
+          mod(e) &&
+          !e.altKey &&
+          (e.key === "?" || (e.key === "/" && !e.defaultPrevented)),
+        run: () => setShowShortcuts((v) => !v),
+      },
+      {
+        combo: "⌘B — toggle sidebar",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b",
+        run: (s) => s.toggleSidebar(),
+      },
+      {
+        combo: "⌘J — toggle agent panel",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "j",
+        run: (s) => s.toggleAgentPanel(),
+      },
+      {
+        // Chord leader: ⌘K then ⌘W closes all tabs.
+        combo: "⌘K",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k",
+        run: (s) => {
+          chordAt.current = Date.now();
+          s.showToast(
+            isMac
+              ? "⌘K — press ⌘W to close all tabs"
+              : "Ctrl+K — press Ctrl+W to close all tabs",
+            "info",
+          );
+        },
+      },
+      {
+        // Query tab saves, structure tab applies staged DDL (table grids
+        // handle their own ⌘S apply).
+        combo: "⌘S",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s",
+        run: (s) => {
+          const tab = s.tabs.find((t) => t.id === s.activeTabId);
+          if (tab?.state.kind === "query") void s.saveQueryTab(tab.id);
+          else if (tab?.state.kind === "structure")
+            void s.applyStructureEdits(tab.id);
+          else return false;
+        },
+      },
+      {
+        // Refresh the active table page / structure / activity view (also
+        // keeps the webview from reloading itself on Windows/Linux).
+        combo: "⌘R",
+        match: (e) =>
+          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "r",
+        run: (s) => {
+          const tab = s.tabs.find((t) => t.id === s.activeTabId);
+          if (tab?.state.kind === "table") void s.refreshTablePage(tab.id);
+          else if (tab?.state.kind === "structure")
+            void s.refreshStructure(tab.id);
+          else if (tab?.state.kind === "activity")
+            void s.refreshActivity(tab.id);
+          else return false;
+        },
+      },
+      {
+        combo: "Ctrl+W (non-mac)",
+        match: (e) =>
+          !isMac && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "w",
+        run: (s) => {
+          if (chordFired()) closeAllVisibleTabs(s);
+          else s.closeActiveTab();
+        },
+      },
+      {
+        combo: "Ctrl+⇧T (non-mac)",
+        match: (e) =>
+          !isMac &&
+          e.ctrlKey &&
+          !e.altKey &&
+          e.shiftKey &&
+          e.key.toLowerCase() === "t",
+        run: (s) => s.reopenClosedTab(),
+      },
+      {
+        combo: "Ctrl+N (non-mac)",
+        match: (e) =>
+          !isMac &&
+          e.ctrlKey &&
+          !e.altKey &&
+          !e.shiftKey &&
+          e.key.toLowerCase() === "n",
+        run: (s) => s.newQueryTab(),
+      },
+    ];
+
     const handleKey = (e: KeyboardEvent) => {
       const s = useApp.getState();
-      const mod = e.metaKey || e.ctrlKey;
-      const key = e.key.toLowerCase();
-
-      if (e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-        const target = connectedProfiles(s.profiles, s.sessions)[Number(e.key) - 1];
-        if (!target) return;
-        e.preventDefault();
-        s.selectProfile(target.id);
-      } else if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && key === "c") {
-        // Ctrl+C (terminal-style) — cancel the active tab's running query.
-        // Only claimed while one is actually running, so copy stays intact
-        // on platforms where Ctrl+C is the copy shortcut.
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        if (tab?.state.kind === "query" && tab.state.running) {
-          e.preventDefault();
-          void s.cancelQuery(tab.id);
-        }
-      } else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") {
-        // Ctrl+Tab / Ctrl+⇧Tab — cycle through this connection's tabs like a browser
-        e.preventDefault();
-        s.cycleTab(e.shiftKey ? -1 : 1);
-      } else if (
-        mod &&
-        e.shiftKey &&
-        !e.altKey &&
-        (e.code === "BracketRight" || e.code === "BracketLeft")
-      ) {
-        // ⌘⇧] / ⌘⇧[ — next / previous tab (browser-style, works from anywhere)
-        e.preventDefault();
-        s.cycleTab(e.code === "BracketRight" ? 1 : -1);
-      } else if (mod && !e.altKey && e.code === "Backquote") {
-        // ⌘` next connection, ⌘~ (⌘⇧`) previous — macOS window-cycle convention
-        e.preventDefault();
-        s.cycleProfile(e.shiftKey ? -1 : 1);
-      } else if (mod && e.altKey && e.code === "KeyO") {
-        // e.code, not e.key — Option+O types "ø" on mac
-        e.preventDefault();
-        s.setPalette(s.palette === "connections" ? null : "connections");
-      } else if (mod && !e.altKey && key === "p") {
-        e.preventDefault();
-        s.setPalette(s.palette === "queries" ? null : "queries");
-      } else if (mod && !e.altKey && !e.shiftKey && key === "t") {
-        // ⌘T — symbols palette (tables / columns / functions)
-        if (s.activeProfileId && s.sessions[s.activeProfileId]) {
-          e.preventDefault();
-          s.setPalette(s.palette === "symbols" ? null : "symbols");
-        }
-      } else if (mod && !e.altKey && !e.shiftKey && key === ",") {
-        // ⌘, — on mac the menu accelerator normally consumes this first
-        e.preventDefault();
-        s.setSettingsOpen(!s.settingsOpen);
-      } else if (
-        mod &&
-        !e.altKey &&
-        // ⌘? (= ⌘⇧/) and plain ⌘/ both open the shortcuts cheat-sheet;
-        // defaultPrevented = the SQL editor already used ⌘/ as toggle-comment
-        (e.key === "?" || (e.key === "/" && !e.defaultPrevented))
-      ) {
-        e.preventDefault();
-        setShowShortcuts((v) => !v);
-      } else if (mod && !e.altKey && !e.shiftKey && key === "b") {
-        // ⌘B — toggle the sidebar
-        e.preventDefault();
-        s.toggleSidebar();
-      } else if (mod && !e.altKey && !e.shiftKey && key === "j") {
-        // ⌘J — toggle the AI agent panel
-        e.preventDefault();
-        s.toggleAgentPanel();
-      } else if (mod && !e.altKey && !e.shiftKey && key === "k") {
-        // chord leader: ⌘K then ⌘W closes all tabs
-        e.preventDefault();
-        chordAt.current = Date.now();
-        s.showToast(
-          isMac
-            ? "⌘K — press ⌘W to close all tabs"
-            : "Ctrl+K — press Ctrl+W to close all tabs",
-          "info",
-        );
-      } else if (mod && !e.altKey && !e.shiftKey && key === "s") {
-        // ⌘S: query tab saves, structure tab applies staged DDL
-        // (table grids handle their own ⌘S apply)
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        if (tab?.state.kind === "query") {
-          e.preventDefault();
-          void s.saveQueryTab(tab.id);
-        } else if (tab?.state.kind === "structure") {
-          e.preventDefault();
-          void s.applyStructureEdits(tab.id);
-        }
-      } else if (mod && !e.altKey && !e.shiftKey && key === "r") {
-        // ⌘R: refresh the active table page / structure view (also keeps
-        // the webview from reloading itself on Windows/Linux)
-        const tab = s.tabs.find((t) => t.id === s.activeTabId);
-        if (tab?.state.kind === "table") {
-          e.preventDefault();
-          void s.refreshTablePage(tab.id);
-        } else if (tab?.state.kind === "structure") {
-          e.preventDefault();
-          void s.refreshStructure(tab.id);
-        } else if (tab?.state.kind === "activity") {
-          e.preventDefault();
-          void s.refreshActivity(tab.id);
-        }
-      } else if (!isMac && e.ctrlKey && !e.altKey) {
-        // JS fallback for the shortcuts the mac menu owns
-        if (key === "w") {
-          e.preventDefault();
-          if (chordFired()) {
-            // "all tabs" = the visible ones, i.e. the active connection's
-            s.closeTabs(
-              s.tabs
-                .filter((t) => t.profileId === s.activeProfileId)
-                .map((t) => t.id),
-            );
-          } else s.closeActiveTab();
-        } else if (key === "t" && e.shiftKey) {
-          e.preventDefault();
-          s.reopenClosedTab();
-        } else if (key === "n" && !e.shiftKey) {
-          e.preventDefault();
-          s.newQueryTab();
-        }
+      for (const hotkey of hotkeys) {
+        if (!hotkey.match(e)) continue;
+        if (hotkey.run(s, e) !== false) e.preventDefault();
+        return;
       }
     };
     window.addEventListener("keydown", handleKey);
@@ -228,15 +302,9 @@ function App() {
       listen("menu://new-query-tab", () => useApp.getState().newQueryTab()),
       listen("menu://close-tab", () => {
         const s = useApp.getState();
-        // the ⌘K chord's second key arrives as this menu event on mac;
-        // "all tabs" = the visible ones, i.e. the active connection's
-        if (chordFired()) {
-          s.closeTabs(
-            s.tabs
-              .filter((t) => t.profileId === s.activeProfileId)
-              .map((t) => t.id),
-          );
-        } else s.closeActiveTab();
+        // the ⌘K chord's second key arrives as this menu event on mac
+        if (chordFired()) closeAllVisibleTabs(s);
+        else s.closeActiveTab();
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
       listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
