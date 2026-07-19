@@ -109,27 +109,37 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
         (host, port, tunnel)
     };
 
+    let ssl_enabled = profile.ssl.as_ref().is_some_and(|s| s.enabled);
     let mut cfg = tokio_postgres::Config::new();
-    cfg.host(&host)
-        .port(port)
+    cfg.port(port)
         .user(&profile.user)
         .dbname(&profile.database)
         .application_name("sql-kai")
         .connect_timeout(Duration::from_secs(10));
+    // Dialing a local forward (ssh tunnel / isolated reuse of one) with TLS on:
+    // TCP must go to the forward, but certificate verification must run against
+    // the real server name, not 127.0.0.1 — split them libpq-style: `host`
+    // carries the name (SNI + verification), `hostaddr` the address to dial.
+    let tls_via_forward = ssl_enabled && host != profile.host;
+    match host.parse::<std::net::IpAddr>() {
+        Ok(addr) if tls_via_forward => {
+            cfg.host(&profile.host);
+            cfg.hostaddr(addr);
+        }
+        _ => {
+            cfg.host(&host);
+        }
+    }
     let password = opts.password_override.or_else(|| store::get_password(profile));
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
         cfg.password(&pw);
     }
 
-    // TLS only when the profile explicitly enables it (default — plaintext),
-    // and only for a *direct* connection to a remote host. Through an ssh
-    // tunnel (or to loopback) the host is 127.0.0.1 — the wire is already
-    // local/secured and a server cert wouldn't match 127.0.0.1 anyway, so we
-    // stay on plaintext there.
-    let ssl = profile
-        .ssl
-        .as_ref()
-        .filter(|s| s.enabled && !is_loopback(&host));
+    // TLS is explicit opt-in (default — plaintext). It applies to direct
+    // connections and through an ssh tunnel alike: with a bastion the
+    // bastion→DB leg is outside the ssh encryption, and a server may simply
+    // demand TLS regardless of the route (rds.force_ssl, hostssl in pg_hba).
+    let ssl = profile.ssl.as_ref().filter(|s| s.enabled);
 
     if let Some(ssl) = ssl {
         // Require: the server not offering TLS is a failure, never a silent
@@ -196,16 +206,6 @@ fn ssl_path(v: &Option<String>) -> Option<String> {
 
 fn read_pem(path: &str, what: &str) -> Result<Vec<u8>, AppError> {
     std::fs::read(path).map_err(|e| AppError::Msg(format!("{what} {path}: {e}")))
-}
-
-/// Loopback host (localhost / 127.0.0.0/8 / ::1) — TLS adds nothing over a
-/// local socket, and a server cert can't match a tunnel's 127.0.0.1 endpoint.
-fn is_loopback(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
 }
 
 fn log_connect_fail(profile: &Profile, host: &str, port: u16, e: &tokio_postgres::Error) {

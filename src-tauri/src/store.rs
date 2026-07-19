@@ -23,11 +23,13 @@ pub struct SshConfig {
     pub keepalive_interval: Option<u32>,
 }
 
-/// TLS settings for a *direct* connection (no SSH tunnel). Absent or
-/// `enabled: false` — plaintext (the default). Ignored when the connection
-/// goes through an SSH tunnel or targets a loopback host — there the transport
-/// is already local/secured, so [`db::connect`](crate::db::connect) stays on
-/// plaintext.
+/// TLS settings for the PostgreSQL wire. Absent or `enabled: false` —
+/// plaintext (the default). Applies to direct connections and through an SSH
+/// tunnel alike: with a bastion the bastion→DB leg is outside the ssh
+/// encryption, and a server may demand TLS regardless of the route
+/// (`rds.force_ssl`, `hostssl`). Over a tunnel the certificate is verified
+/// against the profile's host name, not the tunnel's 127.0.0.1 (see
+/// [`db::connect`](crate::db::connect)).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SslConfig {
@@ -70,8 +72,8 @@ pub struct Profile {
     /// Production database: the UI asks before running data-modifying SQL.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub production: bool,
-    /// TLS settings for direct (non-tunnel) connections; see [`SslConfig`].
-    /// None — plaintext.
+    /// TLS settings for the DB wire (direct or through the tunnel); see
+    /// [`SslConfig`]. None — plaintext.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssl: Option<SslConfig>,
     /// Whether a DB password is stored in the vault for this profile. Cached

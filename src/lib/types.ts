@@ -8,7 +8,8 @@ export interface SshConfig {
   keepaliveInterval?: number | null;
 }
 
-/** TLS settings for a direct (non-tunnel) connection. Absent or
+/** TLS settings for the PostgreSQL wire (direct or through the SSH tunnel —
+ *  the bastion→DB leg is outside the ssh encryption). Absent or
  *  `enabled: false` = plaintext (the default). */
 export interface SslConfig {
   enabled: boolean;
@@ -30,8 +31,8 @@ export interface Profile {
   database: string;
   user: string;
   ssh?: SshConfig | null;
-  /** TLS settings for direct (non-tunnel) connections; see SslConfig.
-   *  Ignored over an SSH tunnel or to a loopback host. */
+  /** TLS settings for the DB wire (direct or through the tunnel); see
+   *  SslConfig. */
   ssl?: SslConfig | null;
   /** Profiles sharing a group (e.g. prod/test of one service) share saved queries. */
   group?: string | null;
