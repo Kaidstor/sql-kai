@@ -89,7 +89,9 @@ export function ShortcutSections({ className }: { className?: string }) {
           <div className="flex flex-col gap-1.5">
             {s.items.map((it) => (
               <div
-                key={it.label}
+                // label alone is not unique ("Next / previous tab" is listed
+                // for two different key combos)
+                key={`${it.keys.join("+")} ${it.label}`}
                 className="flex items-center justify-between gap-4 text-[12px] text-zinc-500"
               >
                 <span className="truncate">{it.label}</span>
