@@ -103,10 +103,13 @@ export function createStructureSlice(
       if (!session) return false;
       if (!(await ctx.confirmProdRun(tab.profileId, sql))) return false;
       const { schema, table } = tab.state;
-      try {
-        await api.executeSql(session.sessionId, sql, 10);
-      } catch (e) {
-        get().showToast(ctx.handleSqlError(tab.profileId, e));
+      const message = await ctx.executeStatements(
+        tab.profileId,
+        session.sessionId,
+        [sql],
+      );
+      if (message) {
+        get().showToast(message);
         return false;
       }
       // sidebar column cache is stale now
@@ -181,14 +184,15 @@ export function createStructureSlice(
       if (!session) return;
       if (!(await ctx.confirmProdRun(tab.profileId, stmts.join(";\n")))) return;
       patchTab<StructureTabState>(tabId, { loading: true });
-      // One simple-query message = one implicit transaction: atomic, and an
-      // error auto-rolls-back without leaving the session in an aborted tx.
-      try {
-        await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
-      } catch (e) {
+      const message = await ctx.executeStatements(
+        tab.profileId,
+        session.sessionId,
+        stmts,
+      );
+      if (message) {
         patchTab<StructureTabState>(tabId, { loading: false });
         // rolled back, edits stay staged
-        get().showToast(ctx.handleSqlError(tab.profileId, e));
+        get().showToast(message);
         return;
       }
       // clear staged + drop the stale sidebar column cache before reloading

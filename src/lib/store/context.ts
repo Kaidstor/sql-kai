@@ -30,6 +30,15 @@ export interface StoreContext {
    *  mark the profile's session lost if the connection dropped, and return the
    *  message for the caller to surface (a tab error or a toast). */
   handleSqlError: (profileId: string, e: unknown) => string;
+  /** Shared Apply tail: runs the staged statements as ONE simple-query
+   *  message — one implicit transaction, atomic, and an error auto-rolls-back
+   *  without leaving the session in an aborted tx. Returns null on success,
+   *  else the user-facing message (session-lost bookkeeping already done). */
+  executeStatements: (
+    profileId: string,
+    sessionId: string,
+    stmts: readonly string[],
+  ) => Promise<string | null>;
   /** Production write-guard: true = go ahead (not production, nothing
    *  data-modifying in the SQL, or the user confirmed). */
   confirmProdRun: (profileId: string, sql: string) => Promise<boolean>;
@@ -83,6 +92,16 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
     handleSqlError: (profileId, e) => {
       noteSessionLost(profileId, e);
       return errText(e);
+    },
+
+    executeStatements: async (profileId, sessionId, stmts) => {
+      try {
+        await api.executeSql(sessionId, stmts.join(";\n"), 10);
+        return null;
+      } catch (e) {
+        noteSessionLost(profileId, e);
+        return errText(e);
+      }
     },
 
     confirmProdRun: async (profileId, sql) => {

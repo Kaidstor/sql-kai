@@ -232,12 +232,12 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
         applyFailed: false,
         applyError: undefined,
       });
-      // One simple-query message = one implicit transaction: atomic, and an
-      // error auto-rolls-back without leaving the session in an aborted tx.
-      try {
-        await api.executeSql(session.sessionId, stmts.join(";\n"), 10);
-      } catch (e) {
-        const message = ctx.handleSqlError(tab.profileId, e);
+      const message = await ctx.executeStatements(
+        tab.profileId,
+        session.sessionId,
+        stmts,
+      );
+      if (message) {
         patchTab<TableTabState>(tabId, {
           loading: false,
           // the whole tx rolled back — every staged cell is unsaved
