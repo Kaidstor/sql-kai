@@ -1,5 +1,5 @@
 import { Loader2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, errText } from "../lib/api";
 import { ACCENTS, accentColor } from "../lib/colors";
 import { useApp } from "../lib/store";
@@ -89,6 +89,23 @@ function fromProfile(p: Profile): FormState {
 
 /** Secret argument for save/test: null = keep saved, "" = forget, else replace. */
 const secretArg = (value: string, clear: boolean) => value || (clear ? "" : null);
+
+/** Smooth expand/collapse for a form section (grid-rows 0fr↔1fr). Children
+ *  stay mounted (form state survives toggling); `inert` keeps the collapsed
+ *  content out of Tab order and the a11y tree. */
+function Collapse({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <div
+      inert={!open}
+      className={cn(
+        "grid transition-[grid-template-rows] duration-300 ease-in-out",
+        open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+      )}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
 
 /** Password input that can also stage forgetting the stored secret: while
  *  empty and a secret is saved, an ✕ appears that stages the removal. */
@@ -366,88 +383,91 @@ export function ConnectionDialog() {
             {form.production && <ProdBadge />}
           </label>
 
-          <label className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={form.useSsh}
-              onChange={(e) => set({ useSsh: e.target.checked })}
-              className="accent-sky-600"
-            />
-            Connect through SSH tunnel
-          </label>
+          <div>
+            <label className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.useSsh}
+                onChange={(e) => set({ useSsh: e.target.checked })}
+                className="accent-sky-600"
+              />
+              Connect through SSH tunnel
+            </label>
+            <Collapse open={form.useSsh}>
+              <div className="pt-3">
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="SSH host / alias" className="col-span-2">
+                      <Input
+                        value={form.sshHost}
+                        onChange={(e) => set({ sshHost: e.target.value })}
+                        placeholder="my-server (from ~/.ssh/config) or 1.2.3.4"
+                      />
+                    </Field>
+                    <Field label="SSH port">
+                      <Input
+                        value={form.sshPort}
+                        onChange={(e) => set({ sshPort: e.target.value })}
+                        placeholder="22"
+                      />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="SSH user (optional)">
+                      <Input
+                        value={form.sshUser}
+                        onChange={(e) => set({ sshUser: e.target.value })}
+                        placeholder="from ssh config"
+                      />
+                    </Field>
+                    <Field label="Key passphrase (optional)">
+                      <SecretInput
+                        value={form.sshPassphrase}
+                        hasSaved={Boolean(editing?.hasSshPassphrase)}
+                        cleared={form.clearSshPassphrase}
+                        emptyPlaceholder="if the key is encrypted"
+                        clearTitle="Forget saved passphrase"
+                        onChange={(sshPassphrase) => set({ sshPassphrase })}
+                        onClear={() => set({ clearSshPassphrase: true })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <Field label="Identity file (optional)" className="col-span-2">
+                      <Input
+                        value={form.sshKeyPath}
+                        onChange={(e) => set({ sshKeyPath: e.target.value })}
+                        placeholder="~/.ssh/id_ed25519"
+                      />
+                    </Field>
+                    <Field label="Keepalive, sec">
+                      <Input
+                        type="number"
+                        min={0}
+                        value={form.sshKeepalive}
+                        onChange={(e) => set({ sshKeepalive: e.target.value })}
+                        placeholder="5"
+                        title="Ping the server after this many seconds when idle (ServerAliveInterval) — keeps the tunnel through NAT/firewalls and detects a dead link after 3 missed pings. Empty = 5, 0 = off."
+                      />
+                    </Field>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-zinc-500">
+                    Auth uses your keys / ssh-agent / ~/.ssh/config (incl.
+                    ProxyJump); the passphrase is stored in the keychain. DB host
+                    above is resolved{" "}
+                    <span className="text-zinc-400">from the SSH server</span> — e.g.{" "}
+                    <code className="text-zinc-400">localhost:5432</code> for a DB
+                    on the same box.
+                  </p>
+                </div>
+              </div>
+            </Collapse>
+          </div>
 
-          {form.useSsh && (
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
-              <div className="grid grid-cols-3 gap-3">
-                <Field label="SSH host / alias" className="col-span-2">
-                  <Input
-                    value={form.sshHost}
-                    onChange={(e) => set({ sshHost: e.target.value })}
-                    placeholder="my-server (from ~/.ssh/config) or 1.2.3.4"
-                  />
-                </Field>
-                <Field label="SSH port">
-                  <Input
-                    value={form.sshPort}
-                    onChange={(e) => set({ sshPort: e.target.value })}
-                    placeholder="22"
-                  />
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="SSH user (optional)">
-                  <Input
-                    value={form.sshUser}
-                    onChange={(e) => set({ sshUser: e.target.value })}
-                    placeholder="from ssh config"
-                  />
-                </Field>
-                <Field label="Key passphrase (optional)">
-                  <SecretInput
-                    value={form.sshPassphrase}
-                    hasSaved={Boolean(editing?.hasSshPassphrase)}
-                    cleared={form.clearSshPassphrase}
-                    emptyPlaceholder="if the key is encrypted"
-                    clearTitle="Forget saved passphrase"
-                    onChange={(sshPassphrase) => set({ sshPassphrase })}
-                    onClear={() => set({ clearSshPassphrase: true })}
-                  />
-                </Field>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <Field label="Identity file (optional)" className="col-span-2">
-                  <Input
-                    value={form.sshKeyPath}
-                    onChange={(e) => set({ sshKeyPath: e.target.value })}
-                    placeholder="~/.ssh/id_ed25519"
-                  />
-                </Field>
-                <Field label="Keepalive, sec">
-                  <Input
-                    type="number"
-                    min={0}
-                    value={form.sshKeepalive}
-                    onChange={(e) => set({ sshKeepalive: e.target.value })}
-                    placeholder="5"
-                    title="Ping the server after this many seconds when idle (ServerAliveInterval) — keeps the tunnel through NAT/firewalls and detects a dead link after 3 missed pings. Empty = 5, 0 = off."
-                  />
-                </Field>
-              </div>
-              <p className="text-[11px] leading-relaxed text-zinc-500">
-                Auth uses your keys / ssh-agent / ~/.ssh/config (incl.
-                ProxyJump); the passphrase is stored in the keychain. DB host
-                above is resolved{" "}
-                <span className="text-zinc-400">from the SSH server</span> — e.g.{" "}
-                <code className="text-zinc-400">localhost:5432</code> for a DB
-                on the same box.
-              </p>
-            </div>
-          )}
-
-          {!form.useSsh && (
+          <div>
             <label
               className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer"
-              title="TLS for a direct connection. Not shown for SSH tunnels (the wire is already encrypted); ignored for localhost."
+              title="TLS for the database wire. Over an SSH tunnel it covers the bastion → database leg (ssh encrypts only your machine → bastion)."
             >
               <input
                 type="checkbox"
@@ -457,52 +477,54 @@ export function ConnectionDialog() {
               />
               Encrypt with SSL / TLS
             </label>
-          )}
-
-          {!form.useSsh && form.useSsl && (
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
-              <Field label="CA certificate (optional)">
-                <Input
-                  value={form.sslCaCert}
-                  onChange={(e) => set({ sslCaCert: e.target.value })}
-                  placeholder="~/certs/root-ca.pem — empty = system trust store"
-                />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Client certificate (optional)">
-                  <Input
-                    value={form.sslClientCert}
-                    onChange={(e) => set({ sslClientCert: e.target.value })}
-                    placeholder="~/certs/client.pem"
-                  />
-                </Field>
-                <Field label="Client key (optional)">
-                  <Input
-                    value={form.sslClientKey}
-                    onChange={(e) => set({ sslClientKey: e.target.value })}
-                    placeholder="~/certs/client-key.pem"
-                  />
-                </Field>
+            <Collapse open={form.useSsl}>
+              <div className="pt-3">
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
+                  <Field label="CA certificate (optional)">
+                    <Input
+                      value={form.sslCaCert}
+                      onChange={(e) => set({ sslCaCert: e.target.value })}
+                      placeholder="~/certs/root-ca.pem — empty = system trust store"
+                    />
+                  </Field>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Client certificate (optional)">
+                      <Input
+                        value={form.sslClientCert}
+                        onChange={(e) => set({ sslClientCert: e.target.value })}
+                        placeholder="~/certs/client.pem"
+                      />
+                    </Field>
+                    <Field label="Client key (optional)">
+                      <Input
+                        value={form.sslClientKey}
+                        onChange={(e) => set({ sslClientKey: e.target.value })}
+                        placeholder="~/certs/client-key.pem"
+                      />
+                    </Field>
+                  </div>
+                  <label
+                    className="flex items-center gap-2 text-[12px] text-zinc-300 cursor-pointer"
+                    title="Verify the server certificate chain and hostname (against the CA above or the system trust store). Off — encrypt only, any certificate accepted."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.sslRejectUnauthorized}
+                      onChange={(e) => set({ sslRejectUnauthorized: e.target.checked })}
+                      className="accent-sky-600"
+                    />
+                    Verify server certificate
+                  </label>
+                  <p className="text-[11px] leading-relaxed text-zinc-500">
+                    Certificate files are optional (PEM). Client certificate + key
+                    are for mTLS setups only. Over an SSH tunnel the certificate is
+                    verified against the DB host name, not the tunnel&apos;s
+                    127.0.0.1.
+                  </p>
+                </div>
               </div>
-              <label
-                className="flex items-center gap-2 text-[12px] text-zinc-300 cursor-pointer"
-                title="Verify the server certificate chain and hostname (against the CA above or the system trust store). Off — encrypt only, any certificate accepted."
-              >
-                <input
-                  type="checkbox"
-                  checked={form.sslRejectUnauthorized}
-                  onChange={(e) => set({ sslRejectUnauthorized: e.target.checked })}
-                  className="accent-sky-600"
-                />
-                Verify server certificate
-              </label>
-              <p className="text-[11px] leading-relaxed text-zinc-500">
-                Certificate files are optional (PEM). Client certificate + key
-                are for mTLS setups only. For localhost the connection stays
-                plaintext.
-              </p>
-            </div>
-          )}
+            </Collapse>
+          </div>
 
           {testResult && (
             <div
