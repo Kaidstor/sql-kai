@@ -217,11 +217,18 @@ function ResultsGridImpl({
     setMenuCell({ row: ri, col: ci });
     setMenuCol(null);
     // Right-click inside the current cell rectangle (or on an already-selected
-    // row) keeps that selection so the menu acts on it. Anywhere else retargets
-    // to the clicked row — like clicking away — clearing any stale cell/column
-    // selection so its copy/export actions don't leak into the menu.
+    // row) keeps that selection so the menu acts on it — like Excel/Sheets.
     const insideRect = rectCount > 1 && inRect(ri, ci);
     if (insideRect || selected.has(ri)) return;
+    // Outside the selection we retarget, Excel-style: a data-cell right-click
+    // focuses that one cell (visible ring; the menu acts on it and its row),
+    // the row-number gutter (ci < 0) selects the whole clicked row. Either way
+    // any stale cell/row/column selection is dropped so its copy/export actions
+    // don't leak into the menu.
+    if (ci >= 0) {
+      focusCell(ri, ci);
+      return;
+    }
     sel.setSelected(new Set([ri]));
     sel.setAnchor(ri);
     sel.setCellSel(null);
@@ -230,10 +237,15 @@ function ResultsGridImpl({
     sel.setColAnchor(null);
   };
 
+  // Rows the context menu's row-scope actions target: the explicit row
+  // selection, or — when a lone cell was right-clicked outside any selection —
+  // that cell's row, so "Copy row"/"Export row" stay meaningful for one cell.
+  const menuRows = n > 0 ? selRows : menuCell ? [menuCell.row] : [];
+
   const copy = makeCopyActions({
     result,
     shownValue,
-    selRows,
+    menuRows,
     selColList,
     rect,
     rectCount,
@@ -389,13 +401,13 @@ function ResultsGridImpl({
     applyTsv(text);
   };
 
-  const rowsLabel = n > 1 ? `${n} rows` : "row";
+  const rowsLabel = menuRows.length > 1 ? `${menuRows.length} rows` : "row";
 
   const menuCellStaged = Boolean(
     menuCell && menuCell.col >= 0 && stagedOf(menuCell.row, menuCell.col).has,
   );
   const allSelectedDeleted =
-    n > 0 && selRows.every((r) => deletedRows.has(r));
+    menuRows.length > 0 && menuRows.every((r) => deletedRows.has(r));
 
   // Pending inserts render right under their duplicate-source row; ones
   // without a source on this page go to the bottom.
@@ -887,6 +899,7 @@ function ResultsGridImpl({
             result={result}
             rectCount={rectCount}
             selRows={selRows}
+            menuRows={menuRows}
             rowsLabel={rowsLabel}
             allSelectedDeleted={allSelectedDeleted}
             insertTarget={insertTarget}

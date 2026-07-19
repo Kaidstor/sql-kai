@@ -14,8 +14,9 @@ export interface CopyDeps {
   /** Значение так, как оно показано на экране: staged-правка, если есть,
    *  иначе значение из результата. */
   shownValue: (ri: number, ci: number) => string | null;
-  /** Selected row indices, sorted and bounded to the result. */
-  selRows: number[];
+  /** Rows the row-scope actions target: the explicit row selection, or the
+   *  right-clicked cell's row when only one cell is focused. Sorted, bounded. */
+  menuRows: number[];
   /** Selected column indices, sorted and bounded to the result. */
   selColList: number[];
   rect: { r1: number; r2: number; c1: number; c2: number } | null;
@@ -31,7 +32,7 @@ export type CopyActions = ReturnType<typeof makeCopyActions>;
 export function makeCopyActions({
   result,
   shownValue,
-  selRows,
+  menuRows,
   selColList,
   rect,
   rectCount,
@@ -39,7 +40,7 @@ export function makeCopyActions({
   insertTarget,
   showToast,
 }: CopyDeps) {
-  const n = selRows.length;
+  const n = menuRows.length;
 
   const toastCopied = (what: string) => showToast(what, "info");
 
@@ -49,7 +50,7 @@ export function makeCopyActions({
 
   const copyRows = (sep: string, suffix: string) => {
     if (!n) return;
-    const text = selRows
+    const text = menuRows
       .map((i) =>
         result.columns.map((_, ci) => shownValue(i, ci) ?? "").join(sep),
       )
@@ -59,7 +60,7 @@ export function makeCopyActions({
 
   const copyJson = () => {
     if (!n) return;
-    const objs = selRows.map((i) =>
+    const objs = menuRows.map((i) =>
       Object.fromEntries(result.columns.map((c, ci) => [c, shownValue(i, ci)])),
     );
     copyAndToast(
@@ -74,7 +75,7 @@ export function makeCopyActions({
     if (!insertTarget || !n) return;
     const rel = relIdent(insertTarget.schema, insertTarget.table);
     const cols = result.columns.map(quoteIdent).join(", ");
-    const tuples = selRows.map(
+    const tuples = menuRows.map(
       (i) =>
         `  (${result.columns
           .map((_, ci) => {
@@ -169,8 +170,8 @@ export function makeCopyActions({
   // --- Export (CSV / JSON / Excel) ------------------------------------------
   // Follows the on-screen selection so the export matches what the right-click
   // targeted: a cell rectangle → those cells; selected columns → those columns
-  // (all rows); selected rows → those rows; nothing → the whole shown result
-  // (hidden columns left out, mirroring the grid).
+  // (all rows); selected or right-clicked rows → those rows; nothing → the whole
+  // shown result (hidden columns left out, mirroring the grid).
   const selectedData = () => {
     if (rect && rectCount > 1) {
       const cols: number[] = [];
@@ -190,7 +191,7 @@ export function makeCopyActions({
         ),
       };
     }
-    const rowIdxs = n > 0 ? selRows : result.rows.map((_, i) => i);
+    const rowIdxs = n > 0 ? menuRows : result.rows.map((_, i) => i);
     const visCols = result.columns
       .map((_, i) => i)
       .filter((i) => !hiddenCols.has(i));

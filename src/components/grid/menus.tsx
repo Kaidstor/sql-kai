@@ -219,6 +219,7 @@ export function CellMenu({
   result,
   rectCount,
   selRows,
+  menuRows,
   rowsLabel,
   allSelectedDeleted,
   insertTarget,
@@ -237,7 +238,11 @@ export function CellMenu({
   menuCellStaged: boolean;
   result: StatementResult;
   rectCount: number;
+  /** The explicit whole-row selection (empty when only a cell is focused). */
   selRows: number[];
+  /** Rows the row-scope actions act on: the selection, or the right-clicked
+   *  cell's row when a lone cell is focused. */
+  menuRows: number[];
   rowsLabel: string;
   allSelectedDeleted: boolean;
   insertTarget?: { schema: string; table: string };
@@ -254,14 +259,13 @@ export function CellMenu({
   const n = selRows.length;
   const menuCellOk = Boolean(menuCell && menuCell.col >= 0);
   // A rectangle of 2+ cells → the menu acts on those cells; otherwise on the
-  // selected rows. A lone right-click has already retargeted to the clicked
-  // row, so a single cell shows "rows scope" too (Copy row / Export row).
+  // row scope (whole-row selection, or the lone right-clicked cell's row),
+  // so a single cell still gets Copy row / Export row.
   const cellsScope = rectCount > 1;
-  const rowsScope = !cellsScope && n > 0;
-  // Row mutations fall back to the right-clicked cell's row when no whole rows
-  // are selected (i.e. a cell-rectangle selection), so Delete/Duplicate stay
-  // reachable from any right-click.
-  const editRows = n > 0 ? selRows : menuCell ? [menuCell.row] : [];
+  const rowsScope = !cellsScope && menuRows.length > 0;
+  // ⌘C copies the focused cell only when no whole rows are selected — that is
+  // the lone-cell case, where the shortcut hint belongs on "Copy cell".
+  const cellIsPrimary = menuCellOk && !cellsScope && n === 0;
   const copyCell = () => {
     if (!menuCell || menuCell.col < 0) return;
     copy.copyCellAt(menuCell.row, menuCell.col);
@@ -270,9 +274,7 @@ export function CellMenu({
     <>
       <ContextMenuItem icon={Copy} disabled={!menuCellOk} onClick={copyCell}>
         Copy cell
-        {!cellsScope && !rowsScope && (
-          <ContextMenuShortcut>⌘C</ContextMenuShortcut>
-        )}
+        {cellIsPrimary && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
       </ContextMenuItem>
 
       {cellsScope && (
@@ -313,7 +315,7 @@ export function CellMenu({
         <>
           <ContextMenuItem icon={Copy} onClick={() => copy.copyRows(" ", "")}>
             Copy {rowsLabel}
-            <ContextMenuShortcut>⌘C</ContextMenuShortcut>
+            {n > 0 && <ContextMenuShortcut>⌘C</ContextMenuShortcut>}
           </ContextMenuItem>
           <ContextMenuItem
             icon={Sheet}
@@ -414,8 +416,8 @@ export function CellMenu({
           )}
           <ContextMenuItem
             icon={CopyPlus}
-            disabled={!canEdit || !editRows.length}
-            onClick={() => editing.onDuplicate(editRows)}
+            disabled={!canEdit || !menuRows.length}
+            onClick={() => editing.onDuplicate(menuRows)}
             title="Copies stay pending until Apply; generated keys are regenerated"
           >
             Duplicate {rowsLabel}
@@ -424,8 +426,8 @@ export function CellMenu({
           <ContextMenuItem
             icon={allSelectedDeleted ? Undo2 : Trash2}
             iconClassName={allSelectedDeleted ? undefined : "text-red-400/80"}
-            disabled={!canEdit || !editRows.length}
-            onClick={() => editing.onToggleDelete(editRows, !allSelectedDeleted)}
+            disabled={!canEdit || !menuRows.length}
+            onClick={() => editing.onToggleDelete(menuRows, !allSelectedDeleted)}
           >
             {allSelectedDeleted ? "Restore" : "Delete"} {rowsLabel}
             <ContextMenuShortcut>⌫</ContextMenuShortcut>
