@@ -275,6 +275,9 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
             let _ = notify.emit("broker://changed", ());
         }),
         profiles_changed: Box::new(move || {
+            // CLI (discover/import) мог дописать пароли в vault на диске после
+            // нашего unlock — подтягиваем их в снапшот до оповещения фронта
+            let _ = crate::vault::reload_secrets();
             let _ = notify_profiles.emit("profiles://changed", ());
         }),
         shutdown: None, // GUI-брокер по сокету не гасится

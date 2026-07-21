@@ -409,6 +409,27 @@ fn mutate_vault(
     Ok(())
 }
 
+/// Re-read on-disk secrets into the unlocked session, keeping the current DEK.
+/// Lets an already-unlocked GUI pick up passwords a CLI (discover/import) wrote
+/// after this process unlocked. No-op if locked; leaves the snapshot intact if
+/// the file won't decrypt with our DEK (concurrent master-password rotation).
+///
+/// Lock order: config lock first, then the vault mutex — same as `mutate_vault`.
+pub fn reload_secrets() -> Result<(), AppError> {
+    let _lock = crate::fsio::lock_config()?;
+    let mut guard = VAULT.lock().unwrap();
+    let Some(v) = guard.as_mut() else {
+        return Ok(());
+    };
+    let file = read_file()?;
+    let plain = decrypt(&v.dek, &file.secrets)?;
+    let secrets: BTreeMap<String, String> =
+        serde_json::from_slice(&plain).map_err(|e| AppError::Msg(format!("vault reload: {e}")))?;
+    v.secrets = secrets;
+    v.file = file;
+    Ok(())
+}
+
 pub fn set_secret(key: &str, value: &str) -> Result<(), AppError> {
     mutate_vault(|_file, secrets| {
         secrets.insert(key.to_string(), value.to_string());
