@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { message } from "@tauri-apps/plugin-dialog";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
@@ -102,6 +103,16 @@ function App() {
   }, []);
 
   useEffect(() => initUpdater(), []);
+
+  // ⌘Tab обратно в приложение: потерянные соединения передёргиваются сами —
+  // баннер «Connection lost» сменяется спиннером Reconnecting… (кулдаун и
+  // прочие гарды живут в autoReconnectLost).
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) useApp.getState().autoReconnectLost();
+    });
+    return () => void unlisten.then((f) => f());
+  }, []);
 
   // Прогрев ленивых чанков (см. lazy выше): к моменту первого ⌘N или ⌘J
   // import() уже разрешён — вкладка/панель открывается без пустого кадра.

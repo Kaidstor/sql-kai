@@ -12,12 +12,14 @@ export function ReconnectButton({
   iconSize = 13,
   iconClassName,
   label = "Reconnect",
+  busyLabel = "Reconnecting…",
 }: {
   profileId: string;
   className?: string;
   iconSize?: number;
   iconClassName?: string;
   label?: string;
+  busyLabel?: string;
 }) {
   const reconnect = useApp((s) => s.reconnect);
   const busy = useApp((s) => Boolean(s.connecting[profileId]));
@@ -33,7 +35,7 @@ export function ReconnectButton({
       ) : (
         <RefreshCw size={iconSize} className={iconClassName} />
       )}
-      {label}
+      {busy ? busyLabel : label}
     </button>
   );
 }

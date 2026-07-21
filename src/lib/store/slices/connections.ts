@@ -59,6 +59,10 @@ export interface ConnectionsSlice {
   /** Re-dials the profile in place: tabs survive (unlike disconnect→connect),
    *  and tabs that errored with the dead session reload once connected. */
   reconnect: (profileId: string, activate?: boolean) => Promise<void>;
+  /** Окно получило фокус (⌘Tab обратно в приложение) — молча передёрнуть все
+   *  lost-профили в фоне; per-profile кулдаун, чтобы частые ⌘Tab при лежащем
+   *  сервере не долбили его и не сыпали тостами об ошибке. */
+  autoReconnectLost: () => void;
   selectProfile: (profileId: string) => void;
   /** ⌘`/⌘~ cycle the active connection through the live ones (wraps around). */
   cycleProfile: (dir: 1 | -1) => void;
@@ -101,6 +105,10 @@ export const UNDO_DELETE_MS = 5000;
 // Pending-delete timers live outside the store (like the toast timer):
 // the card that started one may unmount before it fires.
 const deleteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Минимальный интервал между фокус-авто-реконнектами одного профиля. */
+const AUTO_RECONNECT_COOLDOWN_MS = 15_000;
+const autoReconnectAt = new Map<string, number>();
 
 export function createConnectionsSlice(
   set: Set,
@@ -331,6 +339,20 @@ export function createConnectionsSlice(
       // reopen lazily on the fresh connection
       dropProfileIsolatedSessions(profileId);
       await get().connect(profileId, activate);
+    },
+
+    autoReconnectLost: () => {
+      const s = get();
+      const now = Date.now();
+      for (const profileId of Object.keys(s.lost)) {
+        if (s.connecting[profileId] || s.pendingDelete[profileId]) continue;
+        if (now - (autoReconnectAt.get(profileId) ?? 0) < AUTO_RECONNECT_COOLDOWN_MS)
+          continue;
+        autoReconnectAt.set(profileId, now);
+        // activate=false: авто-реконнект не должен перетаскивать воркспейс
+        // на этот профиль и закрывать лаунчер
+        void get().reconnect(profileId, false);
+      }
     },
 
     selectProfile: (profileId) =>
