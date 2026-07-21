@@ -373,13 +373,17 @@ function App() {
         }
       }),
       // сессия умерла на проводе (ssh-туннель/сеть/сервер) — бэкенд сообщает
-      // сразу, не дожидаясь, пока следующий запрос наткнётся на труп
+      // сразу, не дожидаясь, пока следующий запрос наткнётся на труп. Тут же
+      // тихо передёргиваем в фоне: к возвращению пользователя соединение уже
+      // живое (кулдаун и прочие гарды — в autoReconnectLost).
       listen<{ sessionId: string; profileId: string; reason: string }>(
         "session://lost",
-        (e) =>
+        (e) => {
           useApp
             .getState()
-            .markSessionLost(e.payload.sessionId, e.payload.profileId),
+            .markSessionLost(e.payload.sessionId, e.payload.profileId);
+          useApp.getState().autoReconnectLost();
+        },
       ),
       // брокер: sql-kai открыл/закрыл cli-сессию — обновить бейджи
       listen("broker://changed", () =>

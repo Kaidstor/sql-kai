@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
@@ -94,6 +95,45 @@ fn insert_and_watch(
                 reason,
             },
         );
+    });
+}
+
+/// Интервал keepalive-пингов GUI-сессий. Простаивающий pg-провод режут
+/// внешние idle-таймауты (conntrack/файрвол на участке bastion→DB,
+/// балансировщики, idle_session_timeout сервера) — ssh ServerAliveInterval
+/// покрывает только участок клиент↔бастион. 30с — ниже типичных минимальных
+/// таймаутов (60с у балансировщиков).
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(30);
+
+/// Просроченный пинг просто бросается: сессия, занятая длинным запросом,
+/// не мёртвая (её провод и так активен), а мёртвую обнаружит closed_rx-вотчер.
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Держит GUI-сессии (включая изолированные) живыми на простое: раз в
+/// [`KEEPALIVE_EVERY`] пингует каждую пустым запросом — один round-trip по
+/// всему пути до Postgres, не влияющий на состояние транзакции (даже
+/// aborted). CLI-сессий брокера не касается — у тех намеренный idle-TTL.
+/// Ошибки пинга не обрабатываются: умершую сессию убирает и анонсирует
+/// (`session://lost`) вотчер из [`insert_and_watch`].
+pub fn spawn_keepalive(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(KEEPALIVE_EVERY).await;
+            let clients: Vec<Arc<Client>> = {
+                let state = app.state::<AppState>();
+                let sessions = state.sessions.lock().unwrap();
+                sessions.values().map(|s| s.client.clone()).collect()
+            };
+            // Каждый пинг — своей таской: зависший провод одной сессии не
+            // должен задерживать пинги остальных.
+            for client in clients.into_iter().filter(|c| !c.is_closed()) {
+                tauri::async_runtime::spawn(async move {
+                    let _ =
+                        tokio::time::timeout(KEEPALIVE_TIMEOUT, client.simple_query("")).await;
+                });
+            }
+        }
     });
 }
 

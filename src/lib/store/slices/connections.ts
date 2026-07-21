@@ -59,9 +59,10 @@ export interface ConnectionsSlice {
   /** Re-dials the profile in place: tabs survive (unlike disconnect→connect),
    *  and tabs that errored with the dead session reload once connected. */
   reconnect: (profileId: string, activate?: boolean) => Promise<void>;
-  /** Окно получило фокус (⌘Tab обратно в приложение) — молча передёрнуть все
-   *  lost-профили в фоне; per-profile кулдаун, чтобы частые ⌘Tab при лежащем
-   *  сервере не долбили его и не сыпали тостами об ошибке. */
+  /** Молча передёрнуть все lost-профили в фоне. Зовётся при возврате фокуса
+   *  (⌘Tab обратно в приложение) и сразу при session://lost — соединение
+   *  чинится, не дожидаясь возвращения пользователя. Per-profile кулдаун,
+   *  чтобы лежащий сервер не долбили и не сыпали тостами об ошибке. */
   autoReconnectLost: () => void;
   selectProfile: (profileId: string) => void;
   /** ⌘`/⌘~ cycle the active connection through the live ones (wraps around). */

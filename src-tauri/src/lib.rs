@@ -350,6 +350,9 @@ pub fn run() {
             setup_tray(app)?;
             #[cfg(unix)]
             start_broker(app, &broker_state);
+            // Пинги, не дающие простаивающим GUI-сессиям пасть от внешних
+            // idle-таймаутов — «вернулся через полчаса, а соединение живое».
+            commands::spawn_keepalive(app.handle());
             // Окно создано скрытым (visible: false в tauri.conf.json), а
             // window-state уже восстановил его геометрию. Показ отдан фронтенду
             // (команда reveal_main_window, вызывается после первого кадра
