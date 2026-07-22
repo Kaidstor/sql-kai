@@ -3,6 +3,7 @@ import { useMemo, useRef, useState, type PointerEvent } from "react";
 import { PROD_RED, tint } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { isQueryTabDirty, useApp } from "../lib/store";
+import { dragWindow } from "../lib/window";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -117,7 +118,7 @@ export function TabsBar() {
     <ContextMenu>
     <ContextMenuTrigger
       ref={barRef}
-      data-tauri-drag-region
+      onMouseDown={dragWindow}
       onContextMenu={(e) => {
         if (!(e.target as Element).closest?.("[data-tab-id]")) setMenuTabId(null);
       }}

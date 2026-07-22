@@ -19,6 +19,7 @@ import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
 import { useApp } from "../lib/store";
 import { UNDO_DELETE_MS } from "../lib/store/slices/connections";
 import type { Profile } from "../lib/types";
+import { dragWindow } from "../lib/window";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -373,16 +374,13 @@ export function Launcher() {
   return (
     <div className="flex flex-1 min-w-0 flex-col">
       <div
-        data-tauri-drag-region
+        onMouseDown={dragWindow}
         className={cn(
           "flex h-10 shrink-0 items-center justify-between border-b border-zinc-800 pr-3",
           isMac ? "pl-24" : "pl-4",
         )}
       >
-        <div
-          data-tauri-drag-region
-          className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-zinc-500"
-        >
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-zinc-500">
           <Database size={12} /> CONNECTIONS
         </div>
         {canClose && (

@@ -19,6 +19,7 @@ import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { columnsKey, useApp } from "../lib/store";
 import { isViewKind, type TableInfo } from "../lib/types";
+import { dragWindow } from "../lib/window";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -248,13 +249,10 @@ export function Sidebar() {
     <aside className="w-64 shrink-0 border-r border-zinc-800 flex flex-col min-h-0 bg-zinc-925">
       {/* top strip doubles as the window drag area (overlay titlebar) */}
       <div
-        data-tauri-drag-region
+        onMouseDown={dragWindow}
         className="flex h-10 shrink-0 items-center justify-between border-b border-zinc-800 pl-24 pr-3"
       >
-        <div
-          data-tauri-drag-region
-          className="flex min-w-0 items-center gap-2"
-        >
+        <div className="flex min-w-0 items-center gap-2">
           <span
             title={activeLost ? "Connection lost" : undefined}
             className={cn(
