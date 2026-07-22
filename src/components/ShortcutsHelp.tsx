@@ -27,6 +27,7 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
       { keys: [MOD, "W"], label: "Close tab" },
       { keys: [MOD, SHIFT, "T"], label: "Reopen closed tab" },
       { keys: [`${MOD}K`, `${MOD}W`], label: "Close all tabs" },
+      { keys: [MOD, SHIFT, "W"], label: "Close connection" },
       { keys: [MOD, "R"], label: "Refresh table / structure" },
       { keys: [MOD, "B"], label: "Toggle sidebar" },
       { keys: [MOD, "J"], label: "AI agent panel" },

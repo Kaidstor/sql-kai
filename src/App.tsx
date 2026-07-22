@@ -62,6 +62,13 @@ const closeAllVisibleTabs = (s: Store) =>
     s.tabs.filter((t) => t.profileId === s.activeProfileId).map((t) => t.id),
   );
 
+/** ⌘⇧W — disconnect the active connection (its tabs go with it; the workspace
+ *  is snapshotted, so reconnecting restores them). */
+const closeActiveConnection = (s: Store) => {
+  if (!s.activeProfileId) return false;
+  void s.disconnect(s.activeProfileId);
+};
+
 function App() {
   const init = useApp((s) => s.init);
   const tabs = useApp((s) => s.tabs);
@@ -140,7 +147,7 @@ function App() {
   // App-wide hotkeys — a declarative table, first match wins. Grid/editor
   // hotkeys stay local to their components.
   useEffect(() => {
-    // On mac ⌘W/⌘⇧T/⌘N arrive as native menu events (see lib.rs) — the menu
+    // On mac ⌘W/⌘⇧W/⌘⇧T/⌘N arrive as native menu events (see lib.rs) — the menu
     // accelerator consumes the keypress before the webview sees it; the
     // trailing Ctrl+… bindings are the JS fallback for other platforms.
     const hotkeys: Hotkey[] = [
@@ -284,6 +291,18 @@ function App() {
         },
       },
       {
+        // Before the plain Ctrl+W below — that one ignores the modifier state
+        // of Shift, so this must claim the combo first.
+        combo: "Ctrl+⇧W (non-mac)",
+        match: (e) =>
+          !isMac &&
+          e.ctrlKey &&
+          !e.altKey &&
+          e.shiftKey &&
+          e.key.toLowerCase() === "w",
+        run: (s) => closeActiveConnection(s),
+      },
+      {
         combo: "Ctrl+W (non-mac)",
         match: (e) =>
           !isMac && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "w",
@@ -326,7 +345,8 @@ function App() {
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
-  // Native menu items (mac): New Query Tab ⌘N, Close Tab ⌘W, Reopen ⌘⇧T.
+  // Native menu items (mac): New Query Tab ⌘N, Close Tab ⌘W, Reopen ⌘⇧T,
+  // Close Connection ⌘⇧W.
   useEffect(() => {
     const unlisten = [
       listen("menu://new-query-tab", () => useApp.getState().newQueryTab()),
@@ -337,6 +357,9 @@ function App() {
         else s.closeActiveTab();
       }),
       listen("menu://reopen-tab", () => useApp.getState().reopenClosedTab()),
+      listen("menu://close-connection", () =>
+        closeActiveConnection(useApp.getState()),
+      ),
       listen("menu://settings", () => useApp.getState().setSettingsOpen(true)),
       listen("menu://log-viewer", () =>
         useApp.getState().setLogViewerOpen(true),

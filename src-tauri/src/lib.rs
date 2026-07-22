@@ -57,11 +57,16 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     let reopen_tab = MenuItemBuilder::with_id("reopen-tab", "Reopen Closed Tab")
         .accelerator("CmdOrCtrl+Shift+T")
         .build(handle)?;
+    let close_connection = MenuItemBuilder::with_id("close-connection", "Close Connection")
+        .accelerator("CmdOrCtrl+Shift+W")
+        .build(handle)?;
     let file_menu = SubmenuBuilder::new(handle, "File")
         .item(&new_query_tab)
         .separator()
         .item(&close_tab)
         .item(&reopen_tab)
+        .separator()
+        .item(&close_connection)
         .build()?;
     let edit_menu = SubmenuBuilder::new(handle, "Edit")
         .undo()
@@ -88,6 +93,7 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
             "new-query-tab"
                 | "close-tab"
                 | "reopen-tab"
+                | "close-connection"
                 | "settings"
                 | "check-updates"
                 | "log-viewer"
