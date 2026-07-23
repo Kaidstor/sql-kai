@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import type { StatementResult } from "../../lib/types";
 import { cn } from "../ui";
 import { CellInput } from "./CellInput";
+import { oneLine } from "./text";
 import type { GridEditing } from "./types";
 
 /** Cell being edited in a pending INSERT row. */
@@ -90,7 +91,7 @@ export function InsertRowTr({
             ) : v === null ? (
               <span className="italic text-zinc-600">NULL</span>
             ) : (
-              v
+              oneLine(v)
             )}
           </td>
         );

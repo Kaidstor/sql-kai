@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -41,10 +42,18 @@ export function useColumnLayout(
   // effect below then resets the stored set for real.
   const hiddenCols = sized ? hiddenColsState : EMPTY_HIDDEN;
 
-  const changeHiddenCols = (next: ReadonlySet<number>) => {
-    setHiddenCols(next);
-    onHiddenColsChange?.(next);
-  };
+  // The parent (TableTab) needs the same set for the "current view as query"
+  // SQL and the export column list. Report the EFFECTIVE value from an effect
+  // rather than from the setter: during a measuring pass `hiddenCols` is forced
+  // empty, so a copy fed by the setter would keep showing the previous column
+  // set's indices — the two would silently disagree. Mirroring the derived
+  // value keeps this hook the single owner.
+  const notified = useRef<ReadonlySet<number> | null>(null);
+  useEffect(() => {
+    if (notified.current === hiddenCols) return;
+    notified.current = hiddenCols;
+    onHiddenColsChange?.(hiddenCols);
+  }, [hiddenCols, onHiddenColsChange]);
 
   useLayoutEffect(() => {
     if (sized) return;
@@ -58,13 +67,18 @@ export function useColumnLayout(
     ths.forEach((th, i) => {
       widths[i - 1] = Math.ceil(th.getBoundingClientRect().width);
     });
-    const tds = bodyTableRef.current?.querySelectorAll("tbody tr:first-child td");
+    // First non-spacer row: with the windowed body a top spacer <tr> can sit
+    // before the data rows (unsized + scrolled, e.g. a re-run with new
+    // columns), and its lone colSpan cell would wreck the measurement.
+    const tds = bodyTableRef.current
+      ?.querySelector("tbody tr:not([data-spacer])")
+      ?.querySelectorAll("td");
     tds?.forEach((td, i) => {
       const w = Math.ceil(td.getBoundingClientRect().width);
       if (w > (widths[i - 1] ?? 0)) widths[i - 1] = w;
     });
     setColWidths(widths);
-    changeHiddenCols(new Set());
+    setHiddenCols(new Set());
     setSizedFor(colsKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sized, colsKey]);
@@ -143,7 +157,7 @@ export function useColumnLayout(
     // dropping the size key re-renders auto-layout, which re-measures
     setSizedFor(null);
     setColWidths({});
-    changeHiddenCols(new Set());
+    setHiddenCols(new Set());
   };
 
   return {
@@ -153,7 +167,7 @@ export function useColumnLayout(
     hiddenCols,
     sized,
     totalW,
-    changeHiddenCols,
+    changeHiddenCols: setHiddenCols,
     startResize,
     fitColumn,
     fitAllColumns,
