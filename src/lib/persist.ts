@@ -64,7 +64,10 @@ type PersistedTabState =
       orderDir?: "asc" | "desc";
     })
   | Pick<StructureTabState, "kind" | "schema" | "table" | "section">
-  | Pick<ActivityTabState, "kind" | "refreshSec" | "showIdle">;
+  | (Pick<ActivityTabState, "kind" | "refreshSec" | "includeIdle"> & {
+      /** Pre-rename snapshots; migrated into `includeIdle` on revive. */
+      showIdle?: boolean;
+    });
 
 interface PersistedTab {
   title: string;
@@ -108,7 +111,7 @@ function snapshotTab(tab: Tab): PersistedTab {
           : {
               kind: "activity",
               refreshSec: st.refreshSec,
-              showIdle: st.showIdle,
+              includeIdle: st.includeIdle,
             };
   return { title: tab.title, state };
 }
@@ -203,7 +206,8 @@ function reviveTab(p: PersistedTab): { title: string; state: Tab["state"] } | nu
         kind: "activity",
         loading: false,
         refreshSec: typeof st.refreshSec === "number" ? st.refreshSec : 5,
-        showIdle: Boolean(st.showIdle),
+        // pre-rename snapshots carry the flag as `showIdle`
+        includeIdle: Boolean(st.includeIdle ?? st.showIdle),
       },
     };
   }

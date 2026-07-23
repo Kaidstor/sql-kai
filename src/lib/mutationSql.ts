@@ -2,7 +2,7 @@
 // stages changes, these turn them into the DDL/DML that Apply executes.
 import { quoteIdent, quoteLit, relIdent } from "./sql";
 import type { StructureTabState, TableTabState } from "./store";
-import type { ColumnInfo, TablePage } from "./types";
+import type { ColumnInfo, TablePageResult } from "./types";
 
 /** SQL literal for a nullable cell value. */
 const lit = (v: string | null) => (v === null ? "NULL" : quoteLit(v));
@@ -63,7 +63,7 @@ export type TableDml =
  *  edited); INSERTs don't need one. */
 export function buildTableDml(
   st: TableTabState,
-  data: TablePage,
+  data: TablePageResult,
   cols: ColumnInfo[] | undefined,
 ): TableDml {
   const rel = relIdent(st.schema, st.table);

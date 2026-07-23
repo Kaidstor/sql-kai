@@ -49,7 +49,7 @@ const cmp = (a: string, b: string): number => {
 };
 
 /** Releases ≤ current from GitLab, newest first. */
-async function fetchReleases(current: string): Promise<ReleaseNote[]> {
+async function loadReleases(current: string): Promise<ReleaseNote[]> {
   const res = await fetch(
     `https://gitlab.com/api/v4/projects/${GITLAB_PROJECT}/releases?per_page=20`,
   );
@@ -85,7 +85,7 @@ export async function collectWhatsNew(): Promise<ReleaseNote[]> {
     // First launch (fresh install) — nothing to tell.
     if (!seen || seen === current) return [];
 
-    const history = await fetchReleases(current).catch(() => []);
+    const history = await loadReleases(current).catch(() => []);
     if (history.length > 0) {
       const isFresh = (v: string) => cmp(v, seen) > 0;
       const freshCount = history.filter((r) => isFresh(r.version)).length;

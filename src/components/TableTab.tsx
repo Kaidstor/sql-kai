@@ -11,7 +11,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errText } from "../lib/api";
 import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
-import { columnsKey, useApp, type Tab, type TableTabState } from "../lib/store";
+import {
+  columnsKey,
+  useApp,
+  type RelRef,
+  type Tab,
+  type TableTabState,
+} from "../lib/store";
 import {
   isViewKind,
   type ColumnInfo,
@@ -22,6 +28,7 @@ import {
 import { ExportMenu } from "./ExportMenu";
 import { FilterBar } from "./FilterBar";
 import { ReconnectButton } from "./ReconnectButton";
+import { useLazyTabLoad } from "./useLazyTabLoad";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
 import { IconButton, PendingChangesBar, RefreshButton, Select } from "./ui";
@@ -70,9 +77,9 @@ export function TableTab({ tab }: { tab: Tab }) {
   const setRowsDeleted = useApp((s) => s.setRowsDeleted);
   const duplicateRows = useApp((s) => s.duplicateRows);
   const stageInsertCell = useApp((s) => s.stageInsertCell);
-  const removeInsertRow = useApp((s) => s.removeInsertRow);
-  const discardEdits = useApp((s) => s.discardEdits);
-  const applyEdits = useApp((s) => s.applyEdits);
+  const unstageInsertRow = useApp((s) => s.unstageInsertRow);
+  const discardTableEdits = useApp((s) => s.discardTableEdits);
+  const applyTableEdits = useApp((s) => s.applyTableEdits);
   const dismissApplyError = useApp((s) => s.dismissApplyError);
   const connected = Boolean(sessions[tab.profileId]);
   // A drop mid-session must not blank rows the user was looking at: keep
@@ -83,40 +90,38 @@ export function TableTab({ tab }: { tab: Tab }) {
   // query" SQL leaves them out. Indices refer to state.data.result.columns.
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
   // WHERE bar (see FilterBar): auto-shown while a filter is on.
-  const [showFilter, setShowFilter] = useState(Boolean(state.filter));
+  const [filterOpen, setFilterOpen] = useState(Boolean(state.filter));
 
   // External filter changes (FK navigation onto this tab) pop the bar open.
   useEffect(() => {
-    if (state.filter) setShowFilter(true);
+    if (state.filter) setFilterOpen(true);
   }, [state.filter]);
 
-  // Lazy load: restored/reopened tabs fetch when first shown, not in bulk
-  // at boot (dozens of parallel page queries froze the app).
-  useEffect(() => {
-    if (connected && !state.data && !state.loading && !state.error) {
-      void refreshTablePage(tab.id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected]);
+  useLazyTabLoad(
+    connected,
+    Boolean(state.data || state.loading || state.error),
+    () => void refreshTablePage(tab.id),
+  );
 
-  const cols = tableColumns[columnsKey(tab.profileId, state.schema, state.table)];
+  const ref = useMemo<RelRef>(
+    () => ({ profileId: tab.profileId, schema: state.schema, table: state.table }),
+    [tab.profileId, state.schema, state.table],
+  );
+  const cols = tableColumns[columnsKey(ref)];
 
   // Column info gives us the primary key needed to build UPDATE/DELETE.
   // Also refetches after runDdl invalidates the cache.
   useEffect(() => {
-    if (!cols) void loadTableColumns(tab.profileId, state.schema, state.table);
+    if (!cols) void loadTableColumns(ref);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cols, tab.profileId, state.schema, state.table]);
+  }, [cols, ref]);
 
   // Foreign keys enable ⌘-click navigation to the referenced row.
-  const rels =
-    tableRelations[columnsKey(tab.profileId, state.schema, state.table)];
+  const rels = tableRelations[columnsKey(ref)];
   useEffect(() => {
-    if (connected && !rels) {
-      void loadTableRelations(tab.profileId, state.schema, state.table);
-    }
+    if (connected && !rels) void loadTableRelations(ref);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, rels, tab.profileId, state.schema, state.table]);
+  }, [connected, rels, ref]);
 
   /** First FK covering each column name (string_agg output is ", "-joined). */
   const fkByCol = useMemo(() => {
@@ -293,9 +298,9 @@ export function TableTab({ tab }: { tab: Tab }) {
       onDuplicate: (rowsToCopy) => duplicateRows(tab.id, rowsToCopy),
       onInsertEdit: (index, col, value) =>
         stageInsertCell(tab.id, index, col, value),
-      onInsertRemove: (index) => removeInsertRow(tab.id, index),
-      onApply: () => void applyEdits(tab.id),
-      onDiscard: () => discardEdits(tab.id),
+      onInsertRemove: (index) => unstageInsertRow(tab.id, index),
+      onApply: () => void applyTableEdits(tab.id),
+      onDiscard: () => discardTableEdits(tab.id),
     }),
     [
       state.edits,
@@ -308,9 +313,9 @@ export function TableTab({ tab }: { tab: Tab }) {
       setRowsDeleted,
       duplicateRows,
       stageInsertCell,
-      removeInsertRow,
-      applyEdits,
-      discardEdits,
+      unstageInsertRow,
+      applyTableEdits,
+      discardTableEdits,
     ],
   );
 
@@ -322,7 +327,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         </span>
         <RefreshButton
           title="Refresh (⌘R)"
-          busy={state.loading}
+          loading={state.loading}
           onClick={() => void refreshTablePage(tab.id)}
         />
         <IconButton
@@ -340,7 +345,7 @@ export function TableTab({ tab }: { tab: Tab }) {
         <IconButton
           title="Filter (WHERE …)"
           className={state.filter ? "text-amber-400" : undefined}
-          onClick={() => setShowFilter((v) => !v || Boolean(state.filter))}
+          onClick={() => setFilterOpen((v) => !v || Boolean(state.filter))}
         >
           <Funnel size={13} />
         </IconButton>
@@ -348,11 +353,11 @@ export function TableTab({ tab }: { tab: Tab }) {
         {dirty > 0 && (
           <PendingChangesBar
             count={dirty}
-            busy={state.loading}
+            loading={state.loading}
             applyTitle="⌘S — runs INSERT/UPDATE/DELETE in one transaction"
             discardTitle="Esc"
-            onApply={() => void applyEdits(tab.id)}
-            onDiscard={() => discardEdits(tab.id)}
+            onApply={() => void applyTableEdits(tab.id)}
+            onDiscard={() => discardTableEdits(tab.id)}
           />
         )}
         {isView ? (
@@ -413,14 +418,14 @@ export function TableTab({ tab }: { tab: Tab }) {
         </div>
       </div>
 
-      {showFilter && (
+      {filterOpen && (
         <FilterBar
           tabId={tab.id}
           profileId={tab.profileId}
           filter={state.filter}
           columns={cols}
           dataColumns={state.data?.result.columns ?? []}
-          onHide={() => setShowFilter(false)}
+          onHide={() => setFilterOpen(false)}
         />
       )}
 

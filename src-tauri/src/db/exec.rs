@@ -34,8 +34,22 @@ pub struct ExecResult {
     pub duration_ms: u64,
 }
 
+/// Row cap for catalog introspection ([`query_rows`]) — a runaway guard rather
+/// than a display limit, hence far above the human-facing defaults.
+pub const INTROSPECT_MAX_ROWS: usize = 10_000;
+
 /// Runs SQL through the simple-query protocol: multiple `;`-separated statements
 /// are supported and every value arrives already text-formatted by the server.
+///
+/// `max_rows` is a per-statement display cap, deliberately different per caller
+/// — every value below is a default the caller can override, not a hard limit:
+/// - **1000** — GUI (`commands::execute_sql`), CLI `q` (`--max-rows`) and the
+///   broker (`default_max_rows`): what a human scrolls through in one result grid.
+/// - **200** — MCP (`cmd::mcp::DEFAULT_MAX_ROWS`, `maxRows` in the tool schema):
+///   rows land in an LLM context window, so the default is deliberately tighter.
+/// - **[`INTROSPECT_MAX_ROWS`]** — catalog introspection, see above.
+///
+/// GUI and broker additionally clamp the requested value to `1..=100_000`.
 pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<ExecResult, AppError> {
     let start = Instant::now();
     let messages = client.simple_query(sql).await?;
@@ -127,12 +141,13 @@ pub fn cell_bool(row: &[Option<String>], i: usize) -> bool {
     row.get(i).and_then(|v| v.as_deref()) == Some("true")
 }
 
-/// All rows of every result — for catalog queries.
+/// All rows of every result — for catalog queries. The 10k cap is a runaway
+/// guard, not a display limit (see [`execute`] on why the defaults differ).
 pub async fn query_rows(
     client: &Client,
     sql: &str,
 ) -> Result<Vec<Vec<Option<String>>>, AppError> {
-    let exec = execute(client, sql, 10_000).await?;
+    let exec = execute(client, sql, INTROSPECT_MAX_ROWS).await?;
     Ok(exec.results.into_iter().flat_map(|r| r.rows).collect())
 }
 

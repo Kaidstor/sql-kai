@@ -2,6 +2,7 @@
 // lock. Owns the post-unlock workspace load (profiles, queries, re-adopted
 // sessions) because nothing loads until the vault opens.
 import { api, errText } from "../../api";
+import { clearModuleCaches } from "../../moduleCaches";
 import {
   dropLegacyHistory,
   loadLegacyHistory,
@@ -144,7 +145,10 @@ export function createVaultSlice(set: Set, get: Get, ctx: StoreContext): VaultSl
       try {
         await api.vaultLock();
       } finally {
-        // Wipe every trace of the unlocked session from the UI.
+        // Wipe every trace of the unlocked session from the UI: sessions, open
+        // tabs and every lazily-filled catalog cache (all refetched after the
+        // next unlock). `closedTabs` and `history` are deliberately kept —
+        // both are persisted by design and reload from disk anyway.
         set((st) => ({
           vault: st.vault ? { ...st.vault, unlocked: false } : st.vault,
           profiles: [],
@@ -154,10 +158,15 @@ export function createVaultSlice(set: Set, get: Get, ctx: StoreContext): VaultSl
           tables: {},
           schemaColumns: {},
           schemaFunctions: {},
+          schemaEnums: {},
+          tableColumns: {},
+          tableRelations: {},
           tabs: [],
           activeTabId: null,
           activeProfileId: null,
         }));
+        // Same wipe for the UI caches that live outside the store.
+        clearModuleCaches();
       }
     },
   };

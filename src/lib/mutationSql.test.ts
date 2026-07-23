@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildStructureDdl, buildTableDml } from "./mutationSql";
 import type { StructureTabState, TableTabState } from "./store";
-import type { ColumnInfo, TablePage } from "./types";
+import type { ColumnInfo, TablePageResult } from "./types";
 
 // --- buildStructureDdl ---------------------------------------------------------
 
@@ -85,7 +85,7 @@ describe("buildStructureDdl", () => {
 const page = (
   columns: string[],
   rows: (string | null)[][],
-): TablePage => ({
+): TablePageResult => ({
   result: { columns, rows, truncated: false },
   durationMs: 0,
   approxRows: rows.length,

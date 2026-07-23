@@ -2,7 +2,7 @@
 //! кладут/читают пароли БД в sec, сверяют и сканируют. Значения всегда идут
 //! через stdin/stdout, не через argv (агент-безопасно, как и весь sec).
 //!
-//! Бинарь: `KAI_SEC_BIN`, иначе `sec` из PATH. Требуется свежий sec (с
+//! Бинарь: `SQL_KAI_SEC_BIN`, иначе `sec` из PATH. Требуется свежий sec (с
 //! командами meta/scan/verify/--fingerprint).
 
 use std::io::Write;
@@ -11,11 +11,10 @@ use std::process::{Command, Stdio};
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::Profile;
 
+use crate::envvar;
+
 fn sec_bin() -> String {
-    std::env::var("KAI_SEC_BIN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "sec".into())
+    envvar::value(envvar::SEC_BIN).unwrap_or_else(|| "sec".into())
 }
 
 /// Ключ sec для пароля БД профиля по конвенции: `<имя>/DB_PASSWORD`
@@ -28,7 +27,7 @@ pub fn default_key(profile: &Profile) -> String {
 fn base() -> Command {
     let mut cmd = Command::new(sec_bin());
     // мастер-пароль vault не должен наследоваться дочерними процессами
-    cmd.env_remove("KAI_VAULT_PASSWORD");
+    sql_kai_lib::vault::scrub_master_password_env(&mut cmd);
     cmd
 }
 
@@ -38,7 +37,12 @@ pub fn available() -> Result<(), AppError> {
         .arg("--help")
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| AppError::Msg(format!("sec не найден в PATH ({e}); установи sec или задай KAI_SEC_BIN")))?;
+        .map_err(|e| {
+            AppError::Msg(format!(
+                "sec не найден в PATH ({e}); установи sec или задай {}",
+                envvar::SEC_BIN,
+            ))
+        })?;
     let help = String::from_utf8_lossy(&out.stdout);
     if !help.contains("scan") {
         return Err(AppError::Msg(

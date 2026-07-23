@@ -415,7 +415,7 @@ function App() {
       // sql-kai discover/rm изменил состав профилей или обновилась отметка
       // last connected (cli-коннект) — перечитать список
       listen("profiles://changed", () =>
-        void useApp.getState().reloadProfiles(),
+        void useApp.getState().refreshProfiles(),
       ),
       // MCP-tools агента (open_table/open_query): открыть вкладку в GUI
       listen<

@@ -1,3 +1,14 @@
+// Wire types shared with the Rust backend (serde camelCase). Suffix conventions
+// — pick the one that matches when adding a type, don't invent a fourth:
+// - `*Config`   — a stored, per-connection settings block (SshConfig, SslConfig).
+// - `*Settings` — app-wide user preferences, one object for the whole app
+//                 (AppSettings ↔ settings.json). Scope is what separates the two.
+// - `*Info`     — a catalog/metadata record read from the DB, one per row
+//                 (ColumnInfo, IndexInfo, ActivityInfo…).
+// - `*Result`   — what one backend command returns (ExecResult, ExplainResult,
+//                 ExportResult, TablePageResult). `*Status` is the read-only
+//                 variant for state probes (TxStatus, VaultStatus).
+
 export interface SshConfig {
   host: string;
   user?: string | null;
@@ -140,7 +151,7 @@ export interface ExecResult {
 /** File formats of the full-result export (export_sql). */
 export type ExportFormat = "csv" | "json" | "md" | "xlsx";
 
-export interface ExportOutcome {
+export interface ExportResult {
   rows: number;
   /** XLSX sheet row limit cut the result; other formats never truncate. */
   truncated: boolean;
@@ -226,7 +237,7 @@ export interface TablePolicies {
   policies: PolicyInfo[];
 }
 
-export interface TablePage {
+export interface TablePageResult {
   result: StatementResult;
   durationMs: number;
   approxRows: number;

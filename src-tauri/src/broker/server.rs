@@ -356,7 +356,7 @@ async fn get_or_open(
     }
     logging::log(
         "broker",
-        &format!("\"{}\": cli-сессия открыта по запросу sql-kai", profile.name),
+        &format!("\"{}\": cli session opened on sql-kai request", profile.name),
     );
     // отметка «подключались по cli» + profiles_changed, чтобы лаунчер
     // перечитал профили и обновил "last connected" сразу
@@ -398,7 +398,7 @@ fn watch_cli_session_closed(
             drop(removed); // teardown туннеля — вне лока
             logging::log(
                 "broker",
-                &format!("cli-сессия профиля {profile_id} закрыта: соединение умерло"),
+                &format!("cli session of profile {profile_id} closed: the connection died"),
             );
             (hooks.changed)();
         }

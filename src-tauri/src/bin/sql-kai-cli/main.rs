@@ -8,6 +8,7 @@
 
 mod broker_client;
 mod cmd;
+mod envvar;
 mod input;
 mod output;
 mod redact;

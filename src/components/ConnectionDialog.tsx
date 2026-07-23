@@ -18,12 +18,12 @@ interface FormState {
   password: string;
   /** Stages removal of the saved password (typing a new one overrides). */
   clearPassword: boolean;
-  useSsl: boolean;
+  sslEnabled: boolean;
   sslCaCert: string;
   sslClientCert: string;
   sslClientKey: string;
   sslRejectUnauthorized: boolean;
-  useSsh: boolean;
+  sshEnabled: boolean;
   sshHost: string;
   sshUser: string;
   sshPort: string;
@@ -44,12 +44,12 @@ const emptyForm: FormState = {
   user: "postgres",
   password: "",
   clearPassword: false,
-  useSsl: false,
+  sslEnabled: false,
   sslCaCert: "",
   sslClientCert: "",
   sslClientKey: "",
   sslRejectUnauthorized: true,
-  useSsh: false,
+  sshEnabled: false,
   sshHost: "",
   sshUser: "",
   sshPort: "",
@@ -71,12 +71,12 @@ function fromProfile(p: Profile): FormState {
     user: p.user,
     password: "",
     clearPassword: false,
-    useSsl: Boolean(p.ssl?.enabled),
+    sslEnabled: Boolean(p.ssl?.enabled),
     sslCaCert: p.ssl?.caCert ?? "",
     sslClientCert: p.ssl?.clientCert ?? "",
     sslClientKey: p.ssl?.clientKey ?? "",
     sslRejectUnauthorized: p.ssl?.rejectUnauthorized ?? true,
-    useSsh: Boolean(p.ssh?.host),
+    sshEnabled: Boolean(p.ssh?.host),
     sshHost: p.ssh?.host ?? "",
     sshUser: p.ssh?.user ?? "",
     sshPort: p.ssh?.port ? String(p.ssh.port) : "",
@@ -164,9 +164,9 @@ function sslConfig(form: FormState): SslConfig | null {
   const caCert = form.sslCaCert.trim();
   const clientCert = form.sslClientCert.trim();
   const clientKey = form.sslClientKey.trim();
-  if (!form.useSsl && !caCert && !clientCert && !clientKey) return null;
+  if (!form.sslEnabled && !caCert && !clientCert && !clientKey) return null;
   return {
-    enabled: form.useSsl,
+    enabled: form.sslEnabled,
     caCert: caCert || null,
     clientCert: clientCert || null,
     clientKey: clientKey || null,
@@ -186,7 +186,7 @@ function toProfile(form: FormState, existing?: Profile): Profile {
     database: form.database.trim(),
     user: form.user.trim(),
     ssl: sslConfig(form),
-    ssh: form.useSsh
+    ssh: form.sshEnabled
       ? {
           host: form.sshHost.trim(),
           user: form.sshUser.trim() || null,
@@ -387,13 +387,13 @@ export function ConnectionDialog() {
             <label className="flex items-center gap-2 pt-1 text-[12px] text-zinc-300 cursor-pointer">
               <input
                 type="checkbox"
-                checked={form.useSsh}
-                onChange={(e) => set({ useSsh: e.target.checked })}
+                checked={form.sshEnabled}
+                onChange={(e) => set({ sshEnabled: e.target.checked })}
                 className="accent-sky-600"
               />
               Connect through SSH tunnel
             </label>
-            <Collapse open={form.useSsh}>
+            <Collapse open={form.sshEnabled}>
               <div className="pt-3">
                 <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
                   <div className="grid grid-cols-3 gap-3">
@@ -471,13 +471,13 @@ export function ConnectionDialog() {
             >
               <input
                 type="checkbox"
-                checked={form.useSsl}
-                onChange={(e) => set({ useSsl: e.target.checked })}
+                checked={form.sslEnabled}
+                onChange={(e) => set({ sslEnabled: e.target.checked })}
                 className="accent-sky-600"
               />
               Encrypt with SSL / TLS
             </label>
-            <Collapse open={form.useSsl}>
+            <Collapse open={form.sslEnabled}>
               <div className="pt-3">
                 <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
                   <Field label="CA certificate (optional)">

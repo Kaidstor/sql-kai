@@ -7,6 +7,7 @@ import { columnsKey, noStructureEdits, without } from "../helpers";
 import type {
   ColumnPatch,
   NewColumn,
+  RelRef,
   StructureSection,
   StructureTabState,
 } from "../types";
@@ -18,7 +19,8 @@ export interface StructureSlice {
   runDdl: (tabId: string, sql: string) => Promise<boolean>;
   /** Stage a column change; staging the original value reverts the field. */
   stageColumnEdit: (tabId: string, column: string, patch: ColumnPatch) => void;
-  toggleColumnDrop: (tabId: string, column: string) => void;
+  /** Stage / unstage DROP COLUMN — mirrors `setRowsDeleted` on the table side. */
+  setColumnDropped: (tabId: string, column: string, dropped: boolean) => void;
   stageColumnAdd: (tabId: string, col: NewColumn) => void;
   unstageColumnAdd: (tabId: string, index: number) => void;
   discardStructureEdits: (tabId: string) => void;
@@ -34,9 +36,9 @@ export function createStructureSlice(
   const { tabOf, patchTab } = ctx;
 
   /** Drops cached column/FK info after DDL changed the table. */
-  const invalidateColumns = (profileId: string, schema: string, table: string) =>
+  const invalidateColumns = (ref: RelRef) =>
     set((s) => {
-      const key = columnsKey(profileId, schema, table);
+      const key = columnsKey(ref);
       return {
         tableColumns: without(s.tableColumns, key),
         tableRelations: without(s.tableRelations, key),
@@ -113,7 +115,7 @@ export function createStructureSlice(
         return false;
       }
       // sidebar column cache is stale now
-      invalidateColumns(tab.profileId, schema, table);
+      invalidateColumns({ profileId: tab.profileId, schema, table });
       get().showToast("Applied", "success");
       await get().refreshStructure(tabId);
       return true;
@@ -136,13 +138,16 @@ export function createStructureSlice(
       patchTab<StructureTabState>(tabId, { colEdits });
     },
 
-    toggleColumnDrop: (tabId, column) => {
+    setColumnDropped: (tabId, column, dropped) => {
       const tab = tabOf(tabId, "structure");
       if (!tab) return;
-      const colDrops = tab.state.colDrops.includes(column)
-        ? tab.state.colDrops.filter((c) => c !== column)
-        : [...tab.state.colDrops, column];
-      patchTab<StructureTabState>(tabId, { colDrops });
+      const staged = tab.state.colDrops.includes(column);
+      if (staged === dropped) return;
+      patchTab<StructureTabState>(tabId, {
+        colDrops: dropped
+          ? [...tab.state.colDrops, column]
+          : tab.state.colDrops.filter((c) => c !== column),
+      });
     },
 
     stageColumnAdd: (tabId, col) => {
@@ -196,7 +201,11 @@ export function createStructureSlice(
         return;
       }
       // clear staged + drop the stale sidebar column cache before reloading
-      invalidateColumns(tab.profileId, tab.state.schema, tab.state.table);
+      invalidateColumns({
+        profileId: tab.profileId,
+        schema: tab.state.schema,
+        table: tab.state.table,
+      });
       patchTab<StructureTabState>(tabId, noStructureEdits());
       get().showToast(`Applied ${stmts.length} change(s)`, "success");
       await get().refreshStructure(tabId);

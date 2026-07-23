@@ -20,7 +20,8 @@ export interface TableSlice {
     col: number,
     value: string | null,
   ) => void;
-  setRowsDeleted: (tabId: string, rows: number[], del: boolean) => void;
+  /** Stage / unstage DELETE — mirrors `setColumnDropped` on the structure side. */
+  setRowsDeleted: (tabId: string, rows: number[], deleted: boolean) => void;
   /** Stages copies of the rows as pending INSERTs; generated keys are cut. */
   duplicateRows: (tabId: string, rows: number[]) => void;
   stageInsertCell: (
@@ -29,10 +30,11 @@ export interface TableSlice {
     col: number,
     value: string | null | undefined,
   ) => void;
-  removeInsertRow: (tabId: string, index: number) => void;
-  discardEdits: (tabId: string) => void;
+  /** Drops one staged INSERT — mirrors `unstageColumnAdd`. */
+  unstageInsertRow: (tabId: string, index: number) => void;
+  discardTableEdits: (tabId: string) => void;
   /** Applies staged INSERT/UPDATE/DELETE in one transaction (PK for the latter two). */
-  applyEdits: (tabId: string) => Promise<void>;
+  applyTableEdits: (tabId: string) => Promise<void>;
   /** Hides the failed-Apply banner; staged cells stay red until re-applied. */
   dismissApplyError: (tabId: string) => void;
 }
@@ -114,12 +116,12 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       patchTab<TableTabState>(tabId, { edits });
     },
 
-    setRowsDeleted: (tabId, rows, del) => {
+    setRowsDeleted: (tabId, rows, deleted) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       const next = new Set(tab.state.deletes);
       for (const r of rows) {
-        if (del) next.add(r);
+        if (deleted) next.add(r);
         else next.delete(r);
       }
       patchTab<TableTabState>(tabId, {
@@ -132,7 +134,13 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       const data = tab?.state.data;
       if (!tab || !data) return;
       const cols =
-        get().tableColumns[columnsKey(tab.profileId, tab.state.schema, tab.state.table)];
+        get().tableColumns[
+          columnsKey({
+            profileId: tab.profileId,
+            schema: tab.state.schema,
+            table: tab.state.table,
+          })
+        ];
       const colByName = new Map((cols ?? []).map((c) => [c.name, c]));
       // generated keys are cut (undefined) so the DB regenerates them on INSERT
       const cut = new Set<number>();
@@ -167,7 +175,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       patchTab<TableTabState>(tabId, { inserts });
     },
 
-    removeInsertRow: (tabId, index) => {
+    unstageInsertRow: (tabId, index) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       patchTab<TableTabState>(tabId, {
@@ -175,7 +183,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       });
     },
 
-    discardEdits: (tabId) => {
+    discardTableEdits: (tabId) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       const st = tab.state;
@@ -190,7 +198,7 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       get().showToast("Pending changes discarded", "info");
     },
 
-    applyEdits: async (tabId) => {
+    applyTableEdits: async (tabId) => {
       const tab = tabOf(tabId, "table");
       if (!tab) return;
       const st = tab.state;
@@ -202,7 +210,9 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       const dml = buildTableDml(
         st,
         data,
-        get().tableColumns[columnsKey(tab.profileId, st.schema, st.table)],
+        get().tableColumns[
+          columnsKey({ profileId: tab.profileId, schema: st.schema, table: st.table })
+        ],
       );
       if ("error" in dml) {
         get().showToast(dml.error);

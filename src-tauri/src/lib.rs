@@ -309,8 +309,8 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
                 let res = match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await
                 {
                     Ok(Ok(v)) => Ok(v),
-                    Ok(Err(_)) => Err("GUI отменил запрос".to_string()),
-                    Err(_) => Err("GUI не ответил на запрос состояния".to_string()),
+                    Ok(Err(_)) => Err("the GUI cancelled the request".to_string()),
+                    Err(_) => Err("the GUI did not answer the state request".to_string()),
                 };
                 app.state::<AppState>()
                     .gui_requests
@@ -417,7 +417,7 @@ pub fn run() {
             commands::settings_path,
             commands::log_path,
             commands::log_event,
-            commands::read_log,
+            commands::get_log,
             commands::list_history,
             commands::record_history,
             commands::delete_history_entry,

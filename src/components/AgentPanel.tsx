@@ -11,20 +11,27 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { parseMcpTitle } from "../lib/agentTool";
+import { resetOnVaultLock } from "../lib/moduleCaches";
 import {
   activeProvider,
   AGENT_PROVIDERS,
+  useApp,
   type AgentChatItem,
   type AgentPermission,
-} from "../lib/store/slices/agent";
-import { useApp } from "../lib/store";
+} from "../lib/store";
 import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
 import { ToolCard, ToolStatusIcon } from "./agent/ToolCard";
 import { Button, cn, IconButton, Input, Select } from "./ui";
 
-/** Panel width survives close/open within the session (not persisted). */
-let savedWidth = 400;
+/** Panel width survives close/open within the session (not persisted).
+ *  Module-level, so the vault lock resets it like the rest of the session
+ *  state (see lib/moduleCaches). */
+const DEFAULT_PANEL_WIDTH = 400;
+let savedWidth = DEFAULT_PANEL_WIDTH;
+resetOnVaultLock(() => {
+  savedWidth = DEFAULT_PANEL_WIDTH;
+});
 
 /** mcp__sql-kai__query → «sql-kai · query» в permission-карточке. */
 function prettyPermTitle(title: string): string {

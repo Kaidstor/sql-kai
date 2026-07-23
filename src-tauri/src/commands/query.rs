@@ -55,7 +55,7 @@ pub async fn export_sql(
     format: String,
     path: String,
     auto_begin: Option<bool>,
-) -> Result<db::ExportOutcome, AppError> {
+) -> Result<db::ExportResult, AppError> {
     let format = db::ExportFormat::parse(&format)?;
     let (client, tx) = client_and_tx(&state, &session_id)?;
     let executor = db::QueryExecutor::new(&client, &tx);
@@ -89,7 +89,7 @@ pub async fn export_sql(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TablePage {
+pub struct TablePageResult {
     pub result: StatementResult,
     pub duration_ms: u64,
     pub approx_rows: i64,
@@ -116,7 +116,7 @@ pub async fn get_table_page(
     offset: u64,
     sorts: Option<Vec<SortSpec>>,
     filter: Option<String>,
-) -> Result<TablePage, AppError> {
+) -> Result<TablePageResult, AppError> {
     let client = client_of(&state, &session_id)?;
     let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
     let limit = limit.clamp(1, 1000);
@@ -180,7 +180,7 @@ pub async fn get_table_page(
             .unwrap_or(-1)
     };
 
-    Ok(TablePage {
+    Ok(TablePageResult {
         result,
         duration_ms: exec.duration_ms,
         approx_rows,

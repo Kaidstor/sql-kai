@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "sql-formatter";
 import { copyText, readClipboardText } from "../lib/clipboard";
 import { searchExtensions } from "../lib/editorSearch";
+import { resetOnVaultLock } from "../lib/moduleCaches";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes } from "../lib/editorTheme";
 import { themeById } from "../lib/themes";
@@ -222,8 +223,11 @@ function selectionText(view: EditorView): string | undefined {
 }
 
 /** Editor selection per tab id — the editor unmounts on a tab switch, which
- *  used to silently drop "Run selection"; restored on remount. */
+ *  used to silently drop "Run selection"; restored on remount. Module-level
+ *  (not store state) so typing doesn't churn the store; entries outlive their
+ *  tabs, so the vault lock clears the map (see lib/moduleCaches). */
 const editorSelections = new Map<string, { anchor: number; head: number }>();
+resetOnVaultLock(() => editorSelections.clear());
 
 /** Formats the selection (if any) or the whole document as PostgreSQL. */
 function formatInView(view: EditorView) {

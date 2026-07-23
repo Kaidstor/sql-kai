@@ -34,10 +34,21 @@ export const useApp = create<AppStore>((set, get) => {
   };
 });
 
+// Public surface of the store — the ONE module everything outside `lib/store`
+// imports from ("lib/store", never a slice file or ./store/types directly), so
+// slices stay free to move without a repo-wide import churn.
 export { columnsKey } from "./helpers";
 export {
+  activeProvider,
+  AGENT_PROVIDERS,
+  type AgentChatItem,
+  type AgentPermission,
+  type AgentToolItem,
+} from "./slices/agent";
+export { UNDO_DELETE_MS } from "./slices/connections";
+export {
   isQueryTabDirty,
-  type ActivityRow,
+  type ActivityInfo,
   type ActivityTabState,
   type AppStore,
   type ColumnPatch,
@@ -46,6 +57,7 @@ export {
   type NewColumn,
   type PaletteKind,
   type QueryTabState,
+  type RelRef,
   type StructureSection,
   type StructureTabState,
   type Tab,

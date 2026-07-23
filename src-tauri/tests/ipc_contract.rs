@@ -10,9 +10,9 @@ use serde_json::json;
 use sql_kai_lib::broker::BrokerSessionInfo;
 use sql_kai_lib::commands::{
     ColumnInfo, EnumTypeInfo, IndexInfo, PolicyInfo, RelationInfo, SessionInfo, SortSpec,
-    TableColumns, TableInfo, TablePage, TablePolicies, TriggerInfo, VaultStatus,
+    TableColumns, TableInfo, TablePageResult, TablePolicies, TriggerInfo, VaultStatus,
 };
-use sql_kai_lib::db::{ExecResult, ExportFormat, ExportOutcome, StatementResult, TxStatus};
+use sql_kai_lib::db::{ExecResult, ExportFormat, ExportResult, StatementResult, TxStatus};
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{HistoryEntry, Profile, SavedQuery};
 
@@ -99,7 +99,7 @@ fn exec_result_shape() {
 
 #[test]
 fn export_outcome_shape_and_formats() {
-    let outcome = ExportOutcome {
+    let outcome = ExportResult {
         rows: 2,
         truncated: false,
         duration_ms: 7,
@@ -117,7 +117,7 @@ fn export_outcome_shape_and_formats() {
 
 #[test]
 fn table_page_shape() {
-    let page = TablePage {
+    let page = TablePageResult {
         result: StatementResult::default(),
         duration_ms: 3,
         approx_rows: -1,

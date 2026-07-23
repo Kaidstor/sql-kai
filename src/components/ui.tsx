@@ -10,6 +10,14 @@ import type {
 } from "react";
 import { isViewKind } from "../lib/types";
 
+// Naming of in-flight flags, one word per source so a prop name tells you where
+// the flag came from:
+// - `loading` — the tab state's fetch flag (TableTabState.loading & co),
+//   threaded into shared components as-is;
+// - `running` — a query executing in a QueryTab (the domain verb, not a fetch);
+// - `busy` — component-local useState around one async action (unlock, export),
+//   never part of the store.
+
 export const cn = clsx;
 
 /** Relation icon by catalog kind — keeps the sidebar tree and the tab bar
@@ -239,19 +247,19 @@ export function IconButton({
   );
 }
 
-/** Refresh icon button that swaps to a spinner while busy. */
+/** Refresh icon button that swaps to a spinner while the tab is loading. */
 export function RefreshButton({
-  busy,
+  loading,
   onClick,
   title = "Refresh",
 }: {
-  busy: boolean;
+  loading: boolean;
   onClick: () => void;
   title?: string;
 }) {
   return (
-    <IconButton title={title} disabled={busy} onClick={onClick}>
-      {busy ? (
+    <IconButton title={title} disabled={loading} onClick={onClick}>
+      {loading ? (
         <Loader2 size={13} className="animate-spin" />
       ) : (
         <RefreshCw size={13} />
@@ -263,14 +271,14 @@ export function RefreshButton({
 /** Apply/Discard pair shown in a tab toolbar while changes are staged. */
 export function PendingChangesBar({
   count,
-  busy,
+  loading,
   applyTitle,
   discardTitle,
   onApply,
   onDiscard,
 }: {
   count: number;
-  busy: boolean;
+  loading: boolean;
   /** Tooltip explaining what Apply runs (⌘S hint etc.). */
   applyTitle: string;
   discardTitle?: string;
@@ -279,7 +287,7 @@ export function PendingChangesBar({
 }) {
   return (
     <div className="flex items-center gap-1.5 pl-1">
-      <Button variant="primary" disabled={busy} onClick={onApply} title={applyTitle}>
+      <Button variant="primary" disabled={loading} onClick={onApply} title={applyTitle}>
         <Check size={13} /> Apply {count}
       </Button>
       <Button title={discardTitle} onClick={onDiscard}>

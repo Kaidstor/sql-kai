@@ -1,13 +1,13 @@
 // Activity tab: pg_stat_activity polling and its display options.
 import { api, isSessionLost } from "../../api";
 import type { Get, Set, StoreContext } from "../context";
-import type { ActivityRow, ActivityTabState } from "../types";
+import type { ActivityInfo, ActivityTabState } from "../types";
 
 export interface ActivitySlice {
   refreshActivity: (tabId: string) => Promise<void>;
   setActivityOptions: (
     tabId: string,
-    patch: Partial<Pick<ActivityTabState, "refreshSec" | "showIdle">>,
+    patch: Partial<Pick<ActivityTabState, "refreshSec" | "includeIdle">>,
   ) => void;
 }
 
@@ -38,12 +38,12 @@ export function createActivitySlice(
   FROM pg_stat_activity a
  WHERE a.pid <> pg_backend_pid()
    AND a.backend_type = 'client backend'
-   ${tab.state.showIdle ? "" : "AND coalesce(a.state, '') <> 'idle'"}
+   ${tab.state.includeIdle ? "" : "AND coalesce(a.state, '') <> 'idle'"}
  ORDER BY (a.state = 'active') DESC, a.query_start ASC NULLS LAST`;
       patchTab<ActivityTabState>(tabId, { loading: true });
       try {
         const exec = await api.executeSql(session.sessionId, sql, 500);
-        const rows: ActivityRow[] = (exec.results[0]?.rows ?? []).map((r) => ({
+        const rows: ActivityInfo[] = (exec.results[0]?.rows ?? []).map((r) => ({
           pid: r[0] ?? "",
           db: r[1] ?? "",
           state: r[2] ?? "",
@@ -76,7 +76,7 @@ export function createActivitySlice(
       if (!tab) return;
       patchTab<ActivityTabState>(tabId, patch);
       // toggling idle changes the SQL — refetch right away
-      if (patch.showIdle !== undefined) void get().refreshActivity(tabId);
+      if (patch.includeIdle !== undefined) void get().refreshActivity(tabId);
     },
   };
 }

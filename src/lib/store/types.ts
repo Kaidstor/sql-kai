@@ -1,7 +1,18 @@
 // Tab-state model shared by every slice and by consumers outside the store
 // (persist snapshots, mutationSql, components). AppStore is assembled at the
 // bottom from the slice interfaces — each slice file owns its own contract.
-import type { SavedQuery } from "../types";
+import type {
+  ColumnInfo,
+  ExecResult,
+  ExplainResult,
+  IndexInfo,
+  RelationInfo,
+  SavedQuery,
+  SortSpec,
+  TablePageResult,
+  TablePolicies,
+  TriggerInfo,
+} from "../types";
 import type { ActivitySlice } from "./slices/activity";
 import type { AgentSlice } from "./slices/agent";
 import type { ConnectionsSlice } from "./slices/connections";
@@ -16,12 +27,12 @@ import type { VaultSlice } from "./slices/vault";
 export interface QueryTabState {
   kind: "query";
   sql: string;
-  result?: import("../types").ExecResult;
+  result?: ExecResult;
   /** The SQL that produced `result` (may be an editor selection, not `sql`) —
    *  the full export re-runs exactly this text. */
   resultSql?: string;
   /** Parsed EXPLAIN output; shown instead of results until dismissed. */
-  explain?: import("../types").ExplainResult;
+  explain?: ExplainResult;
   error?: string;
   /** `error` означает смерть соединения (код connection_lost/session_gone) —
    *  UI предлагает Reconnect вместо правки запроса. */
@@ -60,10 +71,10 @@ export interface TableTabState {
   page: number;
   pageSize: number;
   /** ORDER BY entries in priority order (empty = server default order). */
-  sorts: import("../types").SortSpec[];
+  sorts: SortSpec[];
   /** Raw WHERE expression ("" = no filter) — filter bar / FK navigation. */
   filter: string;
-  data?: import("../types").TablePage;
+  data?: TablePageResult;
   error?: string;
   /** См. QueryTabState.connectionLost. */
   connectionLost?: boolean;
@@ -81,7 +92,7 @@ export interface TableTabState {
 }
 
 /** One backend from pg_stat_activity (see the activity slice for the SQL). */
-export interface ActivityRow {
+export interface ActivityInfo {
   pid: string;
   db: string;
   state: string;
@@ -98,7 +109,7 @@ export interface ActivityRow {
 
 export interface ActivityTabState {
   kind: "activity";
-  rows?: ActivityRow[];
+  rows?: ActivityInfo[];
   error?: string;
   /** См. QueryTabState.connectionLost. */
   connectionLost?: boolean;
@@ -106,7 +117,19 @@ export interface ActivityTabState {
   /** Auto-refresh period, seconds; 0 = manual only. */
   refreshSec: number;
   /** Include idle backends in the listing. */
-  showIdle: boolean;
+  includeIdle: boolean;
+}
+
+/** One relation inside one connection — the identity behind the sidebar's
+ *  column/FK caches and the argument of every lazy metadata loader. Named
+ *  rather than positional: `schema` and `table` are both bare strings, so a
+ *  `(profileId, schema, table)` triple is trivially swappable at a call site
+ *  (`table.schema` / `table.name` in the sidebar) and the compiler wouldn't
+ *  notice. */
+export interface RelRef {
+  profileId: string;
+  schema: string;
+  table: string;
 }
 
 export type StructureSection =
@@ -139,11 +162,11 @@ export interface StructureTabState {
   schema: string;
   table: string;
   section: StructureSection;
-  columns?: import("../types").ColumnInfo[];
-  indexes?: import("../types").IndexInfo[];
-  relations?: import("../types").RelationInfo[];
-  triggers?: import("../types").TriggerInfo[];
-  policies?: import("../types").TablePolicies;
+  columns?: ColumnInfo[];
+  indexes?: IndexInfo[];
+  relations?: RelationInfo[];
+  triggers?: TriggerInfo[];
+  policies?: TablePolicies;
   loading: boolean;
   error?: string;
   /** См. QueryTabState.connectionLost. */

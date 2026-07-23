@@ -32,7 +32,7 @@ pub struct DiscoverArgs {
     #[arg(long, value_name = "PROJ/KEY")]
     sec_key: Option<String>,
     /// Не хранить пароль в vault (прод-политика: только sec / --password-env)
-    #[arg(long, alias = "no-store")]
+    #[arg(long)]
     no_vault: bool,
     /// Только показать найденное, не сохранять профиль
     #[arg(long)]

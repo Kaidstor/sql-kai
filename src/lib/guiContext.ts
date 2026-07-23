@@ -4,7 +4,7 @@
 // обратно командой agent_gui_reply. Ответ читает модель — формат: понятный
 // JSON без внутренних индексов стора.
 import { readSelectionSnapshot } from "../components/grid/useGridSelection";
-import type { Tab } from "./store/types";
+import type { Tab } from "./store";
 import type { StatementResult } from "./types";
 
 /** Кап строк данных в ответе: модель читает выделение, а не весь датасет. */

@@ -40,7 +40,7 @@ impl ExportFormat {
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ExportOutcome {
+pub struct ExportResult {
     pub rows: u64,
     /// The XLSX sheet row limit cut the result; other formats never truncate.
     pub truncated: bool,
@@ -75,7 +75,7 @@ pub async fn export_statement(
     statement_index: usize,
     format: ExportFormat,
     path: &str,
-) -> Result<ExportOutcome, ExportError> {
+) -> Result<ExportResult, ExportError> {
     let sql_err = |e: tokio_postgres::Error| ExportError::Sql(e.into());
     let start = Instant::now();
     let stream = client.simple_query_raw(sql).await.map_err(sql_err)?;
@@ -133,7 +133,7 @@ pub async fn export_statement(
     }
     writer.finish(path).map_err(ExportError::Local)?;
 
-    Ok(ExportOutcome {
+    Ok(ExportResult {
         rows,
         truncated,
         duration_ms: start.elapsed().as_millis() as u64,

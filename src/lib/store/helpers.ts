@@ -1,5 +1,5 @@
 // Pure helpers shared by the slices — no store access, no side effects.
-import type { StructureTabState, Tab, TableTabState } from "./types";
+import type { RelRef, StructureTabState, Tab, TableTabState } from "./types";
 
 /** Next free "Query N" title, counting open and reopenable tabs. */
 export function nextQueryTitle(s: {
@@ -29,7 +29,7 @@ export function patchState<S extends Tab["state"]>(
   );
 }
 
-export const columnsKey = (profileId: string, schema: string, table: string) =>
+export const columnsKey = ({ profileId, schema, table }: RelRef) =>
   // разделитель `|` и между schema/table — `a`+`b.c` и `a.b`+`c` не должны
   // коллидировать в одном ключе кэша
   `${profileId}|${schema}|${table}`;

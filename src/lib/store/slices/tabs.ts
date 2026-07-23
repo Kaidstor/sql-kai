@@ -161,7 +161,7 @@ export function createTabsSlice(set: Set, get: Get, ctx: StoreContext): TabsSlic
           kind: "activity",
           loading: false,
           refreshSec: 5,
-          showIdle: false,
+          includeIdle: false,
         },
       };
       set((s) => ({

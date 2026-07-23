@@ -1,3 +1,17 @@
+//! On-disk app state: profiles, saved queries, history, settings and the
+//! last-connected marks (JSON files in the config dir, written atomically).
+//!
+//! Naming convention for the write side — three verbs, three distinct roles;
+//! new functions must pick the one that matches, not invent a fourth:
+//! - `load_*` / `save_*` — read or replace a whole collection. `save_*` is the
+//!   low-level "write this exact list to that file"; it never merges.
+//! - `upsert_*` — insert-or-update one item by id, then persist the collection.
+//!   User intent, so the result matters: callers propagate the error and use
+//!   the returned (normalised) item.
+//! - `record_*` — append or stamp an event (history entry, last-connected
+//!   mark). Best-effort bookkeeping that must never fail a user action, so
+//!   callers deliberately discard the result (`let _ = …`).
+
 use std::collections::HashMap;
 use std::fs;
 
@@ -175,14 +189,14 @@ pub fn upsert_profile(
     // before they ever reach `Command::arg`.
     if let Some(ssh) = &profile.ssh {
         if ssh.host.trim_start().starts_with('-') {
-            return Err(AppError::Msg("ssh host не может начинаться с '-'".into()));
+            return Err(AppError::Msg("ssh host must not start with '-'".into()));
         }
         if ssh
             .user
             .as_deref()
             .is_some_and(|u| u.trim_start().starts_with('-'))
         {
-            return Err(AppError::Msg("ssh user не может начинаться с '-'".into()));
+            return Err(AppError::Msg("ssh user must not start with '-'".into()));
         }
     }
     let existing = profile_by_id(&profile.id).ok();

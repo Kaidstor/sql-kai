@@ -17,6 +17,7 @@ use clap::Subcommand;
 use sql_kai_lib::broker::{self, BrokerHooks, BrokerState};
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::logging;
+use sql_kai_lib::vault;
 
 use crate::broker_client;
 use crate::session;
@@ -49,12 +50,12 @@ fn remove_socket() {
 
 async fn serve() -> Result<ExitCode, AppError> {
     if let Err(e) = session::unlock_vault_headless() {
-        logging::log("holder", &format!("не поднялся: {e}"));
+        logging::log("holder", &format!("failed to start: {e}"));
         return Err(e);
     }
     // Мастер-пароль из env сделал своё дело — не держать его в окружении
     // долгоживущего процесса и не отдавать детям (ssh-туннелям).
-    std::env::remove_var("KAI_VAULT_PASSWORD");
+    std::env::remove_var(vault::MASTER_PASSWORD_ENV);
     let Some(listener) = broker::bind_holder().await? else {
         return Ok(ExitCode::SUCCESS); // живой holder уже есть
     };
@@ -70,7 +71,7 @@ async fn serve() -> Result<ExitCode, AppError> {
         gui_selection: None,
         shutdown: Some(Box::new(move || {
             shutdown_state.clear();
-            logging::log("holder", "погашен по shutdown (vault lock / holder stop)");
+            logging::log("holder", "stopped by shutdown (vault lock / holder stop)");
             // ответ клиенту уходит после хука — выходим с небольшой паузой
             tokio::spawn(async {
                 tokio::time::sleep(Duration::from_millis(150)).await;
@@ -88,7 +89,7 @@ async fn serve() -> Result<ExitCode, AppError> {
             loop {
                 tokio::time::sleep(Duration::from_secs(15)).await;
                 if state.is_idle(LINGER_SEC) {
-                    logging::log("holder", "сессий нет, сокет простаивает — выходим");
+                    logging::log("holder", "no sessions and the socket is idle — exiting");
                     remove_socket();
                     std::process::exit(0);
                 }
@@ -98,7 +99,7 @@ async fn serve() -> Result<ExitCode, AppError> {
 
     logging::log(
         "holder",
-        &format!("запущен (pid {}, v{})", std::process::id(), env!("CARGO_PKG_VERSION")),
+        &format!("started (pid {}, v{})", std::process::id(), env!("CARGO_PKG_VERSION")),
     );
     broker::serve(listener, state, hooks).await;
     Ok(ExitCode::SUCCESS)

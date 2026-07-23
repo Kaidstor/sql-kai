@@ -17,7 +17,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
-import { columnsKey, useApp } from "../lib/store";
+import { columnsKey, useApp, type RelRef } from "../lib/store";
 import { isViewKind, type TableInfo } from "../lib/types";
 import { dragWindow } from "../lib/window";
 import {
@@ -52,7 +52,11 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
   const sessions = useApp((s) => s.sessions);
   const showToast = useApp((s) => s.showToast);
   const [expanded, setExpanded] = useState(false);
-  const cols = tableColumns[columnsKey(profileId, table.schema, table.name)];
+  const ref = useMemo<RelRef>(
+    () => ({ profileId, schema: table.schema, table: table.name }),
+    [profileId, table.schema, table.name],
+  );
+  const cols = tableColumns[columnsKey(ref)];
 
   const copyDdl = async () => {
     const session = sessions[profileId];
@@ -71,11 +75,9 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
 
   // Fetches on expand, and refetches after runDdl invalidates the cache.
   useEffect(() => {
-    if (expanded && !cols) {
-      void loadTableColumns(profileId, table.schema, table.name);
-    }
+    if (expanded && !cols) void loadTableColumns(ref);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, cols]);
+  }, [expanded, cols, ref]);
 
   const toggle = () => setExpanded((v) => !v);
 

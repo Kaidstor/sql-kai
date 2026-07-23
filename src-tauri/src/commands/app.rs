@@ -58,7 +58,7 @@ pub fn install_cli() -> Result<String, AppError> {
         let src = exe
             .parent()
             .map(|p| p.join("sql-kai-cli"))
-            .ok_or_else(|| AppError::Msg("не удалось определить путь к бандлу".into()))?;
+            .ok_or_else(|| AppError::Msg("could not resolve the app bundle path".into()))?;
         if !src.exists() {
             return Err(AppError::Msg(format!(
                 "CLI-бинарь не найден рядом с приложением: {}\n\
@@ -102,14 +102,14 @@ pub fn install_cli() -> Result<String, AppError> {
             return Err(AppError::Msg("cancelled".into()));
         }
         Err(AppError::Msg(format!(
-            "не удалось создать симлинк: {}",
+            "could not create the symlink: {}",
             stderr.trim()
         )))
     }
     #[cfg(not(target_os = "macos"))]
     {
         Err(AppError::Msg(
-            "Install CLI поддерживается только на macOS".into(),
+            "Install CLI is supported on macOS only".into(),
         ))
     }
 }

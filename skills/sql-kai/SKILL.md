@@ -87,7 +87,7 @@ sql-kai vault trust      # копия ключа в login keychain; отзыв: 
 sql-kai vault status
 ```
 
-Обход vault: `--password-env VAR` (пароль БД из env) или `KAI_VAULT_PASSWORD`
+Обход vault: `--password-env VAR` (пароль БД из env) или `SQL_KAI_VAULT_PASSWORD`
 (мастер-пароль из env). Ротация и хранение паролей во внешнем сторе — команды
 `sql-kai rotate` / `--from-sec` — требуют отдельного CLI `sec` в PATH.
 

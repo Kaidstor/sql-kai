@@ -30,6 +30,16 @@ use crate::fsio::{config_path, write_atomic};
 const VAULT_FILE: &str = "vault.json";
 const VERSION: u32 = 1;
 
+/// Env-переменная с мастер-паролем vault. Единый префикс `SQL_KAI_*` — как у
+/// `SQL_KAI_SSH_PASSPHRASE` и `SQL_KAI_CONFIG_DIR`.
+pub const MASTER_PASSWORD_ENV: &str = "SQL_KAI_VAULT_PASSWORD";
+
+/// Вычищает мастер-пароль vault из окружения дочернего процесса — ssh/sec и
+/// прочие внешние бинари не должны его видеть.
+pub fn scrub_master_password_env(cmd: &mut std::process::Command) {
+    cmd.env_remove(MASTER_PASSWORD_ENV);
+}
+
 // Argon2id cost parameters (stored in the file so re-derivation stays correct
 // even if these defaults change later).
 const ARGON_M_COST: u32 = 19_456; // KiB (~19 MiB)
@@ -265,25 +275,25 @@ pub fn unlock_biometric() -> Result<(), AppError> {
     }
     let mut dek_vec = match biometric::read_dek() {
         Ok(v) => v,
-        Err(BioError::Stale) => return Err(stale_biometric()),
+        Err(BioError::Stale) => return Err(stale_biometric_err()),
         Err(e) => return Err(bio_err(e)),
     };
     let dek: [u8; 32] = match dek_vec.clone().try_into() {
         Ok(d) => d,
         Err(_) => {
             dek_vec.zeroize();
-            return Err(stale_biometric());
+            return Err(stale_biometric_err());
         }
     };
     dek_vec.zeroize();
     match install_unlocked(dek, file) {
         Ok(()) => Ok(()),
         // GCM auth failed — the keychain DEK belongs to an older vault.
-        Err(_) => Err(stale_biometric()),
+        Err(_) => Err(stale_biometric_err()),
     }
 }
 
-fn stale_biometric() -> AppError {
+fn stale_biometric_err() -> AppError {
     let _ = disable_biometric();
     AppError::Msg(
         "the Touch ID key was stale and has been reset — unlock with the master password \
@@ -338,14 +348,14 @@ pub fn unlock_cli_trust() -> Result<(), AppError> {
         Ok(d) => d,
         Err(_) => {
             dek_vec.zeroize();
-            return Err(stale_cli_trust());
+            return Err(stale_cli_trust_err());
         }
     };
     dek_vec.zeroize();
-    install_unlocked(dek, file).map_err(|_| stale_cli_trust())
+    install_unlocked(dek, file).map_err(|_| stale_cli_trust_err())
 }
 
-fn stale_cli_trust() -> AppError {
+fn stale_cli_trust_err() -> AppError {
     disable_cli_trust();
     AppError::Msg(
         "the CLI trust key was stale and has been reset — run `sql-kai vault trust` again".into(),

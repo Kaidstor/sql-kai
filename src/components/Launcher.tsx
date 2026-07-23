@@ -16,8 +16,7 @@ import { type CSSProperties, Fragment, useEffect, useMemo, useRef, useState } fr
 import { accentColor } from "../lib/colors";
 import { isMac } from "../lib/platform";
 import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
-import { useApp } from "../lib/store";
-import { UNDO_DELETE_MS } from "../lib/store/slices/connections";
+import { UNDO_DELETE_MS, useApp } from "../lib/store";
 import type { Profile } from "../lib/types";
 import { dragWindow } from "../lib/window";
 import {

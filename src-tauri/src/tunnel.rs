@@ -59,7 +59,7 @@ fn reject_optionlike(what: &str, v: &str) -> Result<(), AppError> {
 /// ProxyCommand from ~/.ssh/config — an arbitrary local process.
 fn ssh_cmd() -> Command {
     let mut cmd = Command::new("ssh");
-    cmd.env_remove("KAI_VAULT_PASSWORD");
+    crate::vault::scrub_master_password_env(&mut cmd);
     cmd
 }
 
@@ -103,9 +103,9 @@ impl Drop for Tunnel {
             logging::log(
                 "tunnel",
                 &format!(
-                    "local port {}: mux-форвард снят с мастера{}",
+                    "local port {}: mux forward released from the master{}",
                     self.local_port,
-                    if ok { "" } else { " (мастер уже недоступен)" }
+                    if ok { "" } else { " (master already gone)" }
                 ),
             );
             let _ = self.child.kill();
@@ -174,7 +174,7 @@ fn push_target(cmd: &mut Command, ssh: &SshConfig) {
 /// ~/.ssh/config, since a GUI child process cannot answer interactive prompts.
 /// With a passphrase: SSH_ASKPASS feeds it to ssh for decrypting the key;
 /// password/keyboard-interactive auth stays off (parity with BatchMode).
-fn apply_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppError> {
+fn push_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppError> {
     match passphrase {
         Some(pp) if !pp.is_empty() => {
             cmd.args(["-o", "PasswordAuthentication=no"])
@@ -281,7 +281,7 @@ fn ensure_master(ssh: &SshConfig, passphrase: Option<&str>, ttl: u32, ctl: &Path
         .args(["-o", &format!("ControlPersist={ttl}")])
         .args(["-o", "ConnectTimeout=10"]);
     push_keepalive(&mut cmd, ssh);
-    if apply_auth(&mut cmd, passphrase).is_err() {
+    if push_auth(&mut cmd, passphrase).is_err() {
         return;
     }
     push_target(&mut cmd, ssh);
@@ -402,7 +402,7 @@ pub async fn open_tunnel(
 
     let mut cmd = ssh_cmd();
     cmd.arg("-N");
-    apply_auth(&mut cmd, passphrase)?;
+    push_auth(&mut cmd, passphrase)?;
     cmd.args(["-o", "ExitOnForwardFailure=yes"])
         .args(["-o", "ConnectTimeout=10"]);
     push_keepalive(&mut cmd, ssh);
@@ -487,7 +487,7 @@ pub async fn open_tunnel(
         (Some(ctl), true) => {
             logging::log(
                 "tunnel",
-                &format!("local port {local_port}: форвард держит mux-мастер {target}"),
+                &format!("local port {local_port}: forward held by mux master {target}"),
             );
             Some(MuxForward {
                 ctl: ctl.clone(),

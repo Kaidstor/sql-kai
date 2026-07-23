@@ -171,28 +171,28 @@ fn build_tls_connector(ssl: &SslConfig) -> Result<native_tls::TlsConnector, AppE
         b.danger_accept_invalid_hostnames(true);
     }
     if let Some(ca) = ssl_path(&ssl.ca_cert) {
-        let pem = read_pem(&ca, "CA-сертификат")?;
+        let pem = read_pem(&ca, "CA certificate")?;
         let cert = native_tls::Certificate::from_pem(&pem)
-            .map_err(|e| AppError::Msg(format!("CA-сертификат {ca}: {e}")))?;
+            .map_err(|e| AppError::Msg(format!("CA certificate {ca}: {e}")))?;
         b.add_root_certificate(cert);
     }
     match (ssl_path(&ssl.client_cert), ssl_path(&ssl.client_key)) {
         (Some(cert), Some(key)) => {
-            let cert_pem = read_pem(&cert, "клиентский сертификат")?;
-            let key_pem = read_pem(&key, "ключ клиентского сертификата")?;
+            let cert_pem = read_pem(&cert, "client certificate")?;
+            let key_pem = read_pem(&key, "client certificate key")?;
             let id = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)
-                .map_err(|e| AppError::Msg(format!("клиентский сертификат: {e}")))?;
+                .map_err(|e| AppError::Msg(format!("client certificate: {e}")))?;
             b.identity(id);
         }
         (None, None) => {}
         _ => {
             return Err(AppError::Msg(
-                "для клиентского сертификата нужны оба файла: certificate и key".into(),
+                "a client certificate needs both files: certificate and key".into(),
             ))
         }
     }
     b.build()
-        .map_err(|e| AppError::Msg(format!("не удалось настроить TLS: {e}")))
+        .map_err(|e| AppError::Msg(format!("could not set up TLS: {e}")))
 }
 
 /// Non-empty trimmed path from an [`SslConfig`] field, `~/` expanded.

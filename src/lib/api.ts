@@ -6,7 +6,7 @@ import type {
   EnumTypeInfo,
   ExecResult,
   ExportFormat,
-  ExportOutcome,
+  ExportResult,
   HistoryEntry,
   IndexInfo,
   Profile,
@@ -16,7 +16,7 @@ import type {
   SortSpec,
   TableColumns,
   TableInfo,
-  TablePage,
+  TablePageResult,
   TablePolicies,
   TriggerInfo,
   TxStatus,
@@ -81,7 +81,7 @@ export const api = {
   logEvent: (message: string) => invoke<void>("log_event", { message }),
 
   /** Tail of the diagnostics log for the in-app viewer. */
-  readLog: () => invoke<string>("read_log"),
+  getLog: () => invoke<string>("get_log"),
 
   listHistory: () => invoke<HistoryEntry[]>("list_history"),
 
@@ -136,7 +136,7 @@ export const api = {
     path: string,
     autoBegin = false,
   ) =>
-    invoke<ExportOutcome>("export_sql", {
+    invoke<ExportResult>("export_sql", {
       sessionId,
       sql,
       statementIndex,
@@ -202,7 +202,7 @@ export const api = {
     sorts?: readonly SortSpec[],
     filter?: string,
   ) =>
-    invoke<TablePage>("get_table_page", {
+    invoke<TablePageResult>("get_table_page", {
       sessionId,
       schema,
       table,

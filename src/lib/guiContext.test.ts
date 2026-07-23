@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildGuiContext } from "./guiContext";
-import type { Tab } from "./store/types";
+import type { Tab } from "./store";
 import type { StatementResult } from "./types";
 
 const result: StatementResult = {

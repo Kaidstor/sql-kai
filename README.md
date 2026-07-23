@@ -33,6 +33,42 @@ npx skills add https://gitlab.com/kaidstor/sql-kai --skill sql-kai
 - **Backend**: Rust, `tokio-postgres` (simple-query протокол — сервер сам форматирует значения в текст, любые типы отображаются без маппинга), собственный vault (`aes-gcm` + `argon2` — секреты шифруются мастер-паролем), SSH-туннели через супервизию системного `ssh -N -L`.
 - **Frontend**: React 19, Vite 8, Tailwind CSS v4, zustand, TanStack Table, CodeMirror 6 (`@codemirror/lang-sql`).
 
+## Соглашения кода
+
+Чтобы одинаковые вещи назывались одинаково в обоих доменах (Table / Structure) и
+на обеих сторонах IPC:
+
+- **Файлы `src/components/`**: `PascalCase.tsx` — файл-компонент (один экспорт,
+  имя файла = имя компонента); `lowercase.tsx|ts` — модуль-набор мелких экспортов
+  (`ui.tsx`, `grid/menus.tsx`, `grid/copyActions.ts`, `structure/shared.tsx`) и
+  хуки (`useGridSelection.ts`).
+- **Импорт стора** — всегда из барреля `lib/store`, не из `lib/store/types` и не
+  из `lib/store/slices/*`.
+- **Глаголы получения данных**: `refresh*` — принудительный перезапрос
+  (`refreshTables`, `refreshTablePage`, `refreshProfiles`), `load*` — «взять, если
+  ещё не в кэше» (`loadTableColumns`, `loadSchemaEnums`), `get*` — тонкая обёртка
+  над одной IPC-командой в `lib/api.ts`.
+- **Стейджинг правок**: `stage*` — поставить правку в очередь, `unstage*` — снять
+  (`unstageInsertRow`, `unstageColumnAdd`), `set<Что><Состояние>(…, value)` —
+  идемпотентная пометка (`setRowsDeleted`, `setColumnDropped`), `applyXEdits` /
+  `discardXEdits` — применить транзакцией / сбросить (домен в имени: `applyTableEdits`,
+  `applyStructureEdits`).
+- **Флаги**: `loading` — загрузка данных вкладки (в сторе), `running` — исполняется
+  запрос, `busy` — локальный `useState` вокруг одного действия; видимость панелей —
+  `*Open` (`sidebarOpen`, `filterOpen`).
+- **Типы** (`lib/types.ts`): `*Config` — блок настроек соединения, `*Settings` —
+  настройки приложения, `*Info` — запись каталога БД, `*Result` — ответ команды
+  бэкенда, `*Status` — состояние.
+- **Env-переменные** — префикс `SQL_KAI_*` (см. `src-tauri/src/bin/sql-kai-cli/envvar.rs`).
+- **Язык user-facing строк** — по адресату, а не по крейту: всё, что может дойти до
+  GUI (ошибки `src-tauri/src/**` вне `bin/`, тосты фронтенда и **весь** diagnostics-лог
+  `logging::log`, включая холдерский — его показывает LogViewer), пишем по-английски;
+  вывод, который читает только пользователь CLI (`bin/sql-kai-cli/**` и текст ошибок
+  broker-протокола, который рендерит CLI-клиент), — по-русски.
+- **Rust, запись на диск** (`store.rs`): `save_*` — переписать коллекцию целиком,
+  `upsert_*` — вставить/обновить элемент (ошибка важна), `record_*` — дописать
+  событие best-effort.
+
 ## Возможности
 
 - Профили подключений: сохраняются в `~/Library/Application Support/sql-kai/profiles.json` (файл 0600, только несекретные поля). Пароли БД и SSH-passphrase шифруются в `vault.json`: один случайный ключ (DEK) шифрует все секреты одним AES-256-GCM блобом, сам DEK обёрнут ключом из мастер-пароля (Argon2id). При старте vault разблокируется один раз на всю сессию — никаких per-connection промптов ОС. Все конфиг-файлы пишутся атомарно (tmp+fsync+rename), DEK зачищается из памяти при блокировке.
@@ -88,20 +124,20 @@ sql-kai holder stop                 # погасить фоновый держа
   ssh-мастер (`ControlMaster` + `ControlPersist`) — первый запрос платит за
   аутентификацию, последующие цепляются к готовому мастеру без повторной
   авторизации (запросы за туннелем заметно быстрее). Включено по умолчанию;
-  `--no-mux` отключает, `KAI_SSH_MUX_TTL` задаёт TTL, `sql-kai tunnel list|close`
+  `--no-mux` отключает, `SQL_KAI_SSH_MUX_TTL` задаёт TTL, `sql-kai tunnel list|close`
   управляет мастерами. GUI не затронут.
 - **Сессии между запусками (holder):** запущенный GUI обслуживает `sql-kai q`
   своей сессией через брокер; без GUI первый `sql-kai q` сам поднимает фоновый
   `sql-kai holder run` с тем же протоколом — pg-сессии и ssh-туннели живут между
   вызовами (повторные запросы не платят за connect), открытая транзакция
   доживает до следующего вызова. Holder разлочивает vault только тихо
-  (trust / `KAI_VAULT_PASSWORD`, env-пароль после разлока вычищается из
+  (trust / `SQL_KAI_VAULT_PASSWORD`, env-пароль после разлока вычищается из
   окружения), гаснет сам через ~2 мин без сессий; немедленно — `sql-kai holder
   stop`, vault lock в GUI или `sql-kai vault revoke`. Одиночный вызов мимо
   GUI/holder — `--local` (одноразовая сессия) или `--no-mux` (плюс свежий
   ssh без ControlMaster).
 - **Интеграция с [sec](https://github.com/Kaidstor/sec)** (агент-безопасный менеджер секретов; хранилища не сливаются —
-  vault для GUI, sec для CLI). sql-kai зовёт `sec` из PATH (или `KAI_SEC_BIN`), ключ
+  vault для GUI, sec для CLI). sql-kai зовёт `sec` из PATH (или `SQL_KAI_SEC_BIN`), ключ
   по конвенции `<имя>/DB_PASSWORD`:
   - `sql-kai discover --to-sec [--no-vault]` — пароль БД в sec (прод-политика: не в vault),
     `sql-kai <alias> --from-sec` — брать пароль из sec на лету;
@@ -111,9 +147,12 @@ sql-kai holder stop                 # погасить фоновый держа
   - история запросов маскирует литералы паролей при записи, `sql-kai history --scan` проверяет
     её через `sec scan`.
 - Vault в CLI разлочивается по цепочке: keychain-trust (`sql-kai vault trust` —
-  копия DEK в login keychain, чтение без промптов) → `KAI_VAULT_PASSWORD` →
+  копия DEK в login keychain, чтение без промптов) → `SQL_KAI_VAULT_PASSWORD` →
   запрос в TTY; полный обход — `--password-env VAR`.
-- `SQL_KAI_CONFIG_DIR` переопределяет конфиг-директорию (изолированные окружения/тесты).
+- Env-переменные — единый префикс `SQL_KAI_*`: `SQL_KAI_CONFIG_DIR` (конфиг-директория —
+  изолированные окружения/тесты), `SQL_KAI_VAULT_PASSWORD` (мастер-пароль vault),
+  `SQL_KAI_SSH_PASSPHRASE` (askpass для ssh-ключа), `SQL_KAI_SSH_MUX_TTL` (TTL ssh-мастера,
+  сек; по умолч. 300), `SQL_KAI_SEC_BIN` (путь к `sec`).
 
 Установка:
 

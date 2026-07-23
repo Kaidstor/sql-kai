@@ -24,7 +24,7 @@ export function LogViewer() {
     let cancelled = false;
     const load = () =>
       api
-        .readLog()
+        .getLog()
         .then((t) => !cancelled && setText(t))
         .catch(() => {
           // file may not exist yet — keep whatever is on screen

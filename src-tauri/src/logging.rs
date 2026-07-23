@@ -3,6 +3,10 @@
 //! Purpose-built for "why did my connection drop?": connection lifecycle,
 //! ssh stderr and the pg termination reason land here with timestamps.
 //! Writes are best-effort — logging must never break a query path.
+//!
+//! GUI and CLI (including the holder) append to the same file, and the GUI's
+//! LogViewer renders it — so log messages are written in English everywhere,
+//! even from the otherwise Russian-speaking CLI.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

@@ -59,7 +59,7 @@ pub fn ssh_base(alias: &str) -> Command {
     cmd.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"])
         .arg("--")
         .arg(alias);
-    cmd.env_remove("KAI_VAULT_PASSWORD");
+    sql_kai_lib::vault::scrub_master_password_env(&mut cmd);
     cmd
 }
 

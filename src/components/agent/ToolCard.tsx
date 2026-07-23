@@ -32,7 +32,7 @@ import {
   type AgentToolOutput,
 } from "../../lib/agentTool";
 import type { StatementResult } from "../../lib/types";
-import type { AgentToolItem } from "../../lib/store/slices/agent";
+import type { AgentToolItem } from "../../lib/store";
 import { cn } from "../ui";
 
 export function ToolStatusIcon({ status }: { status: string }) {

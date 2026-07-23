@@ -1,5 +1,5 @@
 import { Plus, Undo2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   useApp,
   type NewColumn,
@@ -8,6 +8,7 @@ import {
   type Tab,
 } from "../lib/store";
 import { TabError } from "./TabError";
+import { useLazyTabLoad } from "./useLazyTabLoad";
 import { IndexesSection } from "./structure/IndexesSection";
 import { PoliciesSection } from "./structure/PoliciesSection";
 import { RelationsSection } from "./structure/RelationsSection";
@@ -106,7 +107,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
   const setStructureSection = useApp((s) => s.setStructureSection);
   const refreshStructure = useApp((s) => s.refreshStructure);
   const stageColumnEdit = useApp((s) => s.stageColumnEdit);
-  const toggleColumnDrop = useApp((s) => s.toggleColumnDrop);
+  const setColumnDropped = useApp((s) => s.setColumnDropped);
   const stageColumnAdd = useApp((s) => s.stageColumnAdd);
   const unstageColumnAdd = useApp((s) => s.unstageColumnAdd);
   const discardStructureEdits = useApp((s) => s.discardStructureEdits);
@@ -114,13 +115,11 @@ export function StructureTab({ tab }: { tab: Tab }) {
   const [adding, setAdding] = useState(false);
   const connected = Boolean(sessions[tab.profileId]);
 
-  // Lazy load: restored/reopened tabs fetch when first shown, not in bulk at boot.
-  useEffect(() => {
-    if (connected && !state[state.section] && !state.loading && !state.error) {
-      void refreshStructure(tab.id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected]);
+  useLazyTabLoad(
+    connected,
+    Boolean(state[state.section] || state.loading || state.error),
+    () => void refreshStructure(tab.id),
+  );
 
   const dirty =
     Object.keys(state.colEdits).length +
@@ -162,7 +161,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
         {state.section === "columns" && dirty > 0 && (
           <PendingChangesBar
             count={dirty}
-            busy={state.loading}
+            loading={state.loading}
             applyTitle="⌘S — runs all staged DDL in one transaction"
             onApply={() => void applyStructureEdits(tab.id)}
             onDiscard={() => discardStructureEdits(tab.id)}
@@ -176,7 +175,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
             <Plus size={14} />
           </IconButton>
           <RefreshButton
-            busy={state.loading}
+            loading={state.loading}
             onClick={() => void refreshStructure(tab.id)}
           />
         </div>
@@ -231,7 +230,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
                       <Td>
                         <IconButton
                           title="Restore column"
-                          onClick={() => toggleColumnDrop(tab.id, col.name)}
+                          onClick={() => setColumnDropped(tab.id, col.name, false)}
                         >
                           <Undo2 size={13} />
                         </IconButton>
@@ -315,7 +314,7 @@ export function StructureTab({ tab }: { tab: Tab }) {
                     <Td>
                       <IconButton
                         title={`Drop column ${col.name} (staged)`}
-                        onClick={() => toggleColumnDrop(tab.id, col.name)}
+                        onClick={() => setColumnDropped(tab.id, col.name, true)}
                       >
                         <X size={13} />
                       </IconButton>

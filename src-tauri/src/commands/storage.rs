@@ -77,6 +77,6 @@ pub fn log_event(message: String) {
 
 /// Tail of the diagnostics log for the in-app viewer (menu → Diagnostics Log).
 #[tauri::command]
-pub fn read_log() -> Result<String, AppError> {
+pub fn get_log() -> Result<String, AppError> {
     logging::read_tail(256 * 1024)
 }

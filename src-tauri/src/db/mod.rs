@@ -19,6 +19,6 @@ pub use exec::{
     QueryExecutor, StatementResult,
 };
 pub use export::{
-    export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportOutcome,
+    export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportResult,
 };
 pub use sqltext::{advance_tx, is_tx_control_only, split_statements, TxStatus};

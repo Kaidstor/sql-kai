@@ -6,7 +6,12 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::Profile;
 use sql_kai_lib::vault;
 
-/// Тихая часть цепочки разлока (без TTY): keychain-trust -> KAI_VAULT_PASSWORD.
+/// Мастер-пароль vault из окружения (см. `envvar` — единый префикс SQL_KAI_*).
+fn master_password_env() -> Option<String> {
+    crate::envvar::value(vault::MASTER_PASSWORD_ENV)
+}
+
+/// Тихая часть цепочки разлока (без TTY): keychain-trust -> SQL_KAI_VAULT_PASSWORD.
 /// Holder поднимается только через неё — TTY у него нет по построению.
 pub fn unlock_vault_headless() -> Result<(), AppError> {
     if vault::is_unlocked() {
@@ -20,23 +25,21 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
     if vault::unlock_cli_trust().is_ok() {
         return Ok(());
     }
-    if let Ok(pw) = std::env::var("KAI_VAULT_PASSWORD") {
-        if !pw.is_empty() {
-            return vault::unlock_password(&pw);
-        }
+    if let Some(pw) = master_password_env() {
+        return vault::unlock_password(&pw);
     }
-    Err(AppError::Msg(
-        "vault заблокирован — настрой `sql-kai vault trust`, задай KAI_VAULT_PASSWORD \
-         или используй --password-env"
-            .into(),
-    ))
+    Err(AppError::Msg(format!(
+        "vault заблокирован — настрой `sql-kai vault trust`, задай {} \
+         или используй --password-env",
+        vault::MASTER_PASSWORD_ENV,
+    )))
 }
 
 /// Спавнить holder имеет смысл, только если он сможет тихо разлочить vault —
 /// иначе каждый `sql-kai q` плодил бы мгновенно умирающий процесс.
 pub fn headless_unlock_possible() -> bool {
     vault::is_unlocked()
-        || std::env::var("KAI_VAULT_PASSWORD").map(|v| !v.is_empty()).unwrap_or(false)
+        || master_password_env().is_some()
         || (vault::exists() && vault::cli_trust_enrolled())
 }
 
@@ -64,17 +67,16 @@ pub(super) fn ensure_vault(profile: &Profile, have_override: bool) -> Result<(),
     unlock_vault()
 }
 
-/// Мастер-пароль для нового vault: KAI_VAULT_PASSWORD или двойной ввод в TTY.
+/// Мастер-пароль для нового vault: SQL_KAI_VAULT_PASSWORD или двойной ввод в TTY.
 pub fn read_new_password() -> Result<String, AppError> {
-    if let Ok(pw) = std::env::var("KAI_VAULT_PASSWORD") {
-        if !pw.is_empty() {
-            return Ok(pw);
-        }
+    if let Some(pw) = master_password_env() {
+        return Ok(pw);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(AppError::Msg(
-            "нет TTY — задай мастер-пароль через KAI_VAULT_PASSWORD".into(),
-        ));
+        return Err(AppError::Msg(format!(
+            "нет TTY — задай мастер-пароль через {}",
+            vault::MASTER_PASSWORD_ENV,
+        )));
     }
     let pw = rpassword::prompt_password("новый мастер-пароль: ").map_err(AppError::Io)?;
     let again = rpassword::prompt_password("ещё раз: ").map_err(AppError::Io)?;

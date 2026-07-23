@@ -5,7 +5,7 @@ import { copyText } from "../lib/clipboard";
 import { fmtDuration } from "../lib/format";
 import {
   useApp,
-  type ActivityRow,
+  type ActivityInfo,
   type ActivityTabState,
   type Tab,
 } from "../lib/store";
@@ -22,7 +22,7 @@ function stateColor(state: string): string {
 
 /** Колонки грида: подпись заголовка и текст ячейки — он же уходит в ⌘C
  *  и в read-only просмотр по ⌘⏎ (декорации вроде ⛔/— не копируются). */
-const COLS: { label: string; value: (r: ActivityRow) => string }[] = [
+const COLS: { label: string; value: (r: ActivityInfo) => string }[] = [
   { label: "pid", value: (r) => r.pid },
   { label: "state", value: (r) => r.state },
   { label: "duration", value: (r) => fmtDuration(r.querySec) },
@@ -62,10 +62,10 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     );
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, state.refreshSec, state.showIdle]);
+  }, [connected, state.refreshSec, state.includeIdle]);
 
   /** pg_cancel_backend (soft) / pg_terminate_backend (kills the connection). */
-  const signal = async (row: ActivityRow, terminate: boolean) => {
+  const signal = async (row: ActivityInfo, terminate: boolean) => {
     if (!session) return;
     if (
       terminate &&
@@ -142,7 +142,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   };
 
   /** Обработчики выбора/просмотра для ячейки данных (ci — индекс в COLS). */
-  const cellProps = (r: ActivityRow, ri: number, ci: number) => ({
+  const cellProps = (r: ActivityInfo, ri: number, ci: number) => ({
     onMouseDown: (e: React.MouseEvent) => {
       if (e.button !== 0) return;
       // WKWebView тянет нативное текстовое выделение по drag — гасим его,
@@ -154,7 +154,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     onDoubleClick: () => openDialog(ri, ci),
   });
 
-  const focusCls = (r: ActivityRow, ci: number) =>
+  const focusCls = (r: ActivityInfo, ci: number) =>
     focus?.pid === r.pid &&
     focus.col === ci &&
     "bg-sky-500/20 shadow-[inset_0_0_0_1px_var(--color-sky-500)]";
@@ -164,15 +164,15 @@ export function ActivityTab({ tab }: { tab: Tab }) {
       <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-zinc-800 px-2 py-1.5 text-[12px]">
         <span className="font-medium text-zinc-300">pg_stat_activity</span>
         <RefreshButton
-          busy={state.loading}
+          loading={state.loading}
           onClick={() => void refreshActivity(tab.id)}
         />
         <label className="flex cursor-pointer items-center gap-1.5 pl-1 text-[11px] text-zinc-400">
           <input
             type="checkbox"
-            checked={state.showIdle}
+            checked={state.includeIdle}
             onChange={(e) =>
-              setActivityOptions(tab.id, { showIdle: e.target.checked })
+              setActivityOptions(tab.id, { includeIdle: e.target.checked })
             }
             className="accent-sky-600"
           />
@@ -360,7 +360,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
           </table>
           {rows.length === 0 && (
             <div className="px-3 py-3 text-[12px] text-zinc-600">
-              no {state.showIdle ? "" : "non-idle "}backends
+              no {state.includeIdle ? "" : "non-idle "}backends
             </div>
           )}
         </div>

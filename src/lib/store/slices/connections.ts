@@ -16,7 +16,7 @@ import type {
 } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
 import { columnsKey, omitBy, without } from "../helpers";
-import type { FunctionInfo } from "../types";
+import type { FunctionInfo, RelRef } from "../types";
 
 export interface ConnectionsSlice {
   profiles: Profile[];
@@ -87,17 +87,9 @@ export interface ConnectionsSlice {
   duplicateProfile: (id: string) => Promise<void>;
   /** Re-reads the profile list from disk — sql-kai discover/rm changed it
    *  (triggered by the profiles://changed broker event). */
-  reloadProfiles: () => Promise<void>;
-  loadTableColumns: (
-    profileId: string,
-    schema: string,
-    table: string,
-  ) => Promise<void>;
-  loadTableRelations: (
-    profileId: string,
-    schema: string,
-    table: string,
-  ) => Promise<void>;
+  refreshProfiles: () => Promise<void>;
+  loadTableColumns: (ref: RelRef) => Promise<void>;
+  loadTableRelations: (ref: RelRef) => Promise<void>;
 }
 
 /** Grace period between "Delete" and the profile actually going away. */
@@ -547,7 +539,7 @@ export function createConnectionsSlice(
       }
     },
 
-    reloadProfiles: async () => {
+    refreshProfiles: async () => {
       try {
         set({ profiles: await api.listProfiles() });
       } catch {
@@ -555,26 +547,26 @@ export function createConnectionsSlice(
       }
     },
 
-    loadTableColumns: async (profileId, schema, table) => {
-      const key = columnsKey(profileId, schema, table);
+    loadTableColumns: async (ref) => {
+      const key = columnsKey(ref);
       if (get().tableColumns[key]) return;
-      const session = get().sessions[profileId];
+      const session = get().sessions[ref.profileId];
       if (!session) return;
       try {
-        const cols = await api.listColumns(session.sessionId, schema, table);
+        const cols = await api.listColumns(session.sessionId, ref.schema, ref.table);
         set((s) => ({ tableColumns: { ...s.tableColumns, [key]: cols } }));
       } catch (e) {
-        get().showToast(ctx.handleSqlError(profileId, e));
+        get().showToast(ctx.handleSqlError(ref.profileId, e));
       }
     },
 
-    loadTableRelations: async (profileId, schema, table) => {
-      const key = columnsKey(profileId, schema, table);
+    loadTableRelations: async (ref) => {
+      const key = columnsKey(ref);
       if (get().tableRelations[key]) return;
-      const session = get().sessions[profileId];
+      const session = get().sessions[ref.profileId];
       if (!session) return;
       try {
-        const rels = await api.listRelations(session.sessionId, schema, table);
+        const rels = await api.listRelations(session.sessionId, ref.schema, ref.table);
         set((s) => ({ tableRelations: { ...s.tableRelations, [key]: rels } }));
       } catch {
         // non-fatal: FK navigation just stays off for this table
