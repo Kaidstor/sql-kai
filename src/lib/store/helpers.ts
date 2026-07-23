@@ -1,21 +1,19 @@
 // Pure helpers shared by the slices — no store access, no side effects.
 import type { RelRef, StructureTabState, Tab, TableTabState } from "./types";
 
-/** Next free "Query N" title, counting open and reopenable tabs. */
-export function nextQueryTitle(s: {
-  tabs: Tab[];
-  closedTabs: { tab: Tab }[];
-}): string {
-  let max = 0;
-  const titles = [
-    ...s.tabs.map((t) => t.title),
-    ...s.closedTabs.map((c) => c.tab.title),
-  ];
-  for (const title of titles) {
-    const m = /^Query (\d+)$/.exec(title);
-    if (m) max = Math.max(max, Number(m[1]));
+/** Smallest free "Query N" title among open tabs (VS Code untitled-style).
+ *  The ⌘⇧T reopen stack is deliberately not counted: it persists across runs,
+ *  so counting it made the numbering grow forever. A restored closed tab may
+ *  therefore collide with a live title — cosmetic only, identity is the id. */
+export function nextQueryTitle(s: { tabs: Tab[] }): string {
+  const used = new Set<number>();
+  for (const t of s.tabs) {
+    const m = /^Query (\d+)$/.exec(t.title);
+    if (m) used.add(Number(m[1]));
   }
-  return `Query ${max + 1}`;
+  let n = 1;
+  while (used.has(n)) n++;
+  return `Query ${n}`;
 }
 
 /** Immutably merges a patch into one tab's state (caller vouches for the kind). */
