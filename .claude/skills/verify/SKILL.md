@@ -140,6 +140,27 @@ await s.runQuery(tab.id);
 (результата нет, ошибки нет) — просто повтори вызов в следующем
 `evaluate_script`, второй проход стабилен.
 
+## Вкладка таблицы (TableTab)
+
+Грид вкладки таблицы ходит другим путём, чем query-таб:
+
+- Открытие: **`openTableTab(profileId, schema, table)`** — первый аргумент
+  именно profileId (легко перепутать со schema). Перепутаешь — стор молча
+  создаст вкладку с profileId="public": `refreshTablePage` выйдет на
+  `sessionFor(...) == null` без ошибки (`loading:false, error:null`,
+  данных нет) — тупик выглядит как «ничего не произошло».
+- Данные грузятся командой **`get_table_page`** (не `execute_sql`) →
+  `{result: StatementResult, durationMs, approxRows}`; в сторе лежат в
+  **`tab.state.data.result`** (не `state.result`, как у query-таба).
+- Дефолтный `pageSize` — 100; для проверок на большом объёме:
+  `refreshTablePage(tabId, { pageSize: 1000 })` — patch мержится в state
+  перед перезагрузкой страницы.
+- Pending-вставки (зелёные строки) для проверки грида:
+  `duplicateRows(tabId, [ri, …])` — все дубликаты получают `after`
+  последней строки-источника и рендерятся под ней.
+- Редактирование (dblclick по ячейке) доступно только при PK — шимовый
+  `list_columns` должен отдавать `isPk: true` хотя бы одной колонке.
+
 ## Фолбэк без MCP (playwright-core)
 
 MCP — не единственный способ довести браузер до страницы; шим, набор
