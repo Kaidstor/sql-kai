@@ -3,7 +3,26 @@
 Десктопный Postgres-клиент (Tauri 2 + React 19) с нативной поддержкой SSH-туннелей
 и CLI `sql-kai` поверх того же ядра (внутри бандла — sidecar `sql-kai-cli`).
 
+![Запрос и грид результатов](docs/screenshots/query.png)
+
+<p align="center">
+  <img src="docs/screenshots/launcher.png" width="49.5%" alt="Лаунчер подключений: группы, акценты, PROD-бейджи" />
+  <img src="docs/screenshots/table.png" width="49.5%" alt="Вкладка таблицы: staged-правки и pending-вставки до Apply" />
+</p>
+
 ## Установка (macOS, Apple Silicon)
+
+### Homebrew
+
+```bash
+brew install --no-quarantine kaidstor/tap/sql-kai
+```
+
+`--no-quarantine` обязателен: приложение подписано dev-сертификатом без
+нотаризации, иначе Gatekeeper заблокирует первый запуск. Каск ставит и
+CLI `sql-kai` в PATH; дальше приложение обновляется само (кнопка в статус-баре).
+
+### Вручную (.dmg)
 
 1. Скачайте `.dmg` из [последнего релиза](https://github.com/Kaidstor/sql-kai/releases/latest) и перетащите sql-kai в Applications.
 2. Приложение подписано dev-сертификатом без нотаризации, поэтому первый запуск macOS заблокирует («приложение повреждено» / «не удаётся проверить разработчика»). Обход: System Settings → Privacy & Security → **Open Anyway**, либо снять карантин командой:

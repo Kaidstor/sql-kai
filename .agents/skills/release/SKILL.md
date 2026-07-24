@@ -10,7 +10,9 @@ compatibility: Требует авторизованный gh CLI и .env с к�
 tauri.conf.json, Cargo.toml/lock) → коммит `release: vX.Y.Z` → сборка
 (.app + dmg + CLI sql-kai sidecar'ом) → тег → push → GitHub-релиз с
 changelog → `latest.json` → загрузка артефактов (`gh release upload`) →
-зеркало `latest.json` в GitLab (пока `GITLAB_LATEST_MIRROR=1`).
+зеркало `latest.json` в GitLab (пока `GITLAB_LATEST_MIRROR=1`) →
+автобамп Homebrew-каска (`BREW_CASK=../homebrew-tap/Casks/sql-kai.rb`:
+version/sha256 + push tap).
 
 ## Предусловия
 
@@ -39,6 +41,7 @@ changelog → `latest.json` → загрузка артефактов (`gh relea
    Пока включён `GITLAB_LATEST_MIRROR=1` — дополнительно, что GitLab-зеркало
    отдаёт свежую версию:
    `https://gitlab.com/<NAMESPACE>/<PROJECT>/-/releases/permalink/latest/downloads/latest.json`.
+   Каск в `../homebrew-tap` забампился и запушился (git log tap-репо).
 
 ## Changelog
 
