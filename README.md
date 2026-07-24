@@ -15,23 +15,18 @@
 ### Homebrew
 
 ```bash
-brew install --no-quarantine kaidstor/tap/sql-kai
+brew install kaidstor/tap/sql-kai
 ```
 
-`--no-quarantine` обязателен: приложение подписано dev-сертификатом без
-нотаризации, иначе Gatekeeper заблокирует первый запуск. Каск ставит и
-CLI `sql-kai` в PATH; дальше приложение обновляется само (кнопка в статус-баре).
+Каск ставит приложение и CLI `sql-kai` в PATH.
 
 ### Вручную (.dmg)
 
-1. Скачайте `.dmg` из [последнего релиза](https://github.com/Kaidstor/sql-kai/releases/latest) и перетащите sql-kai в Applications.
-2. Приложение подписано dev-сертификатом без нотаризации, поэтому первый запуск macOS заблокирует («приложение повреждено» / «не удаётся проверить разработчика»). Обход: System Settings → Privacy & Security → **Open Anyway**, либо снять карантин командой:
+Скачайте `.dmg` из [последнего релиза](https://github.com/Kaidstor/sql-kai/releases/latest) и перетащите sql-kai в Applications.
 
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/sql-kai.app
-   ```
-
-3. Дальше приложение обновляется само — кнопка в статус-баре (updater качает обновления без карантина, обход больше не понадобится).
+Приложение подписано Developer ID и нотаризовано Apple (с v1.20.1) — Gatekeeper
+запускает его без предупреждений. Дальше оно обновляется само — кнопка в
+статус-баре.
 
 CLI `sql-kai` лежит внутри бандла — чтобы он был в PATH и обновлялся вместе с приложением:
 
