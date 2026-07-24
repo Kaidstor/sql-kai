@@ -42,7 +42,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "signingIdentity": "Apple Development: kaidstor@gmail.com (4Q86T46QBB)"
+      "signingIdentity": "Developer ID Application: Anton Lobanov (4SR685J3M9)",
+      "hardenedRuntime": true
     }
   },
   "plugins": {
