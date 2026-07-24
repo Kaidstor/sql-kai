@@ -1,10 +1,12 @@
+import { Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { fuzzyScore, highlightRuns } from "../lib/fuzzy";
+import { isMac } from "../lib/platform";
 import { profileAddr, queryScopeOf, scopeLabelOf } from "../lib/profile";
 import { sqlPreview } from "../lib/sql";
 import { useApp } from "../lib/store";
-import { cn, ColorDot, Overlay } from "./ui";
+import { cn, ColorDot, IconButton, Overlay } from "./ui";
 
 /** Text with the fuzzy-matched characters highlighted. */
 function Hl({ query, text }: { query: string; text: string }) {
@@ -34,6 +36,9 @@ interface PaletteItem {
   keywords: string;
   hint?: string;
   action: () => void;
+  /** Deletable item: hover shows a trash button, Ctrl+X removes the selected
+   *  one. The callback owns confirmation — the palette stays open. */
+  onDelete?: () => void;
 }
 
 /** Rows rendered at once — symbol lists reach thousands of items, and the
@@ -67,6 +72,11 @@ function PaletteModal({
 
   useEffect(() => setSel(0), [query]);
 
+  // deleting the last item leaves sel past the end — pull it back in range
+  useEffect(() => {
+    setSel((s) => Math.min(s, Math.max(filtered.length - 1, 0)));
+  }, [filtered.length]);
+
   const run = (item?: PaletteItem) => {
     const target = item ?? filtered[sel];
     if (!target) return;
@@ -99,6 +109,21 @@ function PaletteModal({
               e.preventDefault();
               run();
             }
+            if (
+              e.ctrlKey &&
+              !e.metaKey &&
+              !e.altKey &&
+              !e.shiftKey &&
+              e.key.toLowerCase() === "x"
+            ) {
+              // on Windows/Linux Ctrl+X is "cut" — keep it while text is selected
+              const cut = e.currentTarget.selectionStart !== e.currentTarget.selectionEnd;
+              const target = filtered[sel];
+              if (!cut && target?.onDelete) {
+                e.preventDefault();
+                target.onDelete();
+              }
+            }
           }}
           className="w-full border-b border-zinc-800 bg-transparent px-4 py-3 text-[13px] text-zinc-100 outline-none placeholder:text-zinc-600"
         />
@@ -111,7 +136,7 @@ function PaletteModal({
                 onMouseEnter={() => setSel(i)}
                 onClick={() => run(item)}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2.5 rounded-md px-3 py-2",
+                  "group flex cursor-pointer items-center gap-2.5 rounded-md px-3 py-2",
                   i === sel && "bg-zinc-800",
                 )}
               >
@@ -137,6 +162,19 @@ function PaletteModal({
                   <span className="shrink-0 text-[10px] text-zinc-600">
                     {item.hint}
                   </span>
+                )}
+                {item.onDelete && (
+                  <IconButton
+                    tabIndex={-1}
+                    title={isMac ? "Delete ⌃X" : "Delete (Ctrl+X)"}
+                    className="-my-1 opacity-0 group-hover:opacity-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      item.onDelete?.();
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </IconButton>
                 )}
               </div>
             );
@@ -165,6 +203,8 @@ export function Palette() {
   const selectProfile = useApp((s) => s.selectProfile);
   const activeProfileId = useApp((s) => s.activeProfileId);
   const openSavedQuery = useApp((s) => s.openSavedQuery);
+  const deleteQuery = useApp((s) => s.deleteQuery);
+  const confirmDialog = useApp((s) => s.confirmDialog);
   const tables = useApp((s) => s.tables);
   const schemaColumns = useApp((s) => s.schemaColumns);
   const schemaFunctions = useApp((s) => s.schemaFunctions);
@@ -276,6 +316,14 @@ export function Palette() {
     subtitle: sqlPreview(q.sql),
     keywords: `${q.name} ${q.sql}`,
     action: () => profile && openSavedQuery(profile.id, q),
+    onDelete: async () => {
+      const ok = await confirmDialog({
+        title: `Delete saved query "${q.name}"?`,
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (ok) void deleteQuery(q.id);
+    },
   }));
   return (
     <PaletteModal

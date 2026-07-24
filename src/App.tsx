@@ -505,7 +505,6 @@ function App() {
       <UpdateToast />
       <WhatsNewDialog />
       <ConnectionDialog />
-      <ConfirmDialog />
       <SettingsDialog />
       <LogViewer />
       <Palette />
@@ -513,6 +512,9 @@ function App() {
         open={showShortcuts}
         onClose={() => setShowShortcuts(false)}
       />
+      {/* последним: confirm вызывается и поверх других оверлеев (палитра),
+          а стекинг одинаковых z-50 решает порядок в DOM */}
+      <ConfirmDialog />
     </div>
     </VaultGate>
   );
