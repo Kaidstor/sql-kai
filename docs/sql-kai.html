@@ -83,8 +83,8 @@ codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri
 
 <h3>Другим пользователям (готовый бинарь из релиза)</h3>
 <p>Начиная с первого релиза после добавления CLI, <code>release.sh</code> кладёт
-<code>sql-kai-cli-darwin-aarch64.tar.gz</code> в assets GitLab-релиза:</p>
-<pre><code>curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/sql-kai-cli-darwin-aarch64.tar.gz \
+<code>sql-kai-cli-darwin-aarch64.tar.gz</code> в assets GitHub-релиза:</p>
+<pre><code>curl -fL https://github.com/Kaidstor/sql-kai/releases/latest/download/sql-kai-cli-darwin-aarch64.tar.gz \
   | tar xz -C /usr/local/bin        # или ~/.local/bin, если он в PATH
 sql-kai --version</code></pre>
 <div class="note">Бинарь только для macOS arm64 (собирается локально на машине мейнтейнера).

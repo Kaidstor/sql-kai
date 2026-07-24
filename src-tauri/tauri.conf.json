@@ -50,6 +50,7 @@
       "active": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2NUE2OUQxQzcwMzFBMTQKUldRVUdnUEgwV2xhOWw2MmxOOXJpTSs2SlB1aS9QZzZQZllpSWFkM0hJWWdDRlhtNlpLRzRnNVoK",
       "endpoints": [
+        "https://github.com/Kaidstor/sql-kai/releases/latest/download/latest.json",
         "https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/latest.json"
       ]
     }

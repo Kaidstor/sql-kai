@@ -1,21 +1,24 @@
 ---
 name: release
-description: Выпустить релиз sql-kai — бамп версии, тег, GitLab-релиз с changelog, сборка .app/dmg/sql-kai и артефакты автообновления (latest.json). Использовать когда пользователь просит «сделай релиз», «выпусти версию», «зарелизь», «бампни версию» в этом репозитории.
-compatibility: Требует .env с GITLAB_TOKEN и ключами подписи Tauri, pnpm/jq/curl/rust в PATH; сборка и загрузка идут с этой машины (локальное «CI», GitLab CI не участвует)
+description: Выпустить релиз sql-kai — бамп версии, тег, GitHub-релиз с changelog, сборка .app/dmg/sql-kai и артефакты автообновления (latest.json). Использовать когда пользователь просит «сделай релиз», «выпусти версию», «зарелизь», «бампни версию» в этом репозитории.
+compatibility: Требует авторизованный gh CLI и .env с ключами подписи Tauri, pnpm/jq/curl/rust в PATH; сборка и загрузка идут с этой машины (локальное «CI», внешний CI не участвует)
 ---
 
 # Релиз sql-kai
 
 Всё делает `./release.sh` из корня репо: бамп версий (package.json,
-tauri.conf.json, Cargo.toml/lock) → коммит `release: vX.Y.Z` → тег → push →
-GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sidecar'ом) →
-`latest.json` → загрузка артефактов и линковка к релизу.
+tauri.conf.json, Cargo.toml/lock) → коммит `release: vX.Y.Z` → сборка
+(.app + dmg + CLI sql-kai sidecar'ом) → тег → push → GitHub-релиз с
+changelog → `latest.json` → загрузка артефактов (`gh release upload`) →
+зеркало `latest.json` в GitLab (пока `GITLAB_LATEST_MIRROR=1`).
 
 ## Предусловия
 
-- `.env` в корне: `GITLAB_TOKEN` (project access token, scope api),
-  `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
-  `NAMESPACE`, `PROJECT`, `PROJECT_ID`, `API`.
+- `gh` CLI авторизован (`gh auth status`); релиз уходит в репозиторий из
+  remote `origin`.
+- `.env` в корне: `TAURI_SIGNING_PRIVATE_KEY`,
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; для GitLab-зеркала —
+  `GITLAB_TOKEN`, `PROJECT_ID`, `API`.
 - **Чистое рабочее дерево.** Скрипт коммитит только файлы версий — всё
   остальное должно быть закоммичено заранее, иначе незакоммиченное попадёт
   в собранные артефакты, но не в git (артефакты перестанут соответствовать тегу).
@@ -30,8 +33,11 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sideca
    `./release.sh 1.2.0`.
 4. Запустить `./release.sh [версия]`. Сборка небыстрая (cargo release +
    bundling) — запускать в фоне и следить за выводом.
-5. Проверить: страница релиза на GitLab (описание = changelog, ассеты
+5. Проверить: страница релиза на GitHub (описание = changelog, ассеты
    привязаны) и `latest.json` по
+   `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`.
+   Пока включён `GITLAB_LATEST_MIRROR=1` — дополнительно, что GitLab-зеркало
+   отдаёт свежую версию:
    `https://gitlab.com/<NAMESPACE>/<PROJECT>/-/releases/permalink/latest/downloads/latest.json`.
 
 ## Changelog
@@ -40,7 +46,7 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sideca
   (merge- и release-коммиты отфильтровываются).
 - Переопределить: `NOTES="- пункт 1
 - пункт 2" ./release.sh …`
-- Уходит в описание GitLab-релиза и в поле `notes` `latest.json`.
+- Уходит в описание GitHub-релиза и в поле `notes` `latest.json`.
 
 ## Флаги
 
@@ -49,34 +55,23 @@ GitLab-релиз с changelog → сборка (.app + dmg + CLI sql-kai sideca
 
 ## Если что-то пошло не так
 
-- **`git push` упал (сеть/ssh до gitlab.com)** — скрипт пушит с ретраями и
+- **`git push` упал (сеть/ssh до github.com)** — скрипт пушит с ретраями и
   ssh-таймаутами, но если всё равно упало, сначала выяснить, что успело
   улететь: `git ls-remote origin refs/heads/main "refs/tags/vX.Y.Z"`.
   - *Ни ветка, ни тег не запушены* — release-коммит и тег только локальные,
-    релиза на GitLab нет: `git tag -d vX.Y.Z`, `git reset --hard HEAD~1`
+    релиза на GitHub нет: `git tag -d vX.Y.Z`, `git reset --hard HEAD~1`
     и перезапустить скрипт начисто.
   - *Ветка запушилась, тег — нет* — **не делать `reset --hard`** (разведёт
-    локальную main с remote). Допушить тег: `git push origin vX.Y.Z`
-    (при флапе — в цикле с `GIT_SSH_COMMAND="ssh -o ConnectTimeout=8
-    -o ServerAliveInterval=5 -o ServerAliveCountMax=2"`). Затем выполнить
-    хвост скрипта: вырезать из release.sh всё от `echo "> Создаём релиз…"`
-    до конца в отдельный скрипт, задать в нём `NEW_VER`, `TAG`,
-    `RELEASE_NOTES` (**явно**: авто-changelog уже не собрать — тег стоит на
-    HEAD и `git log <тег>..HEAD` пуст), `DEBUG=0`, `SKIP_BUILD=`,
-    подгрузить `.env` — и запустить.
-- **HTTP != 201 при создании релиза** — чаще всего тег/релиз уже существует
-  (повторный запуск). Скрипт к этому моменту уже закоммитил бамп и запушил
-  тег: либо продолжить с `SKIP_BUILD=1` не выйдет (создание релиза стоит до
-  сборки) — удалить релиз/тег на GitLab и перезапустить, либо поднять версию.
-- **Сборка упала после создания релиза** — релиз уже существует без ассетов;
-  починить сборку и перезапустить только хвост нельзя, проще удалить
-  релиз+тег на GitLab, `git reset --hard HEAD~1` (release-коммит) и заново.
-- **Упал на заливке ассетов** (сеть; curl'ы и так ретраят) — релиз есть,
-  артефакты собраны в `src-tauri/target/release/bundle`. Не перезапускать весь
-  скрипт: дозалить оставшиеся файлы повтором цикла upload+link из release.sh
-  (`POST /uploads` → `POST /releases/<tag>/assets/links`), дождавшись сети.
-  Проверить итог: permalink `latest.json` отдаёт новую версию, у релиза все
-  5 ассетов.
+    локальную main с remote). Перезапустить с той же версией:
+    `SKIP_BUILD=1 ./release.sh X.Y.Z` — бамп-коммит пропустится (версии уже
+    стоят), тег на HEAD переиспользуется, артефакты возьмутся из bundle.
+- **Упал после создания релиза / на заливке ассетов** — флоу идемпотентен:
+  существующий релиз переиспользуется, ассеты перезаливаются с `--clobber`.
+  Перезапустить `SKIP_BUILD=1 ./release.sh X.Y.Z` (артефакты уже в
+  `src-tauri/target/release/bundle`). Changelog при таком перезапуске задать
+  явно через `NOTES=` — тег уже на HEAD и `git log <тег>..HEAD` пуст.
+  Проверить итог: `releases/latest/download/latest.json` отдаёт новую версию,
+  у релиза все ассеты (app.tar.gz+sig, dmg, CLI-архив, latest.json).
 
 ## После релиза
 

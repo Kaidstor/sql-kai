@@ -5,7 +5,7 @@
 
 ## Установка (macOS, Apple Silicon)
 
-1. Скачайте `.dmg` из [последнего релиза](https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest) и перетащите sql-kai в Applications.
+1. Скачайте `.dmg` из [последнего релиза](https://github.com/Kaidstor/sql-kai/releases/latest) и перетащите sql-kai в Applications.
 2. Приложение подписано dev-сертификатом без нотаризации, поэтому первый запуск macOS заблокирует («приложение повреждено» / «не удаётся проверить разработчика»). Обход: System Settings → Privacy & Security → **Open Anyway**, либо снять карантин командой:
 
    ```bash
@@ -25,7 +25,7 @@ ln -sf /Applications/sql-kai.app/Contents/MacOS/sql-kai-cli ~/.local/bin/sql-kai
 В репозитории есть скилл `sql-kai` ([skills/sql-kai/SKILL.md](skills/sql-kai/SKILL.md)) по спецификации [Agent Skills](https://agentskills.io) — инструкции агенту, как выполнять SQL через CLI. Установка (CLI сам спросит, в какого агента и куда — в проект или глобально):
 
 ```bash
-npx skills add https://gitlab.com/kaidstor/sql-kai --skill sql-kai
+npx skills add https://github.com/Kaidstor/sql-kai --skill sql-kai
 ```
 
 ## Стек
@@ -161,8 +161,8 @@ sql-kai holder stop                 # погасить фоновый держа
 cargo install --path src-tauri --features cli --bin sql-kai
 codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/sql-kai
 
-# готовый бинарь из GitLab-релиза (macOS arm64; собирает и грузит release.sh)
-curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloads/sql-kai-cli-darwin-aarch64.tar.gz \
+# готовый бинарь из GitHub-релиза (macOS arm64; собирает и грузит release.sh)
+curl -fL https://github.com/Kaidstor/sql-kai/releases/latest/download/sql-kai-cli-darwin-aarch64.tar.gz \
   | tar xz -C /usr/local/bin
 ```
 
@@ -172,7 +172,7 @@ curl -fL https://gitlab.com/kaidstor/sql-kai/-/releases/permalink/latest/downloa
 pnpm install
 pnpm tauri dev     # разработка
 pnpm tauri build   # сборка .app/.dmg
-./release.sh       # локальный релиз: бамп версии, сборка, подпись, GitLab-релиз
+./release.sh       # локальный релиз: бамп версии, сборка, подпись, GitHub-релиз
                    # (артефакты автообновления + sql-kai-cli-darwin-aarch64.tar.gz)
 ```
 
