@@ -200,10 +200,16 @@ pub fn setup(password: &str) -> Result<(), AppError> {
 }
 
 /// Decrypts the secrets blob with a recovered DEK and installs the session.
+fn decrypt_secrets(
+    dek: &[u8; 32],
+    file: &VaultFile,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let plain = decrypt(dek, &file.secrets)?;
+    serde_json::from_slice(&plain).map_err(|e| AppError::Msg(format!("vault is corrupted: {e}")))
+}
+
 fn install_unlocked(dek: [u8; 32], file: VaultFile) -> Result<(), AppError> {
-    let plain = decrypt(&dek, &file.secrets)?;
-    let secrets: BTreeMap<String, String> = serde_json::from_slice(&plain)
-        .map_err(|e| AppError::Msg(format!("vault is corrupted: {e}")))?;
+    let secrets = decrypt_secrets(&dek, &file)?;
     *VAULT.lock().unwrap() = Some(Unlocked { dek, secrets, file });
     Ok(())
 }
@@ -376,14 +382,23 @@ pub fn lock() {
 /// against that profile goes through the already-running holder, which then
 /// connects with no password at all.
 ///
-/// No-op when the vault is locked (nothing to refresh) or absent.
+/// No-op when the vault is locked (nothing to refresh) or absent — including
+/// when it gets locked *while* this runs: reading and decrypting the file
+/// happens with the mutex released, so the user may have hit Lock in the GUI
+/// meanwhile. Re-installing unconditionally would quietly unlock it again,
+/// leaving secrets in memory while the UI shows the vault as sealed.
 pub fn refresh_secrets() -> Result<(), AppError> {
     let dek = match VAULT.lock().unwrap().as_ref() {
         Some(v) => v.dek,
         None => return Ok(()),
     };
     let file = read_file()?;
-    install_unlocked(dek, file)
+    let secrets = decrypt_secrets(&dek, &file)?;
+    if let Some(v) = VAULT.lock().unwrap().as_mut() {
+        v.secrets = secrets;
+        v.file = file;
+    }
+    Ok(())
 }
 
 pub fn get_secret(key: &str) -> Option<String> {

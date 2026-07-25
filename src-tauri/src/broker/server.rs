@@ -314,8 +314,9 @@ async fn do_query(
             code: "read_only_tx",
             message: "read-only сессия: батч вышел бы из read-only транзакции, в которой \
                       выполняется, или снял бы с неё read-only (COMMIT/ROLLBACK/END/ABORT/\
-                      PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only). \
-                      Повтори с --write, если он действительно должен менять данные."
+                      PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only, \
+                      включая форму set_config()). Повтори с --write, если он действительно \
+                      должен менять данные."
                 .into(),
             sqlstate: Some("25006".into()),
         });
@@ -329,6 +330,16 @@ async fn do_query(
             // read_only_sql_transaction — ближайший по смыслу SQLSTATE
             sqlstate: Some("25006".into()),
         });
+    }
+
+    // Батч из одного COMMIT идёт мимо read-only обёртки как штатный способ
+    // закрыть транзакцию, которую оставил открытой предыдущий --write. Но если
+    // та транзакция read-write, COMMIT фиксирует чужую запись — на production
+    // это ровно та операция, ради которой барьер и стоит, а прийти сюда может
+    // кто угодно, в том числе MCP-агент с write:false. ROLLBACK не трогаем:
+    // выбросить незакоммиченное можно всегда.
+    if !write && tx_control_only && before_write && db::commits_tx(sql) {
+        guard_prod_write(profile_id, q.prod_write_authorized)?;
     }
 
     if write {

@@ -26,6 +26,8 @@
 //! является и не может быть — пометку такой процесс поставит сам, как сам
 //! прочитает и профили; барьер защищает от нечаянной записи, а не от подмены.
 
+use std::collections::BTreeSet;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
 
 use sql_kai_lib::error::AppError;
@@ -202,12 +204,16 @@ pub fn guard_prod_write_by_id(profile_id: &str) -> Result<(), AppError> {
     }
 }
 
-/// Куда ssh-алиас ведёт на самом деле: (hostname, port, user) по `ssh -G`.
+/// Куда ssh-алиас ведёт на самом деле — итоговый `hostname` из `ssh -G`.
 /// `~/.ssh/config` разрешает называть один хост сколькими угодно именами —
 /// второй `Host`-блок, FQDN, голый IP, — поэтому сравнения алиасов строкой мало:
 /// под другим именем того же прода запись проходила мимо барьера. `ssh -G`
 /// только печатает итоговую конфигурацию и никуда не подключается.
-fn ssh_endpoint(alias: &str) -> Option<(String, String, String)> {
+///
+/// Ни порт, ни пользователь в ключ не входят: `deploy@prod` и `root@prod` — одна
+/// и та же машина с одними и теми же контейнерами, а лишнее поле в ключе стоит
+/// не лишнего вопроса, а несработавшего барьера.
+fn ssh_hostname(alias: &str) -> Option<String> {
     let out = std::process::Command::new("ssh")
         .args(["-G", "--", alias])
         .output()
@@ -216,28 +222,44 @@ fn ssh_endpoint(alias: &str) -> Option<(String, String, String)> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let (mut host, mut port, mut user) = (None, None, None);
-    for line in text.lines() {
-        if let Some((key, value)) = line.split_once(' ') {
-            let value = value.trim().to_ascii_lowercase();
-            match key {
-                "hostname" => host = Some(value),
-                "port" => port = Some(value),
-                "user" => user = Some(value),
-                _ => {}
-            }
-        }
+    text.lines()
+        .find_map(|l| l.strip_prefix("hostname "))
+        .map(|v| v.trim().to_ascii_lowercase())
+}
+
+/// Адреса, в которые разрешается хост. Порт для резолва любой — на выбор
+/// адресов он не влияет.
+fn host_addrs(host: &str) -> Option<BTreeSet<IpAddr>> {
+    let addrs: BTreeSet<IpAddr> = (host, 22u16)
+        .to_socket_addrs()
+        .ok()?
+        .map(|a| a.ip())
+        .collect();
+    (!addrs.is_empty()).then_some(addrs)
+}
+
+/// Один ли это ssh-хост. Сначала имена, потом адреса: тот же прод, записанный
+/// FQDN в `~/.ssh/config` и голым IP в командной строке, даёт разные строки, и
+/// сравнение имён его пропускает. Резолв стоит похода в DNS, поэтому он второй
+/// ступенью; когда резолва нет (нет сети, имя живёт только внутри VPN), барьер
+/// остаётся ровно таким, каким был на сравнении имён.
+fn same_ssh_host(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
     }
-    Some((host?, port?, user?))
+    match (host_addrs(a), host_addrs(b)) {
+        (Some(x), Some(y)) => !x.is_disjoint(&y),
+        _ => false,
+    }
 }
 
 /// Барьер для `sql-kai exec <ssh-alias>`: профиля в аргументах нет, но если на
 /// тот же ssh-хост смотрит production-профиль, то `docker exec psql` — такая
 /// же запись в прод, как обычная сессия, и мимо барьера идти не должна.
 ///
-/// Сначала дешёвое совпадение по имени, затем — резолв через [`ssh_endpoint`]
-/// для алиасов-синонимов. Если `ssh -G` недоступен, остаётся только первый
-/// уровень: барьер не строже прежнего, но и не слабее.
+/// Сначала дешёвое совпадение по имени, затем — резолв через [`ssh_hostname`]
+/// и [`same_ssh_host`] для алиасов-синонимов. Если `ssh -G` недоступен, остаётся
+/// только первый уровень: барьер не строже прежнего, но и не слабее.
 pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppError> {
     let all = store::load_profiles()?;
     let named = all.iter().find(|p| {
@@ -252,14 +274,13 @@ pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppEr
     if let Some(profile) = named {
         return authorize_prod_write(profile, explicit);
     }
-    let target = ssh_endpoint(alias);
-    let resolved = target.and_then(|target| {
+    let resolved = ssh_hostname(alias).and_then(|target| {
         all.iter().find(|p| {
             p.production
                 && p.ssh
                     .as_ref()
-                    .and_then(|s| ssh_endpoint(&s.host))
-                    .is_some_and(|endpoint| endpoint == target)
+                    .and_then(|s| ssh_hostname(&s.host))
+                    .is_some_and(|host| same_ssh_host(&host, &target))
         })
     });
     match resolved {

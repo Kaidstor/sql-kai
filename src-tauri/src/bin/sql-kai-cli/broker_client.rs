@@ -40,6 +40,10 @@ pub struct BrokerQuery {
 pub enum BrokerError {
     /// Транспорт/протокол умер — уходим на автономный путь.
     Transport(String),
+    /// Сервер не смог открыть сессию профиля (база не отвечает, туннель не
+    /// поднялся). Провал случился ДО отправки SQL, поэтому запрос точно не
+    /// выполнялся и автономный повтор безопасен даже для записи.
+    Connect(String),
     /// Vault в GUI заблокирован — sql-kai разблокирует сам (автономный путь).
     VaultLocked,
     /// Сервер выполнил запрос и вернул ошибку (SQL и т.п.) — финальный ответ.
@@ -54,6 +58,7 @@ impl std::fmt::Display for BrokerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BrokerError::Transport(m) => write!(f, "broker: {m}"),
+            BrokerError::Connect(m) => write!(f, "{m}"),
             BrokerError::VaultLocked => write!(f, "vault заблокирован в GUI"),
             BrokerError::Query { message, .. } => write!(f, "{message}"),
         }
@@ -162,6 +167,22 @@ async fn connect_path(path: &Path, via: Via) -> Option<BrokerClient> {
     )
     .ok()?;
     if hello.protocol != broker::PROTOCOL_VERSION {
+        // Разойтись версии могут надолго: CLI — симлинк в бандл и обновляется
+        // сразу, а GUI живёт старым процессом, пока его не перезапустят. Молча
+        // уйти на автономный путь значит оставить человека гадать, почему вдруг
+        // спрашивают мастер-пароль и не переиспользуются сессии.
+        if via == Via::Gui {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "sql-kai: запущенный sql-kai.app говорит на старой версии протокола \
+                     ({} вместо {}) — работаю мимо него. Перезапусти приложение, чтобы \
+                     вернуть общие сессии и тихий доступ к vault.",
+                    hello.protocol,
+                    broker::PROTOCOL_VERSION
+                );
+            });
+        }
         return None;
     }
     b.hello = hello;
@@ -197,6 +218,7 @@ impl BrokerClient {
             let code = v.get("code").and_then(Value::as_str).unwrap_or("");
             return Err(match code {
                 "vault_locked" => BrokerError::VaultLocked,
+                "connect" => BrokerError::Connect(err.to_string()),
                 // Отказ по существу запроса. `read_only_tx` здесь обязателен:
                 // это решение брокера («батч вывел бы себя из read-only
                 // транзакции», «открыта чужая read-write транзакция»), а не сбой
@@ -210,8 +232,9 @@ impl BrokerClient {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 },
-                // connect/cancel/no_session/protocol — считаем транспортными:
-                // автономный путь либо решит проблему, либо покажет свою ошибку
+                // cancel/no_session/protocol/unsupported — считаем
+                // транспортными: автономный путь либо решит проблему, либо
+                // покажет свою ошибку
                 _ => BrokerError::Transport(err.to_string()),
             });
         }

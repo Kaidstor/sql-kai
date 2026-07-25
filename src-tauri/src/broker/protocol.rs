@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::{self, TxStatus};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Версия 2 — прод-барьер (`prodWriteAuthorized`) и read-only транзакция вокруг
+/// читающих батчей. У сервера версии 1 этих проверок нет вовсе, поэтому свежий
+/// клиент с ним говорить не должен: `SET default_transaction_read_only = off`
+/// и следом запись прошли бы на живой сессии мимо всех гейтов.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 pub struct Request {
