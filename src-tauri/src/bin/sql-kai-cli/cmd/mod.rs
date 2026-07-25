@@ -9,6 +9,7 @@ pub mod holder;
 pub mod import;
 pub mod init;
 pub mod introspect;
+pub mod logs;
 pub mod mcp;
 pub mod mcp_setup;
 pub mod profiles;

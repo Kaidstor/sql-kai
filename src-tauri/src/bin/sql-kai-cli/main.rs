@@ -31,6 +31,7 @@ use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
 use cmd::init::InitArgs;
 use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
+use cmd::logs::LogsArgs;
 use cmd::mcp::McpArgs;
 use cmd::profiles::ProfilesCmd;
 use cmd::query::QueryArgs;
@@ -76,6 +77,8 @@ enum Cmd {
     Query(QueryArgs),
     /// Прямой режим без профиля: ssh <alias> -> docker exec psql
     Exec(ExecArgs),
+    /// Журнал postgres-сервера профиля (ssh -> docker logs контейнера)
+    Logs(LogsArgs),
     /// Найти postgres на ssh-хосте и создать/обновить профиль
     Discover(DiscoverArgs),
     /// Массовый импорт профилей из JSON (stdin/файл), пароли — в vault
@@ -178,6 +181,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Completion(a) => cmd::completion::run(a),
         Cmd::Query(a) => cmd::query::run(a).await,
         Cmd::Exec(a) => cmd::exec::run(a),
+        Cmd::Logs(a) => cmd::logs::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
         Cmd::Import(a) => cmd::import::run(a).await,
         Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { filter: None, fmt: Default::default() })).await,
