@@ -1,7 +1,12 @@
 //! `sql-kai doctor` — здоровье соединений: для каждого профиля проверяет, что
 //! сохранённый пароль ещё аутентифицируется, и, если пароль дублируется в sec,
 //! ловит дрейф (в vault одно, в sec другое, в БД работает третье).
+//!
+//! Здесь же — «чем поставлен сам CLI»: правильный совет по обновлению у каска,
+//! бандла и сборки из исходников разный, а `brew upgrade` для не-brew установки
+//! (и наоборот) только путает.
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
@@ -18,6 +23,247 @@ pub struct DoctorArgs {
     alias: Option<String>,
     #[command(flatten)]
     fmt: FormatArgs,
+    /// Только способ установки и путь обновления (без проверки паролей)
+    #[arg(long)]
+    install_info: bool,
+}
+
+/// Имя каска и бандла — одно и то же во всех вариантах установки.
+const APP_NAME: &str = "sql-kai";
+/// Куда каск и .dmg кладут приложение.
+const APP_DIR: &str = "/Applications";
+
+/// Чем в систему попал работающий бинарь. Выводится только из фактов
+/// файловой системы (путь запуска, куда ведёт симлинк, каталог каска):
+/// своих маркеров установки sql-kai никуда не пишет, так что гадать не по чему,
+/// и каждый вариант ниже подкреплён путём, который видно в выводе.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallKind {
+    /// Бинарь из бандла .app, и рядом лежит каталог каска Homebrew.
+    BrewCask,
+    /// Бинарь из бандла .app без следов Homebrew: .dmg вручную (симлинк сделан
+    /// руками или кнопкой «Install CLI» в GUI).
+    Bundle,
+    /// `~/.cargo/bin` — поставлен `cargo install`.
+    Cargo,
+    /// `target/debug|release` — сборка из исходников.
+    Dev,
+    Unknown,
+}
+
+pub(crate) struct InstallInfo {
+    pub kind: InstallKind,
+    /// Путь, которым бинарь запущен (обычно симлинк из PATH).
+    pub invoked: PathBuf,
+    /// Куда этот путь ведёт на самом деле.
+    pub real: PathBuf,
+    /// Бандл .app, внутри которого лежит `real`.
+    pub bundle: Option<PathBuf>,
+    /// Каталог каска — тот самый признак, по которому выбран BrewCask.
+    pub caskroom: Option<PathBuf>,
+}
+
+/// Ближайший предок-бандл: `…/sql-kai.app/Contents/MacOS/sql-kai-cli` → `….app`.
+fn bundle_of(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(Path::to_path_buf)
+}
+
+/// `<префикс>/Caskroom/sql-kai` — метаданные установленного каска. Префикс
+/// берём из окружения brew (нестандартная установка) и из двух штатных.
+fn caskroom_dir() -> Option<PathBuf> {
+    let mut prefixes: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("HOMEBREW_PREFIX") {
+        if !p.is_empty() {
+            prefixes.push(PathBuf::from(p));
+        }
+    }
+    prefixes.push(PathBuf::from("/opt/homebrew"));
+    prefixes.push(PathBuf::from("/usr/local"));
+    prefixes
+        .into_iter()
+        .map(|p| p.join("Caskroom").join(APP_NAME))
+        .find(|p| p.is_dir())
+}
+
+/// `…/target/{debug,release}/sql-kai-cli` — рабочая сборка из дерева исходников
+/// (в т.ч. с общим CARGO_TARGET_DIR).
+fn in_target_dir(path: &Path) -> bool {
+    let dir = path.parent();
+    let profile = dir.and_then(Path::file_name).and_then(|n| n.to_str());
+    let parent = dir
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str());
+    matches!(profile, Some("debug") | Some("release")) && parent == Some("target")
+}
+
+/// `$CARGO_HOME/bin` (по умолчанию `~/.cargo/bin`) — результат `cargo install`.
+fn in_cargo_bin(path: &Path) -> bool {
+    let home = std::env::var("CARGO_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cargo")));
+    home.is_some_and(|h| path.starts_with(h.join("bin")))
+}
+
+pub(crate) fn detect_install() -> InstallInfo {
+    let invoked = std::env::current_exe().unwrap_or_default();
+    // current_exe на macOS отдаёт путь запуска — симлинк из PATH так и остаётся
+    // симлинком; настоящее место бинаря даёт только canonicalize.
+    let real = std::fs::canonicalize(&invoked).unwrap_or_else(|_| invoked.clone());
+    let bundle = bundle_of(&real);
+    let caskroom = bundle.as_ref().and_then(|_| caskroom_dir());
+    let kind = match (&bundle, &caskroom) {
+        (Some(_), Some(_)) => InstallKind::BrewCask,
+        (Some(_), None) => InstallKind::Bundle,
+        (None, _) if in_target_dir(&real) => InstallKind::Dev,
+        (None, _) if in_cargo_bin(&real) => InstallKind::Cargo,
+        _ => InstallKind::Unknown,
+    };
+    InstallInfo {
+        kind,
+        invoked,
+        real,
+        bundle,
+        caskroom,
+    }
+}
+
+impl InstallInfo {
+    /// Стабильный идентификатор для машинных форматов.
+    pub(crate) fn id(&self) -> &'static str {
+        match self.kind {
+            InstallKind::BrewCask => "brew-cask",
+            InstallKind::Bundle => "bundle",
+            InstallKind::Cargo => "cargo",
+            InstallKind::Dev => "dev",
+            InstallKind::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn label(&self) -> &'static str {
+        match self.kind {
+            InstallKind::BrewCask => "Homebrew cask",
+            InstallKind::Bundle => "приложение из .dmg (бинарь в бандле)",
+            InstallKind::Cargo => "cargo install",
+            InstallKind::Dev => "dev-сборка из исходников",
+            InstallKind::Unknown => "неизвестно",
+        }
+    }
+
+    /// Единственный путь обновления, который для этой установки сработает.
+    pub(crate) fn upgrade(&self) -> &'static str {
+        match self.kind {
+            // auto_updates в каске значит, что обычный `brew upgrade` его
+            // пропускает, — без --greedy совет был бы бесполезным.
+            InstallKind::BrewCask => {
+                "brew upgrade --cask --greedy sql-kai (каск с auto_updates, без --greedy \
+                 brew его пропустит); CLI — симлинк в бандл, обновится вместе с приложением"
+            }
+            InstallKind::Bundle => {
+                "приложение обновляет себя само (кнопка в статус-баре GUI) либо свежий .dmg \
+                 из релизов; CLI — симлинк в бандл, обновится вместе с ним"
+            }
+            InstallKind::Cargo => {
+                "cargo install --path src-tauri --features cli --bin sql-kai-cli из свежего чекаута"
+            }
+            InstallKind::Dev => {
+                "git pull && cargo build --release --features cli --bin sql-kai-cli"
+            }
+            InstallKind::Unknown => {
+                "источник бинаря не опознан — поставь заново: brew install kaidstor/tap/sql-kai \
+                 либо симлинк на sql-kai-cli внутри бандла приложения"
+            }
+        }
+    }
+
+    /// Приложение установлено, а CLI собран отдельно — версии разъедутся первым
+    /// же обновлением GUI (конфиги общие, набор команд — нет).
+    pub(crate) fn note(&self) -> Option<String> {
+        let app = PathBuf::from(APP_DIR).join(format!("{APP_NAME}.app"));
+        let separate = matches!(
+            self.kind,
+            InstallKind::Cargo | InstallKind::Dev | InstallKind::Unknown
+        );
+        (separate && app.exists()).then(|| {
+            format!(
+                "рядом стоит {}, но в PATH — отдельная сборка CLI: версии GUI и CLI будут \
+                 расходиться. Вернуть связку: ln -sf {}/Contents/MacOS/sql-kai-cli <путь-в-PATH>/sql-kai",
+                app.display(),
+                app.display()
+            )
+        })
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": self.id(),
+            "label": self.label(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "bin": self.invoked.display().to_string(),
+            "realBin": self.real.display().to_string(),
+            "bundle": self.bundle.as_ref().map(|p| p.display().to_string()),
+            "caskroom": self.caskroom.as_ref().map(|p| p.display().to_string()),
+            "upgrade": self.upgrade(),
+            "note": self.note(),
+        })
+    }
+
+    /// Ключи те же, что в JSON, — csv/tuples остаются разбираемыми теми же полями.
+    fn kv(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("kind", self.id().to_string()),
+            ("version", env!("CARGO_PKG_VERSION").to_string()),
+            ("bin", self.invoked.display().to_string()),
+            ("realBin", self.real.display().to_string()),
+        ];
+        if let Some(b) = &self.bundle {
+            rows.push(("bundle", b.display().to_string()));
+        }
+        if let Some(c) = &self.caskroom {
+            rows.push(("caskroom", c.display().to_string()));
+        }
+        rows.push(("upgrade", self.upgrade().to_string()));
+        if let Some(n) = self.note() {
+            rows.push(("note", n));
+        }
+        rows
+    }
+}
+
+/// Человеческий блок про установку: что стоит, откуда запущено, чем обновлять.
+fn print_install_table(i: &InstallInfo) {
+    println!("установка:  {} (sql-kai {})", i.label(), env!("CARGO_PKG_VERSION"));
+    if i.real == i.invoked {
+        println!("бинарь:     {}", i.invoked.display());
+    } else {
+        println!("бинарь:     {} → {}", i.invoked.display(), i.real.display());
+    }
+    if let Some(c) = &i.caskroom {
+        println!("признак:    {}", c.display());
+    }
+    println!("обновление: {}", i.upgrade());
+    if let Some(n) = i.note() {
+        println!("внимание:   {n}");
+    }
+}
+
+fn print_install(i: &InstallInfo, fmt: Format) {
+    match fmt {
+        Format::Json => println!("{}", serde_json::to_string_pretty(&i.json()).unwrap()),
+        Format::Table => print_install_table(i),
+        Format::Csv | Format::Tuples => {
+            let rows: Vec<Vec<Option<String>>> = i
+                .kv()
+                .into_iter()
+                .map(|(k, v)| vec![Some(k.to_string()), Some(v)])
+                .collect();
+            output::print_rows(&["key", "value"], &rows, fmt);
+        }
+    }
 }
 
 /// Итог проверки одного источника пароля.
@@ -44,6 +290,19 @@ async fn can_connect(profile: &Profile, password: Option<String>) -> Result<(), 
 }
 
 pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
+    let fmt = a.fmt.pick();
+    let install = detect_install();
+    if a.install_info {
+        print_install(&install, fmt);
+        return Ok(ExitCode::SUCCESS);
+    }
+    // В машинных форматах вывод команды — это таблица профилей; блок про
+    // установку в них сломал бы разбор, за ним ходят через --install-info.
+    if fmt == Format::Table {
+        print_install_table(&install);
+        println!();
+    }
+
     let mut profiles = store::load_profiles()?;
     if let Some(alias) = &a.alias {
         // Единый резолв с `sql-kai q`: id, имя или группа.
@@ -104,7 +363,6 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         }));
     }
 
-    let fmt = a.fmt.pick();
     if fmt == Format::Json {
         println!("{}", serde_json::to_string_pretty(&rows).unwrap());
     } else {
@@ -130,4 +388,30 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bundle_of, in_target_dir};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn bundle_of_finds_the_app() {
+        assert_eq!(
+            bundle_of(Path::new("/Applications/sql-kai.app/Contents/MacOS/sql-kai-cli")),
+            Some(PathBuf::from("/Applications/sql-kai.app"))
+        );
+        assert_eq!(bundle_of(Path::new("/opt/homebrew/bin/sql-kai")), None);
+        // .app в имени самого бинаря бандлом не делает
+        assert_eq!(bundle_of(Path::new("/tmp/sql-kai-cli")), None);
+    }
+
+    #[test]
+    fn in_target_dir_matches_cargo_layout() {
+        assert!(in_target_dir(Path::new("/repo/src-tauri/target/debug/sql-kai-cli")));
+        assert!(in_target_dir(Path::new("/repo/src-tauri/target/release/sql-kai-cli")));
+        // чужой каталог с тем же именем профиля — не сборка
+        assert!(!in_target_dir(Path::new("/opt/release/sql-kai-cli")));
+        assert!(!in_target_dir(Path::new("/opt/homebrew/bin/sql-kai")));
+    }
 }

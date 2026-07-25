@@ -120,6 +120,8 @@ sql-kai logs <alias> [-f] [-n 200]  # журнал postgres профиля: ssh 
 sql-kai tables|columns|ddl|indexes <alias> [schema.]table
 sql-kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
 sql-kai doctor                      # сохранённые пароли ещё аутентифицируются?
+sql-kai doctor --install-info       # чем поставлен CLI и чем его обновлять
+sql-kai feedback "…"                # ссылка на issue с диагностикой (не отправляет сам)
 sql-kai tunnel list|close [--all]   # персистентные ssh-туннели (ControlMaster)
 sql-kai vault trust                 # тихий доступ CLI к паролям vault (keychain)
 sql-kai sessions                    # живые сессии GUI-брокера и holder'а
