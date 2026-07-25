@@ -7,6 +7,7 @@ pub mod history;
 pub mod holder;
 pub mod import;
 pub mod introspect;
+pub mod logs;
 pub mod mcp;
 pub mod profiles;
 pub mod query;

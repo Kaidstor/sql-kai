@@ -115,6 +115,7 @@ sql-kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/
 sql-kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
 sql-kai import [--file f.json]      # массовый импорт профилей из JSON (пароли → vault)
 sql-kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
+sql-kai logs <alias> [-f] [-n 200]  # журнал postgres профиля: ssh → docker logs
 sql-kai tables|columns|ddl|indexes <alias> [schema.]table
 sql-kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
 sql-kai doctor                      # сохранённые пароли ещё аутентифицируются?
