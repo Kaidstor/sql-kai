@@ -53,15 +53,30 @@ pub struct LogsArgs {
 /// (локальный docker на macOS).
 ///
 /// Postgres пишет журнал в stderr, поэтому сливаем его в stdout: иначе привычное
-/// `sql-kai logs prod | grep ERROR` не увидело бы ни строчки. `exec` вместо
-/// вызова — чтобы при `--follow` поток шёл без лишнего bash в середине.
+/// `sql-kai logs prod | grep ERROR` не увидело бы ни строчки. Разовый запрос
+/// уходит через `exec` — незачем держать bash в середине потока.
+///
+/// В `--follow` bash, наоборот, остаётся сторожем. Ssh мы зовём без pty
+/// (см. [`remote::run_via_stdin`]), поэтому Ctrl+C убивает только локальный ssh:
+/// удалённый `docker logs --follow` заметил бы закрытый пайп лишь при следующей
+/// строке журнала, а на молчащей базе не заметил бы никогда — и каждый
+/// прерванный `logs -f` оставлял бы на хосте ещё один висящий процесс. Признак
+/// «нас бросили» — смерть родителя (`$PPID`: сессия sshd, а локально сам
+/// sql-kai); опрос раз в 2 с, потому что ждать нечего, кроме чужой смерти.
 const LOGS_TAIL: &str = r#"if [ -n "${KAI_VERBOSE:-}" ]; then echo "[container=$C]" >&2; fi
 set -- --tail "${KAI_TAIL:-500}"
 [ -n "${KAI_SINCE:-}" ] && set -- "$@" --since "$KAI_SINCE"
 [ -n "${KAI_UNTIL:-}" ] && set -- "$@" --until "$KAI_UNTIL"
 [ -n "${KAI_TIMESTAMPS:-}" ] && set -- "$@" --timestamps
-[ -n "${KAI_FOLLOW:-}" ] && set -- "$@" --follow
-exec $D logs "$@" "$C" 2>&1
+if [ -z "${KAI_FOLLOW:-}" ]; then
+  exec $D logs "$@" "$C" 2>&1
+fi
+$D logs "$@" --follow "$C" 2>&1 &
+KAI_PID=$!
+trap 'kill $KAI_PID 2>/dev/null; exit 130' HUP INT TERM
+while kill -0 $KAI_PID 2>/dev/null && kill -0 $PPID 2>/dev/null; do sleep 2; done
+kill $KAI_PID 2>/dev/null
+wait $KAI_PID 2>/dev/null
 "#;
 
 /// Где крутится docker с базой профиля.
@@ -78,9 +93,14 @@ fn is_loopback(host: &str) -> bool {
 
 /// Профиль без ssh и не в петле — это либо managed-база, либо postgres не в
 /// docker: `docker logs` там взять неоткуда, поэтому честно говорим об этом.
+///
+/// Включён ли ssh, спрашиваем у [`Profile::ssh_alias`] — пустой `ssh.host` это
+/// «ssh выключен», а не хост с пустым именем. Иначе такой профиль уезжал бы в
+/// `ssh -- '' bash -s` с «Could not resolve hostname» вместо локального
+/// `docker logs` (или внятного отказа про managed-базу).
 fn resolve_target(p: &Profile) -> Result<Target, AppError> {
-    if let Some(ssh) = &p.ssh {
-        return Ok(Target::Ssh(ssh.host.clone()));
+    if let Some(host) = p.ssh_alias() {
+        return Ok(Target::Ssh(host.to_string()));
     }
     if is_loopback(&p.host) {
         return Ok(Target::Local);
@@ -249,6 +269,40 @@ mod tests {
         assert!(validate_when("--until", "2026-07-25T10:00:00Z").is_ok());
         assert!(validate_when("--since", "-f").is_err());
         assert!(validate_when("--since", "").is_err());
+    }
+
+    fn profile(host: &str, ssh_host: Option<&str>) -> Profile {
+        Profile {
+            id: String::new(),
+            name: "p".into(),
+            host: host.into(),
+            port: 5432,
+            database: "db".into(),
+            user: "u".into(),
+            ssh: ssh_host.map(|h| sql_kai_lib::store::SshConfig {
+                host: h.into(),
+                user: None,
+                port: None,
+                key_path: None,
+                keepalive_interval: None,
+            }),
+            group: None,
+            color: None,
+            production: false,
+            ssl: None,
+            has_password: false,
+            has_ssh_passphrase: false,
+            last_connected: None,
+        }
+    }
+
+    #[test]
+    fn empty_ssh_host_means_no_ssh() {
+        let p = profile("10.0.0.5", Some("bastion"));
+        assert!(matches!(resolve_target(&p).unwrap(), Target::Ssh(h) if h == "bastion"));
+        // ssh: Some с пустым host — «ssh выключен», как это читает db::connect
+        assert!(matches!(resolve_target(&profile("127.0.0.1", Some("  "))), Ok(Target::Local)));
+        assert!(resolve_target(&profile("10.0.0.5", Some(""))).is_err());
     }
 
     #[test]

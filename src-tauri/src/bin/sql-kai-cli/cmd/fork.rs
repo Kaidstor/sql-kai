@@ -146,6 +146,23 @@ fn container_state(name: &str) -> Result<Option<String>, AppError> {
     Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
+/// Публикует ли контейнер этот порт на хосте. Нужно, чтобы отличить «порт держит
+/// тот самый форк, который сейчас пересоздаётся» от чужого процесса на нём.
+/// Смотрим привязку из конфига, а не `docker port`: у остановленного контейнера
+/// порт не опубликован, но при `docker start` он снова понадобится.
+fn container_publishes_port(name: &str, port: u16) -> Result<bool, AppError> {
+    const FMT: &str =
+        "{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}} {{end}}{{end}}";
+    let out = docker_out(&["container", "inspect", "--format", FMT, name])?;
+    if !out.status.success() {
+        return Ok(false);
+    }
+    let want = port.to_string();
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .any(|p| p == want))
+}
+
 /// Образ есть локально? (иначе тянем явно, чтобы «docker run» не молчал минуту)
 fn image_present(image: &str) -> Result<bool, AppError> {
     Ok(docker_out(&["image", "inspect", "--format", "{{.Id}}", image])?
@@ -260,6 +277,51 @@ fn create_dump_file(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Временный файл дампа под RAII. Между снятием дампа и заливкой есть шаги,
+/// которые падают (не удалился прежний контейнер, не поднялся новый, не дождались
+/// готовности), а в файле к этому моменту лежит копия данных источника — при
+/// `--data` с прода это гигабайты боевых данных. Оставлять их в `$TMPDIR` молча
+/// нельзя, поэтому любой выход из [`run`] проходит через [`Drop`]: пустой файл
+/// (до дампа дело не дошло) убираем молча, непустой — оставляем, но обязательно
+/// называем путь; после провала рестора он ещё и полезен для разбора.
+struct DumpFile {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl DumpFile {
+    fn create(path: PathBuf) -> Result<Self, AppError> {
+        create_dump_file(&path)?;
+        Ok(Self { path, armed: true })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Дамп сыграл свою роль (залит или заведомо пустой) — удалить молча.
+    fn done(mut self) {
+        self.armed = false;
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl Drop for DumpFile {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0) == 0 {
+            let _ = std::fs::remove_file(&self.path);
+            return;
+        }
+        eprintln!(
+            "sql-kai: дамп остался: {} — в нём данные источника, удали его, когда он не нужен",
+            self.path.display()
+        );
+    }
+}
+
 /// Тот же файл на запись — по разу на каждую попытку дампа (ssh, затем фолбэк
 /// на локальный pg_dump): stdout процесса перенаправляется в него целиком.
 /// `O_NOFOLLOW` — чтобы наш путь не подменили ссылкой между созданием и этим
@@ -290,6 +352,9 @@ fn dump_remote(
     let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{DUMP_TAIL}");
     let env = [
         ("KAI_CONTAINER", container.unwrap_or_default().to_string()),
+        // Неоднозначность на хосте — отказ (код 4), а не «взяли первый»: два
+        // кластера с базой одного имени (db_admin + db_app) форк развёл бы молча.
+        ("KAI_STRICT", "1".to_string()),
         ("KAI_DB", database.to_string()),
         (
             "KAI_DUMP_OPTS",
@@ -483,17 +548,24 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     }
     let port = match a.port {
         Some(p) => {
-            // Занятый порт docker обнаружит только на run — сообщим раньше и понятнее.
-            std::net::TcpListener::bind(("127.0.0.1", p))
-                .map_err(|e| AppError::Msg(format!("порт {p} занять не выйдет: {e}")))?;
+            // Занятый порт docker обнаружит только на run — сообщим раньше и
+            // понятнее, до долгого дампа. Исключение — прежний контейнер форка:
+            // при --replace порт держит он сам, и `docker rm -f` ниже его
+            // освободит, иначе `fork x --replace --port 5433` не проходил бы
+            // ровно в том сценарии, ради которого --replace и есть.
+            if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", p)) {
+                let held_by_replaced = existing_container.is_some()
+                    && a.replace
+                    && container_publishes_port(&cname, p)?;
+                if !held_by_replaced {
+                    return Err(AppError::Msg(format!("порт {p} занять не выйдет: {e}")));
+                }
+            }
             p
         }
         None => tunnel::free_port()?,
     };
-    let via_ssh = profile
-        .ssh
-        .as_ref()
-        .is_some_and(|s| !s.host.trim().is_empty());
+    let via_ssh = profile.ssh_alias().is_some();
 
     println!("что будет сделано:");
     println!(
@@ -554,8 +626,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         pull_image(&image)?;
     }
 
-    let dump_path: PathBuf = dump_path(&cname);
-    create_dump_file(&dump_path)?;
+    let dump = DumpFile::create(dump_path(&cname))?;
     eprintln!("снимаю дамп…");
     let mut dumped = false;
     if via_ssh {
@@ -566,7 +637,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
             &profile.database,
             !a.data,
             a.verbose,
-            &dump_path,
+            dump.path(),
         )?;
         match status.code() {
             Some(0) => dumped = true,
@@ -576,12 +647,17 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
                 "sql-kai: postgres-контейнер на '{alias}' не найден — снимаю дамп \
                  локальным pg_dump через туннель"
             ),
-            Some(c) => {
+            // 4 — KAI_STRICT: кандидатов несколько (список уже на stderr).
+            // Молча взять первый нельзя: скопировали бы не тот кластер, и
+            // миграцию «проверили» бы не на той схеме.
+            Some(4) => {
                 return Err(AppError::Msg(format!(
-                    "pg_dump на хосте вернул код {c} (дамп: {})",
-                    dump_path.display()
+                    "на '{alias}' несколько подходящих postgres-контейнеров — выбери нужный: \
+                     sql-kai fork {} --container <имя>",
+                    a.alias
                 )))
             }
+            Some(c) => return Err(AppError::Msg(format!("pg_dump на хосте вернул код {c}"))),
             None => return Err(AppError::Msg("ssh прерван сигналом".into())),
         }
     }
@@ -596,7 +672,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
             (&endpoint.0, endpoint.1),
             password.as_deref(),
             !a.data,
-            &dump_path,
+            dump.path(),
         )?;
         if !status.success() {
             return Err(AppError::Msg(format!(
@@ -609,9 +685,9 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     // начнём возиться с контейнером (это минуты).
     drop(connected);
 
-    let dump_size = std::fs::metadata(&dump_path).map(|m| m.len()).unwrap_or(0);
+    let dump_size = std::fs::metadata(dump.path()).map(|m| m.len()).unwrap_or(0);
     if dump_size == 0 {
-        let _ = std::fs::remove_file(&dump_path);
+        dump.done();
         return Err(AppError::Msg(
             "дамп пустой — pg_dump ничего не вернул (проверь права роли на источнике)".into(),
         ));
@@ -630,7 +706,10 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
 
     let fork_password = gen_password();
     // POSTGRES_PASSWORD передаём наследованием env (`-e VAR` без значения):
-    // в argv он попал бы в `ps` любому пользователю машины.
+    // в argv `docker run` он попал бы в `ps` любому пользователю машины. Из
+    // самого контейнера пароль по-прежнему достаётся (`docker inspect` покажет
+    // его в Config.Env), но это и не граница: у кого есть docker, у того есть и
+    // `docker exec`. Прячем только от чужого взгляда в список процессов.
     // Порт публикуем только на 127.0.0.1 — копия прода наружу не торчит.
     let out = docker()
         .args(["run", "-d", "--name", &cname])
@@ -653,13 +732,12 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     wait_ready(&cname, &profile.user, &profile.database).await?;
 
     eprintln!("заливаю дамп…");
-    let status = restore(&cname, &profile.user, &profile.database, &dump_path, !a.data)?;
+    let status = restore(&cname, &profile.user, &profile.database, dump.path(), !a.data)?;
     if !status.success() {
         eprintln!(
             "sql-kai: psql не залил дамп (код {})",
             status.code().unwrap_or(-1)
         );
-        eprintln!("дамп остался: {}", dump_path.display());
         eprintln!(
             "hint: если упало на CREATE EXTENSION — нужен образ с этим расширением: \
              sql-kai fork {} --image <образ> --replace",
@@ -668,7 +746,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         eprintln!("hint: контейнер оставлен для разбора — `docker logs {cname}`, снести: `docker rm -f {cname}`");
         return Ok(ExitCode::FAILURE);
     }
-    let _ = std::fs::remove_file(&dump_path);
+    dump.done();
 
     // Профиль форка: тот же id, если такой уже есть (повторный fork обновляет
     // порт), группу/цвет существующего не теряем. production не наследуем
@@ -690,10 +768,17 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         has_ssh_passphrase: false,
         last_connected: None,
     };
-    let saved = match session::unlock_vault() {
-        Ok(()) => Some(store::upsert_profile(fork_profile, Some(fork_password.clone()), None)?),
+    // Сгенерированный пароль знает только этот процесс, и он уже в env
+    // поднятого контейнера. Поэтому провал ЛЮБОГО шага сохранения — и vault не
+    // открылся, и запись профиля не легла (права, диск) — не ошибка наружу, а
+    // повод напечатать пароль: иначе останется рабочий форк, войти в который
+    // нечем.
+    let saved = match session::unlock_vault()
+        .and_then(|()| store::upsert_profile(fork_profile, Some(fork_password.clone()), None))
+    {
+        Ok(p) => Some(p),
         Err(e) => {
-            eprintln!("sql-kai: vault не открылся ({e}) — профиль форка не сохранён");
+            eprintln!("sql-kai: профиль форка не сохранён ({e})");
             eprintln!(
                 "пароль контейнера {cname}: {fork_password} (положи его сам или пересоздай форк)"
             );

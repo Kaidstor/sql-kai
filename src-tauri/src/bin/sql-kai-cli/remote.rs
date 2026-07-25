@@ -13,6 +13,9 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 /// Непустой `KAI_CONTAINER` (экспортируется из `--container`) выбирает контейнер
 /// явно — на хосте их может быть несколько (db_admin + db_app и т.п.); без него
 /// берётся первый кандидат, а при нескольких печатается предупреждение со списком.
+/// `KAI_STRICT` превращает эту неоднозначность в отказ (код 4) — для команд, где
+/// «не тот кластер» дороже отказа: fork скопировал бы чужую базу под тем же
+/// именем, и миграцию проверили бы не на той схеме.
 pub const CONTAINER_FIND: &str = r#"set -u
 D=docker
 docker ps >/dev/null 2>&1 || D="sudo docker"
@@ -50,6 +53,10 @@ else
   C=$(printf '%s\n' "$CANDS" | awk 'NF' | head -1)
   [ -n "$C" ] || { echo 'sql-kai: postgres-контейнер не найден в docker ps' >&2; exit 3; }
   if [ "$(printf '%s\n' "$CANDS" | grep -c .)" -gt 1 ]; then
+    if [ -n "${KAI_STRICT:-}" ]; then
+      echo "sql-kai: несколько подходящих контейнеров ($(printf '%s ' $CANDS)) — выбери нужный через --container" >&2
+      exit 4
+    fi
     echo "sql-kai: несколько подходящих контейнеров ($(printf '%s ' $CANDS)) — выбран '$C', другой задаётся через --container" >&2
   fi
 fi
@@ -96,6 +103,12 @@ pub fn ssh_base(alias: &str) -> Command {
 }
 
 /// Выполняет payload на хосте (`bash -s` + stdin), stdout/stderr — в наш tty.
+///
+/// Pty здесь нет (`-T`), поэтому ни Ctrl+C, ни разрыв соединения до хоста не
+/// доходят: наш ssh умирает, а долгоживущий процесс на той стороне узнаёт о
+/// закрытом пайпе только при следующей записи (для `docker logs --follow` на
+/// молчащей базе — никогда). Скрипты с бесконечными командами должны сами
+/// сторожить смерть родителя (см. `LOGS_TAIL` в cmd/logs.rs).
 pub fn run_via_stdin(alias: &str, payload: &str) -> std::io::Result<ExitStatus> {
     let mut child = ssh_base(alias)
         .args(["bash", "-s"])

@@ -105,6 +105,21 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// The ssh alias this profile tunnels through, or None when it connects
+    /// straight to `host`.
+    ///
+    /// The GUI writes `ssh: {host: ""}` for a profile whose tunnel was cleared,
+    /// so "has an `ssh` object" and "uses ssh" are not the same question — and
+    /// answering it by hand at each call site is what made `sql-kai logs` run
+    /// `ssh -- '' bash -s` on a local profile while everything else treated it
+    /// as tunnel-free. One place to ask, one answer.
+    pub fn ssh_alias(&self) -> Option<&str> {
+        self.ssh
+            .as_ref()
+            .map(|s| s.host.trim())
+            .filter(|host| !host.is_empty())
+    }
+
     /// Copy for the frontend, with the `has_*` flags refreshed from the vault.
     pub fn for_frontend(&self) -> Profile {
         let mut p = self.clone();

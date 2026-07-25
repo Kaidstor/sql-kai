@@ -79,8 +79,10 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
     let (host, port, tunnel) = if let Some((host, port)) = opts.endpoint_override {
         (host, port, None)
     } else {
-        let tunnel = match &profile.ssh {
-            Some(ssh) if !ssh.host.trim().is_empty() => {
+        // Whether ssh is on is [`Profile::ssh_alias`]'s call; the tunnel itself
+        // needs the whole config (key, port, user), hence both halves here.
+        let tunnel = match (profile.ssh_alias(), profile.ssh.as_ref()) {
+            (Some(_), Some(ssh)) => {
                 let passphrase = opts
                     .ssh_passphrase_override
                     .or_else(|| store::get_ssh_passphrase(profile));
