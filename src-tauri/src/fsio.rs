@@ -112,8 +112,18 @@ pub fn config_path(file: &str) -> Result<PathBuf, AppError> {
 
 /// Crash-safe replace: write a 0600 sibling temp file, fsync, then rename over
 /// the target — a crash mid-write can never truncate the existing file.
+///
+/// A symlinked target is resolved first: renaming over the link would replace
+/// it with a plain file, so an `~/.cursor/mcp.json` stowed from a dotfiles repo
+/// would lose its link and the repo would keep the stale content. The temp file
+/// is then a sibling of the *real* file, which also keeps the rename on one
+/// filesystem.
 pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    // canonicalize fails when the target does not exist yet — then there is no
+    // link to follow and the given path is already the real one.
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     let tmp = path.with_extension("tmp");
     {
         let mut opts = fs::OpenOptions::new();
@@ -128,4 +138,38 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
     }
     fs::rename(&tmp, path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A symlinked target must survive the write: otherwise a stowed
+    /// `~/.cursor/mcp.json` turns into a plain file and the edit is lost on the
+    /// next restow, while the repo copy stays stale.
+    #[test]
+    fn write_atomic_writes_through_a_symlink() {
+        let dir = std::env::temp_dir().join(format!("sql-kai-fsio-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.json");
+        fs::write(&real, b"old").unwrap();
+        let link = dir.join("link.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, b"new").unwrap();
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "симлинк заменён обычным файлом"
+        );
+        assert_eq!(fs::read(&real).unwrap(), b"new");
+
+        // обычный файл и новый файл пишутся как раньше
+        write_atomic(&real, b"plain").unwrap();
+        assert_eq!(fs::read(&real).unwrap(), b"plain");
+        let fresh = dir.join("fresh.json");
+        write_atomic(&fresh, b"hi").unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"hi");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

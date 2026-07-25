@@ -255,6 +255,14 @@ pub fn install(a: InstallArgs) -> Result<ExitCode, AppError> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Мы читаем и переписываем файл, которым владеет чужой процесс. Запущенный
+    // клиент (Claude Code держит ~/.claude.json в памяти и сохраняет его
+    // целиком) откатит нашу запись своей следующей — предупредить об этом
+    // дешевле, чем разбираться, почему сервер «не прописался».
+    if path.exists() {
+        println!("если {} сейчас запущен — закрой его: клиент может перезаписать конфиг своей копией", spec.title);
+    }
+
     let changed = match spec.layout {
         Layout::CodexToml => install_toml(&path, &a, &entry)?,
         _ => install_json(spec, &path, &a, &entry)?,
@@ -274,6 +282,7 @@ fn install_json(
     entry: &ServerEntry,
 ) -> Result<bool, AppError> {
     let existed = path.exists();
+    let stamp = file_stamp(path);
     let mut root: Value = if existed {
         let text = std::fs::read_to_string(path).map_err(AppError::Io)?;
         if text.trim().is_empty() {
@@ -334,6 +343,7 @@ fn install_json(
         .map_err(|e| AppError::Msg(format!("сериализация конфига: {e}")))?;
     text.push('\n');
 
+    ensure_unchanged(path, stamp)?;
     let backup = backup_file(path, a.no_backup || !existed)?;
     write_config(path, text.as_bytes())?;
 
@@ -377,11 +387,91 @@ fn is_server_header(line: &str, name: &str) -> bool {
         == name
 }
 
+/// Для каждой строки файла: начинается ли она ВНЕ многострочного литерала TOML
+/// (`"""…"""`, `'''…'''`). Без этого построчный скан принимает содержимое
+/// чужого значения за разметку: `foo = """\n[mcp_servers.sql-kai]\n"""` — не
+/// заголовок секции, а текст, и --force вырезал бы кусок из середины литерала.
+///
+/// Полноценный TOML-парсер тут не нужен (и его нет в зависимостях): заголовок
+/// секции — всегда отдельная строка, поэтому достаточно знать, где строка
+/// начинается.
+fn code_lines(text: &str) -> Vec<bool> {
+    let mut flags = Vec::new();
+    let mut open: Option<&'static str> = None;
+    for line in text.lines() {
+        flags.push(open.is_none());
+        advance(line, &mut open);
+    }
+    flags
+}
+
+/// Прокручивает состояние скана по одной строке: `open` — делимитер
+/// многострочного литерала, внутри которого мы оказались к её концу.
+fn advance(line: &str, open: &mut Option<&'static str>) {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(delim) = *open {
+            // в """…""" обратный слэш экранирует и кавычку; в '''…''' escape'ов нет
+            if delim == "\"\"\"" && b[i] == b'\\' {
+                i += 2;
+            } else if b[i..].starts_with(delim.as_bytes()) {
+                *open = None;
+                i += delim.len();
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match b[i] {
+            b'#' => return, // комментарий до конца строки
+            b'"' if b[i..].starts_with(b"\"\"\"") => {
+                *open = Some("\"\"\"");
+                i += 3;
+            }
+            b'\'' if b[i..].starts_with(b"'''") => {
+                *open = Some("'''");
+                i += 3;
+            }
+            // однострочный литерал обязан закрыться на этой же строке: если он
+            // не закрыт, файл — не TOML, и тащить состояние дальше вреднее,
+            // чем считать следующую строку разметкой
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'\'' => {
+                i += 1;
+                while i < b.len() && b[i] != b'\'' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+/// Номера строк с заголовком нашей секции — только там, где TOML читает
+/// разметку, а не содержимое многострочного литерала.
+fn server_header_lines(text: &str, name: &str) -> Vec<usize> {
+    let code = code_lines(text);
+    text.lines()
+        .enumerate()
+        .filter(|(i, l)| code[*i] && is_server_header(l, name))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Codex: секция `[mcp_servers.<имя>]` в TOML. Разбираем построчно — секция
 /// добавляется в конец файла, а при --force заменяется до следующего
 /// заголовка `[...]`; остальной конфиг не трогается.
 fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<bool, AppError> {
     let existed = path.exists();
+    let stamp = file_stamp(path);
     let text = if existed {
         std::fs::read_to_string(path).map_err(AppError::Io)?
     } else {
@@ -389,7 +479,8 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
     };
     let header = format!("[mcp_servers.{}]", toml_key(&a.name));
     let lines: Vec<&str> = text.lines().collect();
-    let start = lines.iter().position(|l| is_server_header(l, &a.name));
+    let code = code_lines(&text);
+    let start = server_header_lines(&text, &a.name).first().copied();
 
     let block = entry.toml(&a.name);
     let out = match start {
@@ -401,11 +492,14 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
                 )));
             }
             println!("перезаписываю существующую секцию (--force)");
+            // конец секции — следующий заголовок, но только настоящий: `[` в
+            // теле многострочного литерала обрезало бы замену не там
             let end = lines
                 .iter()
+                .enumerate()
                 .skip(i + 1)
-                .position(|l| l.trim_start().starts_with('['))
-                .map(|k| i + 1 + k)
+                .find(|(k, l)| code[*k] && l.trim_start().starts_with('['))
+                .map(|(k, _)| k)
                 .unwrap_or(lines.len());
             let mut out = String::new();
             for l in &lines[..i] {
@@ -432,18 +526,43 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
         }
     };
 
+    ensure_unchanged(path, stamp)?;
     let backup = backup_file(path, a.no_backup || !existed)?;
     write_config(path, out.as_bytes())?;
 
     // TOML-парсера в зависимостях нет, поэтому проверка простая: секция на
     // месте и ровно одна
     let check = std::fs::read_to_string(path).map_err(AppError::Io)?;
-    if check.lines().filter(|l| is_server_header(l, &a.name)).count() != 1 {
+    if server_header_lines(&check, &a.name).len() != 1 {
         restore(path, backup.as_deref(), existed)?;
         return Err(verify_failed(path, backup.as_deref(), existed));
     }
     println!("(TOML не валидируется целиком — проверь `codex mcp list`)");
     Ok(true)
+}
+
+/// Отпечаток файла (mtime + размер) на момент чтения; None — файла нет.
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// Не изменился ли конфиг между нашими read и write.
+///
+/// Мы делаем read-modify-write чужого файла, а клиент — свой процесс со своим
+/// состоянием в памяти: Claude Code, например, переписывает `~/.claude.json`
+/// целиком. Гонку с ним не выиграть (после нашей записи он всё равно может
+/// записать свою копию), но писать поверх чужой правки и молча её терять мы не
+/// будем — окно между read и write закрывается этой проверкой.
+fn ensure_unchanged(path: &Path, before: Option<(std::time::SystemTime, u64)>) -> Result<(), AppError> {
+    if file_stamp(path) == before {
+        return Ok(());
+    }
+    Err(AppError::Msg(format!(
+        "{} изменился, пока мы его читали, — похоже, клиент запущен и пишет конфиг сам; \
+         закрой клиента и повтори",
+        path.display()
+    )))
 }
 
 /// Копия конфига рядом с оригиналом. `skip` — файла нет или запрошен
@@ -501,7 +620,9 @@ fn restore(path: &Path, backup: Option<&Path>, existed: bool) -> Result<(), AppE
 
 /// Атомарная запись (tmp + rename, как в store): половинчатый конфиг клиента
 /// не должен пережить падение посреди записи. Права существующего файла
-/// сохраняем — write_atomic создаёт tmp с 0600, а это не наш файл.
+/// сохраняем — write_atomic создаёт tmp с 0600, а это не наш файл. Симлинк
+/// (конфиг из dotfiles-репо) остаётся симлинком: write_atomic резолвит цель
+/// перед переименованием.
 fn write_config(path: &Path, data: &[u8]) -> Result<(), AppError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(AppError::Io)?;
@@ -607,6 +728,17 @@ pub fn default_name() -> &'static str {
     DEFAULT_NAME
 }
 
+/// Значение ключа `command` в строке TOML, если это именно он.
+///
+/// За именем ключа обязан идти `=` (после пробелов): без этой проверки
+/// `command_timeout = 5` считался ключом `command`, и в колонке detail у `mcp
+/// status` вместо команды оказывалось `_timeout = 5`.
+fn toml_command_value(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("command")?;
+    let value = rest.trim_start().strip_prefix('=')?;
+    Some(value.trim().to_string())
+}
+
 /// Статус одного клиента: есть ли файл, есть ли в нём наша запись и какой
 /// командой она запускается.
 fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (ClientState, String) {
@@ -618,13 +750,16 @@ fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (ClientState, St
         Err(e) => return (ClientState::Unreadable, e.to_string()),
     };
     if spec.layout == Layout::CodexToml {
-        let mut lines = text.lines().skip_while(|l| !is_server_header(l, name));
-        if lines.next().is_none() {
+        let Some(start) = server_header_lines(&text, name).first().copied() else {
             return (ClientState::Absent, path.display().to_string());
-        }
-        let command = lines
-            .take_while(|l| !l.trim_start().starts_with('['))
-            .find_map(|l| l.trim().strip_prefix("command").map(|v| v.trim_start_matches([' ', '=']).trim().to_string()))
+        };
+        let code = code_lines(&text);
+        let command = text
+            .lines()
+            .enumerate()
+            .skip(start + 1)
+            .take_while(|(i, l)| !(code[*i] && l.trim_start().starts_with('[')))
+            .find_map(|(_, l)| toml_command_value(l))
             .unwrap_or_default();
         return (ClientState::Installed, command.trim_matches('"').to_string());
     }
@@ -779,6 +914,81 @@ mod tests {
         assert_eq!(text.matches("[mcp_servers.").count(), 1);
         assert!(!text.contains("/old"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// serde_json собран с preserve_order: чужой конфиг возвращается с тем же
+    /// порядком ключей. Иначе `mcp install` пересортировывал весь файл по
+    /// алфавиту — данные целы, но пользователь видит diff во весь конфиг.
+    #[test]
+    fn json_install_keeps_the_original_key_order() {
+        let path = tmp_path("order.json");
+        std::fs::write(
+            &path,
+            r#"{"zeta":1,"alpha":2,"mcpServers":{"zzz":{"command":"/z","args":[]}},"beta":3}"#,
+        )
+        .unwrap();
+        let a = install_args("sql-kai", false);
+        assert!(install_json(&spec(Layout::McpServers), &path, &a, &entry()).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let at = |k: &str| text.find(k).unwrap_or_else(|| panic!("нет ключа {k}:\n{text}"));
+        assert!(
+            at("\"zeta\"") < at("\"alpha\"")
+                && at("\"alpha\"") < at("\"mcpServers\"")
+                && at("\"mcpServers\"") < at("\"beta\""),
+            "порядок ключей переписан:\n{text}"
+        );
+        // наша запись дописана к чужим, а не вставлена перед ними
+        assert!(at("\"zzz\"") < at("\"sql-kai\""), "{text}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Многострочный литерал — это данные, а не разметка: заголовок секции
+    /// внутри `"""…"""` не должен ни требовать --force, ни быть вырезанным.
+    #[test]
+    fn toml_scan_skips_multiline_literals() {
+        let text = "notice = \"\"\"\n[mcp_servers.sql-kai]\ncommand = \"/evil\"\n\"\"\"\n\
+                    \n[mcp_servers.other]\ncommand = \"/usr/bin/other\"\n";
+        assert!(server_header_lines(text, "sql-kai").is_empty());
+        assert_eq!(server_header_lines(text, "other").len(), 1);
+        // '''…''' — то же самое, а после закрытия скан снова видит разметку
+        let lit = "x = '''\n[mcp_servers.sql-kai]\n'''\n[mcp_servers.sql-kai]\n";
+        assert_eq!(server_header_lines(lit, "sql-kai"), vec![3]);
+
+        let path = tmp_path("multiline.toml");
+        std::fs::write(&path, text).unwrap();
+        // секции нет — установка проходит без --force и литерал остаётся цел
+        assert!(install_toml(&path, &install_args("sql-kai", false), &entry()).unwrap());
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("command = \"/evil\""), "литерал испорчен: {out}");
+        assert!(out.contains("[mcp_servers.other]"));
+        assert!(out.ends_with("[mcp_servers.sql-kai]\ncommand = \"/opt/sql-kai\"\nargs = [\"mcp\"]\n"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `command_timeout = 5` — не ключ `command`: без проверки разделителя в
+    /// detail у `mcp status` уезжало `_timeout = 5`.
+    #[test]
+    fn toml_command_value_needs_the_separator() {
+        assert_eq!(toml_command_value("command = \"/opt/sql-kai\""), Some("\"/opt/sql-kai\"".into()));
+        assert_eq!(toml_command_value("  command=\"/x\""), Some("\"/x\"".into()));
+        assert_eq!(toml_command_value("command_timeout = 5"), None);
+        assert_eq!(toml_command_value("args = [\"mcp\"]"), None);
+    }
+
+    /// Конфиг подменили между чтением и записью (запущенный клиент сохранил
+    /// свою копию) — молча затирать его нельзя.
+    #[test]
+    fn install_refuses_a_config_changed_under_us() {
+        let path = tmp_path("racy.json");
+        std::fs::write(&path, "{}").unwrap();
+        let stamp = file_stamp(&path);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&path, "{\"numStartups\":1}").unwrap();
+        assert!(ensure_unchanged(&path, stamp).is_err());
+        assert!(ensure_unchanged(&path, file_stamp(&path)).is_ok());
+        // файла не было и нет — тоже «не менялся»
+        let _ = std::fs::remove_file(&path);
+        assert!(ensure_unchanged(&path, None).is_ok());
     }
 
     #[test]

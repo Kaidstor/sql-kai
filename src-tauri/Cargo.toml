@@ -33,7 +33,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: Map хранит ключи в порядке вставки/чтения. Без этого
+# `mcp install` пересортировывал бы по алфавиту ВЕСЬ чужой конфиг клиента
+# (~/.gemini/settings.json и т.п.) — данные целы, но диff во весь файл.
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "process", "io-util", "io-std", "sync"] }
 tokio-postgres = "0.7"
 # TLS для прямых (без ssh-туннеля) подключений. native-tls на macOS = Secure

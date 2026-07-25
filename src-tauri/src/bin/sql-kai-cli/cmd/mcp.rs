@@ -19,6 +19,7 @@
 
 use std::io::Read;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Args, Subcommand};
 use serde_json::{json, Value};
@@ -26,16 +27,34 @@ use sql_kai_lib::db::{self, ExecResult, StatementResult};
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, HistoryEntry, Profile};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::Semaphore;
 
 use crate::cmd::introspect::split_table;
 use crate::cmd::mcp_setup::{self, InstallArgs, StatusArgs};
 use crate::cmd::schema as schema_cmd;
 use crate::{broker_client, redact, session};
 
-/// Версия MCP, которую сервер заявляет, если клиентскую не знает.
-const PROTOCOL_FALLBACK: &str = "2025-06-18";
+/// Ревизии MCP, которые сервер действительно обслуживает; первая —
+/// предпочитаемая. Спецификация требует отвечать СВОЕЙ версией, когда версия
+/// клиента не поддержана (клиент сам решит, продолжать ли), а не эхом: иначе
+/// клиент будущей ревизии решит, что его семантику здесь понимают.
+const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Строк на запрос по умолчанию — меньше, чем в CLI: ответ читает модель.
 const DEFAULT_MAX_ROWS: usize = 200;
+/// Потолок `maxRows` от клиента. Сервер сессий клампит до 100000 — это защита
+/// его памяти, а не контекста модели: ответ tool'а едет в промпт целиком.
+const MAX_ROWS_CAP: usize = 10_000;
+/// Байтовый бюджет данных в одном ответе tool'а. Построчного лимита мало:
+/// двести строк с многомегабайтными jsonb — сотни МБ в одном кадре JSON-RPC.
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// Предел на одно значение: один jsonb/bytea не должен съесть весь бюджет и
+/// вытеснить остальные строки.
+const MAX_CELL_BYTES: usize = 16 * 1024;
+/// Одновременно выполняемых `tools/call`. Каждый занимает отдельную сессию
+/// сервера сессий, поэтому пачка запросов от модели не должна плодить их без
+/// счёта — лишние ждут очереди, протокол это допускает.
+const MAX_INFLIGHT_CALLS: usize = 4;
 
 #[derive(Args)]
 // Позиционный алиас и под-подкоманды (install/status) взаимоисключающи:
@@ -71,13 +90,20 @@ pub async fn run(a: McpArgs) -> Result<ExitCode, AppError> {
         Some(alias) => Some(session::resolve_profile(alias)?),
         None => None,
     };
-    Server { pinned }.serve().await
+    Server {
+        pinned,
+        calls: Semaphore::new(MAX_INFLIGHT_CALLS),
+    }
+    .serve()
+    .await
 }
 
 /// Состояние сервера на всё время работы процесса: либо закреплённый профиль,
 /// либо мультипрофильный режим (профиль выбирает каждый вызов tool'а).
 struct Server {
     pinned: Option<Profile>,
+    /// Ограничитель параллельных `tools/call` (см. [`MAX_INFLIGHT_CALLS`]).
+    calls: Semaphore,
 }
 
 impl Server {
@@ -85,7 +111,7 @@ impl Server {
         self.pinned.is_none()
     }
 
-    async fn serve(&self) -> Result<ExitCode, AppError> {
+    async fn serve(self) -> Result<ExitCode, AppError> {
         match &self.pinned {
             Some(p) => eprintln!(
                 "sql-kai mcp: профиль {} ({} @ {}:{})",
@@ -97,33 +123,55 @@ impl Server {
             ),
         }
 
+        // Ответы пишет одна задача: кадры JSON-RPC параллельных вызовов не
+        // должны перемешаться внутри stdout.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let writer = tokio::spawn(async move {
+            let mut stdout = tokio::io::stdout();
+            while let Some(reply) = rx.recv().await {
+                let mut buf = serde_json::to_vec(&reply).unwrap_or_else(|_| b"{}".to_vec());
+                buf.push(b'\n');
+                if stdout.write_all(&buf).await.is_err() || stdout.flush().await.is_err() {
+                    break; // клиент закрыл канал — писать больше некуда
+                }
+            }
+        });
+
+        let this = Arc::new(self);
         let stdin = tokio::io::stdin();
         let mut lines = BufReader::new(stdin).lines();
-        let mut stdout = tokio::io::stdout();
         while let Some(line) = lines.next_line().await? {
             if line.trim().is_empty() {
                 continue;
             }
-            let Some(reply) = self.handle_line(&line).await else {
-                continue; // notification — ответа не положено
-            };
-            let mut buf = serde_json::to_vec(&reply).unwrap_or_else(|_| b"{}".to_vec());
-            buf.push(b'\n');
-            stdout.write_all(&buf).await?;
-            stdout.flush().await?;
+            Arc::clone(&this).handle_line(&line, &tx).await;
         }
+        // stdin закрыт — клиент уходит. Даём незавершённым вызовам дописать
+        // ответы (писатель живёт, пока жив хоть один клон tx), но не вечно:
+        // запрос может идти минутами, а нас уже никто не слушает.
+        drop(tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), writer).await;
         Ok(ExitCode::SUCCESS)
     }
 
-    /// Одно сообщение протокола → ответ (None для notification'ов).
-    async fn handle_line(&self, line: &str) -> Option<Value> {
+    /// Одно сообщение протокола; ответ уходит в канал писателя (notification —
+    /// молча).
+    ///
+    /// `tools/call` обслуживается отдельной задачей: пока модель ждёт тяжёлый
+    /// SELECT, строго последовательный цикл не отвечал бы даже на `ping` — и
+    /// клиент, не дождавшись, счёл бы сервер зависшим и убил процесс.
+    /// Отменить уже запущенный запрос всё равно нечем: `notifications/cancelled`
+    /// сервер не реализует (cancel у сервера сессий адресуется профилю, а не
+    /// конкретному запросу, и погасил бы чужой вызов к той же базе).
+    async fn handle_line(self: Arc<Self>, line: &str, out: &UnboundedSender<Value>) {
         let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                return Some(json!({
+                let _ = out.send(json!({
                     "jsonrpc": "2.0", "id": Value::Null,
                     "error": { "code": -32700, "message": format!("parse error: {e}") },
                 }));
+                return;
             }
         };
         let id = msg.get("id").cloned();
@@ -132,22 +180,30 @@ impl Server {
 
         // notification (без id) — обрабатывать нечего: сервер не ждёт
         // notifications/initialized и не имеет подписок
-        let id = id?;
+        let Some(id) = id else { return };
 
+        if method == "tools/call" {
+            let out = out.clone();
+            tokio::spawn(async move {
+                let _permit = self.calls.acquire().await;
+                let reply = self.tools_call(&id, &params).await;
+                let _ = out.send(reply);
+            });
+            return;
+        }
         let result = match method {
             "initialize" => Ok(initialize_result(&params)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tool_definitions(self.multi()) })),
-            "tools/call" => return Some(self.tools_call(&id, &params).await),
             _ => Err(format!("method not supported: {method}")),
         };
-        Some(match result {
+        let _ = out.send(match result {
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             Err(message) => json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32601, "message": message },
             }),
-        })
+        });
     }
 
     /// tools/call: любые ошибки — внутрь result (isError), а не в error
@@ -155,10 +211,20 @@ impl Server {
     async fn tools_call(&self, id: &Value, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
-        let (out, is_error) = match self.dispatch_tool(name, &args).await {
+        let (mut out, is_error) = match self.dispatch_tool(name, &args).await {
             Ok(out) => (out, false),
             Err(message) => (ToolOutput::plain(message), true),
         };
+        // Данные обрезают сами tools (см. cap_response_bytes); тут остаётся
+        // грубый рубеж для тех, у кого структуры нет и резать по-умному нечем.
+        if out.structured.is_none() {
+            cap_text(&mut out.text);
+        }
+        // Дублирование payload'а (тот же JSON в тексте и в structuredContent)
+        // — требование спецификации: сервер с outputSchema обязан отдавать
+        // structuredContent, а текстовую копию SHOULD для клиентов, которые
+        // структуру не читают. Экономить тут нечем, поэтому экономим на объёме
+        // самих данных.
         let mut result = json!({
             "content": [{ "type": "text", "text": out.text }],
             "isError": is_error,
@@ -232,7 +298,8 @@ impl Server {
                     .get("maxRows")
                     .and_then(Value::as_u64)
                     .map(|n| n as usize)
-                    .unwrap_or(DEFAULT_MAX_ROWS);
+                    .unwrap_or(DEFAULT_MAX_ROWS)
+                    .min(MAX_ROWS_CAP);
                 let write = args.get("write").and_then(Value::as_bool).unwrap_or(false);
                 // Барьер прода — до брокера и до записи в историю: у MCP нет
                 // TTY, поэтому спросить некого и разрешение может прийти только
@@ -241,8 +308,9 @@ impl Server {
                 if write {
                     session::guard_prod_write(&profile).map_err(|e| e.to_string())?;
                 }
-                let q = run_query(&profile, &sql, max_rows, write, true, true).await?;
-                let structured = query_structured(&sql, &q);
+                let q =
+                    run_query(&profile, &sql.run, max_rows, write, Some(&sql.history), true).await?;
+                let structured = query_structured(&sql.run, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
             "schema" => {
@@ -264,36 +332,39 @@ impl Server {
                 let profile = self.target(args)?;
                 let counts = args.get("counts").and_then(Value::as_bool).unwrap_or(false);
                 let sql = if counts { db::TABLES_COUNTS_SQL } else { db::TABLES_SQL };
-                let q = run_query(&profile, sql, 10_000, false, false, false).await?;
-                let structured = rows_structured("tables", &q.exec, &[
+                let q = run_query(&profile, sql, MAX_ROWS_CAP, false, None, false).await?;
+                let mut structured = rows_structured("tables", &q.exec, &[
                     "schema", "name", "kind",
                 ], counts.then_some("approx_rows"));
+                mark_truncated(&mut structured, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
             "columns" => {
                 let profile = self.target(args)?;
                 let (schema, table) = table_arg()?;
                 let sql = db::columns_sql(&db::regclass_literal(&schema, &table));
-                let q = run_query(&profile, &sql, 10_000, false, false, false).await?;
-                let structured = rows_structured(
+                let q = run_query(&profile, &sql, MAX_ROWS_CAP, false, None, false).await?;
+                let mut structured = rows_structured(
                     "columns",
                     &q.exec,
                     &["name", "type", "nullable", "primary_key", "default", "comment"],
                     None,
                 );
+                mark_truncated(&mut structured, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
             "indexes" => {
                 let profile = self.target(args)?;
                 let (schema, table) = table_arg()?;
                 let sql = db::indexes_sql(&db::regclass_literal(&schema, &table));
-                let q = run_query(&profile, &sql, 10_000, false, false, false).await?;
-                let structured = rows_structured(
+                let q = run_query(&profile, &sql, MAX_ROWS_CAP, false, None, false).await?;
+                let mut structured = rows_structured(
                     "indexes",
                     &q.exec,
                     &["name", "unique", "primary", "columns", "definition"],
                     None,
                 );
+                mark_truncated(&mut structured, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
             "ddl" => {
@@ -378,12 +449,12 @@ impl ToolOutput {
 }
 
 fn initialize_result(params: &Value) -> Value {
-    // отвечаем версией клиента: серверу с одними tools совместимы все
-    // известные ревизии, а несуществующую строку клиент отвергнет сам
+    // Правило выбора версии — в докблоке [`SUPPORTED_PROTOCOLS`].
     let version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
-        .unwrap_or(PROTOCOL_FALLBACK);
+        .filter(|v| SUPPORTED_PROTOCOLS.contains(v))
+        .unwrap_or(SUPPORTED_PROTOCOLS[0]);
     json!({
         "protocolVersion": version,
         "capabilities": { "tools": {} },
@@ -418,7 +489,11 @@ fn rows_output_schema(key: &str, fields: &[&str]) -> Value {
             key: {
                 "type": "array",
                 "items": { "type": "object", "properties": props },
-            }
+            },
+            "truncated": {
+                "type": "boolean",
+                "description": "Output limit hit: rows were dropped, the list is incomplete",
+            },
         },
         "required": [key],
     })
@@ -463,6 +538,10 @@ fn query_output_schema() -> Value {
                 "description": "Columns whose values were replaced with [redacted]",
                 "items": { "type": "string" },
             },
+            "truncated_by_size": {
+                "type": "boolean",
+                "description": "Response byte cap hit: long values were cut (marked inline) and/or rows dropped — the data is incomplete",
+            },
         },
         "required": ["result_sets", "execution_time"],
     })
@@ -485,6 +564,7 @@ fn schema_output_schema() -> Value {
             "comment": str_or_null,
             "partitionKey": str_or_null,
             "partitionOf": str_or_null,
+            "partitionBound": { "type": ["string", "null"], "description": "`FOR VALUES …` of a leaf partition — which slice of the parent this one holds" },
             "partitions": { "type": ["integer", "null"], "description": "Leaf partitions of a partitioned table (hidden unless `internal`)" },
             "rowSecurity": { "type": "boolean" },
             "definition": { "type": ["string", "null"], "description": "View body; only with `definitions`" },
@@ -495,6 +575,7 @@ fn schema_output_schema() -> Value {
                 "default": str_or_null,
                 "identity": str_or_null,
                 "generated": str_or_null,
+                "generatedKind": { "type": ["string", "null"], "enum": ["stored", "virtual", null], "description": "How a generated column is materialized (virtual: PG 18+)" },
                 "comment": str_or_null,
             }), json!(["name", "type", "nullable"])) },
             "constraints": { "type": "array", "items": obj(json!({
@@ -517,6 +598,14 @@ fn schema_output_schema() -> Value {
                 "function": { "type": "string" },
                 "enabled": { "type": "boolean" },
             }), json!(["name", "timing", "events", "function", "enabled"])) },
+            "policies": { "type": "array", "items": obj(json!({
+                "name": { "type": "string" },
+                "command": { "type": "string", "enum": ["ALL", "SELECT", "INSERT", "UPDATE", "DELETE"] },
+                "permissive": { "type": "boolean", "description": "false — RESTRICTIVE: narrows access instead of granting it" },
+                "roles": { "type": "string" },
+                "using": str_or_null,
+                "withCheck": str_or_null,
+            }), json!(["name", "command", "permissive", "roles"])) },
         }),
         json!(["schema", "name", "kind", "columns"]),
     );
@@ -534,6 +623,10 @@ fn schema_output_schema() -> Value {
         "properties": {
             "database": { "type": "string" },
             "serverVersion": { "type": "string" },
+            "truncated": {
+                "type": "boolean",
+                "description": "The catalog hit the row cap: the tree below is incomplete — narrow it with `schema` before treating it as the whole database",
+            },
             "schemas": { "type": "array", "items": obj(
                 json!({
                     "name": { "type": "string" },
@@ -541,12 +634,36 @@ fn schema_output_schema() -> Value {
                     "views": same_as_tables("Views"),
                     "materializedViews": same_as_tables("Materialized views"),
                     "foreignTables": same_as_tables("Foreign tables"),
+                    "sequences": { "type": "array", "description": "Standalone sequences; the ones backing identity/serial columns are left with their column", "items": obj(json!({
+                        "schema": { "type": "string" },
+                        "name": { "type": "string" },
+                        "type": { "type": "string" },
+                        "start": { "type": "string" },
+                        "increment": { "type": "string" },
+                        "min": { "type": "string" },
+                        "max": { "type": "string" },
+                        "cycle": { "type": "boolean" },
+                        "comment": str_or_null,
+                    }), json!(["schema", "name", "type"])) },
                     "enums": { "type": "array", "items": obj(json!({
                         "schema": { "type": "string" },
                         "name": { "type": "string" },
                         "values": { "type": "array", "items": { "type": "string" } },
                         "comment": str_or_null,
                     }), json!(["schema", "name", "values"])) },
+                    "domains": { "type": "array", "items": obj(json!({
+                        "schema": { "type": "string" },
+                        "name": { "type": "string" },
+                        "baseType": { "type": "string" },
+                        "constraints": { "type": ["string", "null"], "description": "`NOT NULL DEFAULT … CHECK (…)` as one line, the way the server prints it" },
+                        "comment": str_or_null,
+                    }), json!(["schema", "name", "baseType"])) },
+                    "compositeTypes": { "type": "array", "items": obj(json!({
+                        "schema": { "type": "string" },
+                        "name": { "type": "string" },
+                        "attributes": { "type": "string", "description": "«field type, field type» in declaration order" },
+                        "comment": str_or_null,
+                    }), json!(["schema", "name", "attributes"])) },
                     "routines": { "type": "array", "items": obj(json!({
                         "schema": { "type": "string" },
                         "name": { "type": "string" },
@@ -562,7 +679,7 @@ fn schema_output_schema() -> Value {
                 json!(["name"]),
             ) },
         },
-        "required": ["database", "schemas"],
+        "required": ["database", "schemas", "truncated"],
     })
 }
 
@@ -593,10 +710,10 @@ fn tool_definitions(multi: bool) -> Value {
                     "file": { "type": "string", "description": "Path to a .sql file to execute instead of `sql` (migrations and other on-disk scripts). Must be a regular file with a .sql extension — this is not a way to read other files." },
                     "parameters": {
                         "type": "array",
-                        "description": "Values for $1, $2 … placeholders; single-statement SQL only. Values are always sent as text — cast in SQL when a different type is needed ($1::uuid).",
+                        "description": "Values for $1, $2 … placeholders; single-statement SQL only. Values are always sent as text — cast in SQL when a different type is needed ($1::uuid). Only the placeholder form of the statement is stored in the query history, so secrets passed here stay out of it.",
                         "items": { "type": "string" },
                     },
-                    "maxRows": { "type": "integer", "description": "Row cap per statement (default 200)" },
+                    "maxRows": { "type": "integer", "description": "Row cap per statement (default 200, capped at 10000). The response is additionally capped by size: oversized values are cut and trailing rows dropped — `truncated`/`truncated_by_size` then say the data is incomplete." },
                     "write": { "type": "boolean", "description": "Allow writes for this call (default false)" }
                 },
             },
@@ -767,7 +884,23 @@ async fn schema_output(profile: &Profile, opts: &db::SchemaOptions) -> Result<To
     let res = b
         .query(&profile.id, &sql, schema_cmd::MAX_ROWS, false, false)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            // Версию проверить заранее тут негде: она приезжает первым
+            // стейтментом того же батча, который на старом сервере падает
+            // целиком. Поэтому узнаём слишком старый сервер по его же ошибке —
+            // иначе модель получит `column a.attgenerated does not exist` и
+            // будет чинить не то.
+            let msg = e.to_string();
+            if msg.contains("attgenerated") {
+                return format!(
+                    "схема снимается только с PostgreSQL {}+ (сервер отверг запрос к каталогу: \
+                     {msg}); на более старом бери структуру по частям: tables, columns, \
+                     indexes, ddl",
+                    schema_cmd::MIN_SERVER_MAJOR
+                );
+            }
+            msg
+        })?;
     let mut results = res.exec.results;
     if results.is_empty() {
         return Err("the catalog batch returned no result sets".to_string());
@@ -780,11 +913,13 @@ async fn schema_output(profile: &Profile, opts: &db::SchemaOptions) -> Result<To
         .flatten()
         .unwrap_or_default();
     schema_cmd::check_parts(&results).map_err(|e| e.to_string())?;
-    let truncated = results.iter().any(|r| r.truncated);
 
     let dump = schema_cmd::build_dump(&profile.database, &server_version, &results);
     let mut text = schema_cmd::render_text(&dump, opts);
-    if truncated {
+    // Признак обрезки берём из самого дампа: он же уезжает в structuredContent
+    // полем `truncated`, и считать его тут второй раз — это два ответа на один
+    // вопрос, которые однажды разойдутся.
+    if dump.truncated {
         text.push_str("-- ВНИМАНИЕ: каталог обрезан по лимиту строк — дамп неполный, сузь вывод параметром schema\n");
     }
     let structured = serde_json::to_value(&dump).map_err(|e| e.to_string())?;
@@ -849,10 +984,25 @@ fn read_sql_file(path: &str) -> Result<String, String> {
     Ok(sql)
 }
 
+/// Две формы одного запроса: `run` уходит в базу, `history` — в файл истории.
+/// Они расходятся, когда заданы `parameters`.
+struct SqlArgs {
+    run: String,
+    history: String,
+}
+
 /// SQL, как его задал вызывающий: либо `sql`, либо `file` (ровно одно из
 /// двух), плюс подстановка `parameters`. Файл нужен для основного сценария
 /// «примени миграцию»: у агента нет способа передать серверу stdin.
-fn sql_argument(args: &Value) -> Result<String, String> {
+///
+/// В историю уходит форма с плейсхолдерами: значения параметров — ровно то,
+/// ради чего описание tool'а советует `parameters` вместо склейки строк, и
+/// осесть открытым текстом в history.json они не должны (маскировка
+/// `store::redact_secrets` знает только про PASSWORD/IDENTIFIED BY, а колонки
+/// вроде `api_token` маскируются лишь в выводе). Побочный эффект: повторно
+/// запустить такую запись из истории как есть нельзя — Postgres ответит
+/// «there is no parameter $1»; запись без `parameters` работает как раньше.
+fn sql_argument(args: &Value) -> Result<SqlArgs, String> {
     let inline = args.get("sql").and_then(Value::as_str);
     let file = args.get("file").and_then(Value::as_str);
     let sql = match (inline, file) {
@@ -880,11 +1030,14 @@ fn sql_argument(args: &Value) -> Result<String, String> {
         Some(other) => return Err(format!("`parameters` must be an array, got {other}")),
     };
     if params.is_empty() {
-        return Ok(sql);
+        return Ok(SqlArgs { run: sql.clone(), history: sql });
     }
     let statements = db::split_statements(&sql);
     match statements.len() {
-        1 => bind_parameters(&sql, &params),
+        1 => Ok(SqlArgs {
+            run: bind_parameters(&sql, &params)?,
+            history: sql,
+        }),
         0 => Err("no SQL statement to run".to_string()),
         n => Err(format!(
             "`parameters` are supported for a single statement only, got {n} — send them one call at a time"
@@ -1024,30 +1177,33 @@ struct QueryOutcome {
     exec: ExecResult,
     types: Vec<Option<Vec<(String, u32)>>>,
     masked: Vec<String>,
+    /// Данные урезаны байтовым бюджетом ответа (см. [`cap_response_bytes`]).
+    size_capped: bool,
 }
 
 /// SQL через сервер сессий; текст ответа — компактный JSON (все значения
-/// строками, как отдаёт simple-query протокол). `record` — писать в историю
-/// (пользовательские запросы; интроспекция историю не засоряет),
-/// `with_types` — спрашивать типы колонок (нужны только tool'у query).
+/// строками, как отдаёт simple-query протокол). `record` — SQL, который
+/// писать в историю (пользовательские запросы; интроспекция историю не
+/// засоряет), `with_types` — спрашивать типы колонок (нужны только tool'у
+/// query).
 async fn run_query(
     profile: &Profile,
     sql: &str,
     max_rows: usize,
     write: bool,
-    record: bool,
+    record: Option<&str>,
     with_types: bool,
 ) -> Result<QueryOutcome, String> {
     let mut b = connect_broker().await?;
     let outcome = b
         .query(&profile.id, sql, max_rows.max(1), write, with_types)
         .await;
-    if record {
+    if let Some(history_sql) = record {
         let _ = store::record_history(HistoryEntry {
             id: uuid::Uuid::new_v4().to_string(),
             profile_id: profile.id.clone(),
             profile_name: profile.name.clone(),
-            sql: sql.to_string(),
+            sql: history_sql.to_string(),
             at: store::now_ms(),
             ok: outcome.is_ok(),
         });
@@ -1055,9 +1211,15 @@ async fn run_query(
     let res = outcome.map_err(|e| e.to_string())?;
     let mut exec = res.exec;
     let masked = redact::redact_exec(&mut exec);
+    // порядок важен: сначала маскировка (она укорачивает значения), потом
+    // бюджет — иначе обрезанный секрет мог бы разминуться с redact'ом
+    let size_capped = cap_response_bytes(&mut exec);
     let mut payload = serde_json::to_value(&exec).map_err(|e| e.to_string())?;
     if !masked.is_empty() {
         payload["maskedColumns"] = json!(masked);
+    }
+    if size_capped {
+        payload["truncatedBySize"] = json!(true);
     }
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     Ok(QueryOutcome {
@@ -1065,7 +1227,73 @@ async fn run_query(
         exec,
         types: res.column_types.unwrap_or_default(),
         masked,
+        size_capped,
     })
+}
+
+/// Наибольшая граница символа не дальше `max`: резать `String` по байтам
+/// нельзя — это паника посреди UTF-8.
+fn char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        return s.len();
+    }
+    let mut n = max;
+    while n > 0 && !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
+/// Укладывает результат в байтовый бюджет ответа: сначала укорачивает слишком
+/// длинные значения, затем отбрасывает строки, на которые бюджета уже не
+/// хватило. Возвращает true, если что-то урезано, — вызывающий обязан сказать
+/// об этом модели, иначе она примет неполные данные за полные.
+///
+/// Первая строка остаётся всегда: пустой ответ на широкую таблицу модель
+/// прочитала бы как «данных нет».
+fn cap_response_bytes(exec: &mut ExecResult) -> bool {
+    let mut budget = MAX_RESPONSE_BYTES;
+    let mut capped = false;
+    let mut kept_any = false;
+    for r in &mut exec.results {
+        let mut keep = r.rows.len();
+        for (i, row) in r.rows.iter_mut().enumerate() {
+            let mut size = 0;
+            for cell in row.iter_mut().flatten() {
+                if cell.len() > MAX_CELL_BYTES {
+                    let full = cell.len();
+                    cell.truncate(char_boundary(cell, MAX_CELL_BYTES));
+                    let cut = full - cell.len();
+                    cell.push_str(&format!("…[{cut} more bytes cut]"));
+                    capped = true;
+                }
+                size += cell.len();
+            }
+            if kept_any && size > budget {
+                keep = i;
+                break;
+            }
+            budget = budget.saturating_sub(size);
+            kept_any = true;
+        }
+        if keep < r.rows.len() {
+            r.rows.truncate(keep);
+            r.truncated = true;
+            capped = true;
+        }
+    }
+    capped
+}
+
+/// Грубый предел на текстовый ответ tool'а без outputSchema (`selection`):
+/// разбирать чужой payload, чтобы урезать его аккуратно, тут нечем.
+fn cap_text(text: &mut String) {
+    if text.len() > MAX_RESPONSE_BYTES {
+        let full = text.len();
+        text.truncate(char_boundary(text, MAX_RESPONSE_BYTES));
+        let cut = full - text.len();
+        text.push_str(&format!("\n…[truncated: {cut} more bytes]"));
+    }
 }
 
 /// structuredContent tool'а query: результаты по стейтментам с именами и
@@ -1099,7 +1327,19 @@ fn query_structured(sql: &str, q: &QueryOutcome) -> Value {
     if !q.masked.is_empty() {
         out["masked_columns"] = json!(q.masked);
     }
+    if q.size_capped {
+        out["truncated_by_size"] = json!(true);
+    }
     out
+}
+
+/// Признак неполноты в structuredContent интроспекции: у `tables`/`columns`/
+/// `indexes` строки едут плоским списком, и флаг `truncated` отдельных
+/// стейтментов до модели иначе не доходит.
+fn mark_truncated(structured: &mut Value, q: &QueryOutcome) {
+    if q.size_capped || q.exec.results.iter().any(|r| r.truncated) {
+        structured["truncated"] = json!(true);
+    }
 }
 
 /// Имя типа k-й колонки i-го стейтмента. Сервер сессий отдаёт oid; неизвестные
@@ -1248,7 +1488,26 @@ mod tests {
         let args = json!({ "sql": "SELECT $1; SELECT 2", "parameters": ["a"] });
         assert!(sql_argument(&args).is_err());
         let args = json!({ "sql": "SELECT $1", "parameters": ["a"] });
-        assert_eq!(sql_argument(&args).unwrap(), "SELECT 'a'");
+        assert_eq!(sql_argument(&args).unwrap().run, "SELECT 'a'");
+    }
+
+    /// Значение параметра не должно осесть в истории: туда уходит форма с
+    /// плейсхолдерами, иначе токен из `parameters` лежал бы в history.json
+    /// открытым текстом (redact истории знает только PASSWORD).
+    #[test]
+    fn history_keeps_placeholders_not_parameter_values() {
+        let args = json!({
+            "sql": "UPDATE users SET api_token = $1 WHERE id = $2",
+            "parameters": ["ghp_secret", "7"],
+        });
+        let sql = sql_argument(&args).unwrap();
+        assert!(sql.run.contains("'ghp_secret'"));
+        assert_eq!(sql.history, "UPDATE users SET api_token = $1 WHERE id = $2");
+        assert!(!sql.history.contains("ghp_secret"));
+        // без parameters обе формы совпадают — путь как раньше
+        let plain = sql_argument(&json!({ "sql": "SELECT 1" })).unwrap();
+        assert_eq!(plain.run, "SELECT 1");
+        assert_eq!(plain.history, "SELECT 1");
     }
 
     #[test]
@@ -1320,6 +1579,7 @@ mod tests {
             // oid 23 = int4, 25 = text
             types: vec![Some(vec![("id".to_string(), 23), ("name".to_string(), 25)])],
             masked: vec!["name".to_string()],
+            size_capped: false,
         };
         let v = query_structured("SELECT id, name FROM t", &q);
         assert_eq!(v["result_sets"][0]["columns"][0]["type"], "int4");
@@ -1353,6 +1613,85 @@ mod tests {
         // при --counts появляется четвёртое поле, которого в строке нет
         let v = rows_structured("tables", &exec, &["schema", "name", "kind"], Some("approx_rows"));
         assert_eq!(v["tables"][0]["approx_rows"], Value::Null);
+    }
+
+    /// Спецификация: поддержанную версию подтверждаем эхом, незнакомую (в т.ч.
+    /// «будущую») — заменяем своей, иначе клиент решит, что его контракт здесь
+    /// реализован.
+    #[test]
+    fn initialize_answers_with_a_version_the_server_supports() {
+        let echo = initialize_result(&json!({ "protocolVersion": "2025-03-26" }));
+        assert_eq!(echo["protocolVersion"], "2025-03-26");
+        for bogus in ["2099-01-01", "", "draft"] {
+            let v = initialize_result(&json!({ "protocolVersion": bogus }));
+            assert_eq!(v["protocolVersion"], SUPPORTED_PROTOCOLS[0], "{bogus}");
+        }
+        // версии нет вовсе — тоже своя
+        assert_eq!(
+            initialize_result(&json!({}))["protocolVersion"],
+            SUPPORTED_PROTOCOLS[0]
+        );
+    }
+
+    /// Построчного лимита мало: 200 строк с многомегабайтными значениями — это
+    /// сотни МБ в одном кадре JSON-RPC. Длинные значения режутся с пометкой,
+    /// лишние строки отбрасываются, флаг truncated ставится.
+    #[test]
+    fn response_bytes_are_capped_with_an_explicit_flag() {
+        let wide = "x".repeat(MAX_CELL_BYTES * 2);
+        let rows = vec![vec![Some(wide.clone())]; 64];
+        let mut exec = ExecResult {
+            results: vec![StatementResult {
+                columns: vec!["blob".to_string()],
+                rows,
+                rows_affected: Some(64),
+                truncated: false,
+            }],
+            duration_ms: 1,
+        };
+        assert!(cap_response_bytes(&mut exec));
+        let r = &exec.results[0];
+        assert!(r.truncated, "обрезка строк не отмечена");
+        assert!(!r.rows.is_empty(), "хотя бы одна строка должна остаться");
+        let kept: usize = r
+            .rows
+            .iter()
+            .flat_map(|row| row.iter().flatten())
+            .map(String::len)
+            .sum();
+        // бюджет может быть превышен не больше чем на одну строку
+        assert!(kept <= MAX_RESPONSE_BYTES + MAX_CELL_BYTES * 2, "{kept}");
+        assert!(r.rows[0][0].as_deref().unwrap().ends_with("bytes cut]"));
+
+        // короткий ответ не трогаем
+        let mut small = ExecResult {
+            results: vec![StatementResult {
+                columns: vec!["a".to_string()],
+                rows: vec![vec![Some("1".to_string())]],
+                rows_affected: Some(1),
+                truncated: false,
+            }],
+            duration_ms: 1,
+        };
+        assert!(!cap_response_bytes(&mut small));
+        assert_eq!(small.results[0].rows[0][0].as_deref(), Some("1"));
+    }
+
+    /// Резать по байтам нельзя вслепую — обрезка посреди UTF-8 паникует.
+    #[test]
+    fn cell_cut_lands_on_a_char_boundary() {
+        let mut exec = ExecResult {
+            results: vec![StatementResult {
+                columns: vec!["t".to_string()],
+                rows: vec![vec![Some("я".repeat(MAX_CELL_BYTES))]],
+                rows_affected: Some(1),
+                truncated: false,
+            }],
+            duration_ms: 1,
+        };
+        assert!(cap_response_bytes(&mut exec));
+        let v = exec.results[0].rows[0][0].as_deref().unwrap();
+        assert!(v.starts_with('я') && v.ends_with("bytes cut]"));
     }
 
     #[test]
