@@ -44,6 +44,9 @@ pub struct RotateArgs {
     /// Не спрашивать подтверждение
     #[arg(long)]
     yes: bool,
+    /// Подтвердить запись в production-профиль (ALTER ROLE — запись в БД)
+    #[arg(long)]
+    prod_write: bool,
     #[arg(short, long)]
     verbose: bool,
 }
@@ -58,6 +61,12 @@ fn gen_password(len: usize) -> String {
 pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
     // sec обязателен: он даёт откат старого значения при сбое.
     sec::available()?;
+
+    // ALTER ROLE — запись в БД, значит для прод-профиля нужен тот же барьер,
+    // что и у `q --write`. Резолвим профиль заранее: барьер должен сработать
+    // до коннекта, а `--yes` его не заменяет (это подтверждение ротации, а не
+    // разрешение писать в прод).
+    session::authorize_prod_write(&session::resolve_profile(&a.alias)?, a.prod_write)?;
 
     // Коннект с текущими кредами (write — для ALTER); заодно резолвит профиль.
     let (profile, connected) = session::open_for(

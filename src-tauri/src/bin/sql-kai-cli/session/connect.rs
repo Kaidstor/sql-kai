@@ -4,6 +4,7 @@ use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
+use super::prod::guard_prod_write;
 use super::pw::{ensure_vault, resolve_override, PwSource};
 use super::resolve::resolve_profile;
 
@@ -71,6 +72,11 @@ pub async fn open_for(
     mux: bool,
 ) -> Result<(Profile, db::Connected), AppError> {
     let profile = resolve_profile(alias)?;
+    // Прод-барьер — до пароля и коннекта: отвергнутая запись не должна ни
+    // разлочивать vault, ни поднимать туннель.
+    if write {
+        guard_prod_write(&profile)?;
+    }
     let over = resolve_override(&profile, &pw)?;
     ensure_vault(&profile, over.is_some())?;
     let connected = open(&profile, over, write, verbose, mux).await?;

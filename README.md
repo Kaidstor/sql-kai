@@ -130,6 +130,12 @@ sql-kai holder stop                 # погасить фоновый держа
 
 - **Сессия по умолчанию read-only** (`SET default_transaction_read_only = on`);
   запись и DDL — только с явным `--write`.
+- **Запись в production-профиль — с отдельным разрешением**: одного `--write` мало.
+  Разрешает человек — вводом имени профиля в терминале, флагом `--prod-write` или
+  `SQL_KAI_ALLOW_PROD_WRITE=<профиль>` (список через запятую либо `1` — все prod-профили).
+  Без TTY (MCP, CI, пайп) остаётся только env, поэтому по умолчанию агент в прод не пишет.
+  Барьер общий для `q`, `saved run`, `rotate`, MCP-tool `query` и `exec` на ssh-хост
+  prod-профиля; чтение ничего не спрашивает.
 - Мультистейтмент — одна неявная транзакция: ошибка в середине откатывает всё.
 - `sql-kai discover` сам находит postgres-контейнер на хосте (`docker ps` → env
   контейнера → published-порт или bridge-IP) и сохраняет профиль; пароль уходит
@@ -168,7 +174,8 @@ sql-kai holder stop                 # погасить фоновый держа
 - Env-переменные — единый префикс `SQL_KAI_*`: `SQL_KAI_CONFIG_DIR` (конфиг-директория —
   изолированные окружения/тесты), `SQL_KAI_VAULT_PASSWORD` (мастер-пароль vault),
   `SQL_KAI_SSH_PASSPHRASE` (askpass для ssh-ключа), `SQL_KAI_SSH_MUX_TTL` (TTL ssh-мастера,
-  сек; по умолч. 300), `SQL_KAI_SEC_BIN` (путь к `sec`).
+  сек; по умолч. 300), `SQL_KAI_SEC_BIN` (путь к `sec`),
+  `SQL_KAI_ALLOW_PROD_WRITE` (разрешение на запись в prod-профили без вопросов).
 
 Установка:
 

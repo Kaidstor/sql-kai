@@ -11,8 +11,8 @@ use base64::Engine;
 use clap::Args;
 use sql_kai_lib::error::AppError;
 
-use crate::input;
 use crate::remote::{self, CONTAINER_DETECT};
+use crate::{input, session};
 
 #[derive(Args)]
 pub struct ExecArgs {
@@ -36,6 +36,9 @@ pub struct ExecArgs {
     /// Разрешить запись (по умолчанию сессия read-only)
     #[arg(long)]
     write: bool,
+    /// Подтвердить запись, если на этот хост смотрит production-профиль
+    #[arg(long, requires = "write")]
+    prod_write: bool,
     /// Показать резолв контейнера/юзера/базы
     #[arg(short, long)]
     verbose: bool,
@@ -82,6 +85,13 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         print!("{payload}");
         println!("KAI_EOF");
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // Прод-барьер — после --dry-run (тот на хост не ходит) и до ssh: exec
+    // пишет мимо профиля, но если на этот ssh-хост заведён production-профиль,
+    // это та же боевая база.
+    if a.write {
+        session::authorize_prod_write_ssh(&a.alias, a.prod_write)?;
     }
 
     let status = remote::run_via_stdin(&a.alias, &payload)

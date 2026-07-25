@@ -125,6 +125,24 @@ Intel-мак или Linux — собирать из исходников (раз
 в прод. Запись — явным флагом:</p>
 <pre><code>sql-kai domainator -c "UPDATE domains SET status='ok' WHERE id=42" --write</code></pre>
 
+<h3>Запись в production</h3>
+<p>Профилю с меткой <strong>production</strong> (красный бейдж PROD в GUI) одного
+<code>--write</code> мало: запись дополнительно требует разрешения от человека. Способы —
+любой на выбор:</p>
+<table>
+<tr><th>Способ</th><th>Когда</th></tr>
+<tr><td>Ввести имя профиля в ответ на вопрос</td><td>Запуск в терминале: sql-kai сам спросит перед подключением</td></tr>
+<tr><td><code>--prod-write</code> (рядом с <code>--write</code>)</td><td>Осознанная разовая команда: разрешение видно в самой команде — и в истории shell, и агенту, который просит её подтвердить</td></tr>
+<tr><td><code>SQL_KAI_ALLOW_PROD_WRITE=&lt;профиль&gt;</code></td><td>Неинтерактивные сценарии: MCP, CI, пайп. Значение — имя/id профиля (можно список через запятую) или <code>1</code> для всех prod-профилей</td></tr>
+</table>
+<p>Без TTY (MCP, пайп, CI) вопрос задавать некому, поэтому вариант остаётся один — env:
+<strong>по умолчанию запись в прод оттуда не проходит</strong>. Для MCP это принципиально:
+переменную задаёт пользователь в конфиге своего клиента (env сервера sql-kai), модель себе
+её не выставит, а <code>"write": true</code> в аргументах tool'а сам по себе прод не открывает.
+Барьер общий для всех путей записи — <code>q</code>, <code>saved run</code>, <code>rotate</code>,
+MCP-tool <code>query</code> и <code>exec</code> на ssh-хост, к которому привязан prod-профиль.
+Чтение из прод-профилей ничего не спрашивает.</p>
+
 <h3>Транзакции</h3>
 <p>Несколько стейтментов (повторные <code>-c</code>, файл, stdin) уходят одним батчем —
 это <strong>одна неявная транзакция</strong>: ошибка в середине откатывает всё,
@@ -340,6 +358,7 @@ env-переменной, vault не трогается вовсе.</p>
 <tr><td><code>SQL_KAI_VAULT_PASSWORD</code></td><td>Мастер-пароль vault для неинтерактивных запусков (и для <code>sql-kai vault setup</code>); holder вычищает её из своего окружения после разлока</td></tr>
 <tr><td><code>SQL_KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>SQL_KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
+<tr><td><code>SQL_KAI_ALLOW_PROD_WRITE</code></td><td>Разрешает запись в production-профили без интерактивного подтверждения: имя/id профиля (список через запятую) или <code>1</code> — все prod-профили. Единственный способ разрешить запись в прод из MCP/CI</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-kai</code>) — изолированные окружения и тесты</td></tr>
 </table>
 
