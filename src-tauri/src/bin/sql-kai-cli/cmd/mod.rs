@@ -1,11 +1,13 @@
 //! Подкоманды sql-kai: по модулю на команду — clap-структуры аргументов и `run()`.
 
+pub mod completion;
 pub mod discover;
 pub mod doctor;
 pub mod exec;
 pub mod history;
 pub mod holder;
 pub mod import;
+pub mod init;
 pub mod introspect;
 pub mod mcp;
 pub mod mcp_setup;
