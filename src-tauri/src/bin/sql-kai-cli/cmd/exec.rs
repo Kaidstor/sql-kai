@@ -11,7 +11,7 @@ use base64::Engine;
 use clap::Args;
 use sql_kai_lib::error::AppError;
 
-use crate::remote::{self, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_DB_ENV, CONTAINER_FIND};
 use crate::{input, session};
 
 #[derive(Args)]
@@ -47,7 +47,7 @@ pub struct ExecArgs {
     dry_run: bool,
 }
 
-/// Хвост поверх [`CONTAINER_DETECT`]: заливает переданный SQL (base64 в env) во
+/// Хвост поверх [`CONTAINER_FIND`] + [`CONTAINER_DB_ENV`]: заливает переданный SQL (base64 в env) во
 /// временный файл и прогоняет его через `docker exec psql` внутри контейнера.
 const EXEC_TAIL: &str = r#"if [ -n "${KAI_VERBOSE:-}" ]; then echo "[container=$C user=$U db=$DB]" >&2; fi
 SQLF=$(mktemp)
@@ -90,7 +90,7 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         ("KAI_VERBOSE", if a.verbose { "1" } else { "" }.to_string()),
         ("KAI_CONTAINER", a.container.clone().unwrap_or_default()),
     ];
-    let script = format!("{CONTAINER_DETECT}{EXEC_TAIL}");
+    let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{EXEC_TAIL}");
     let payload = remote::stdin_payload(&script, &env);
 
     if a.dry_run {

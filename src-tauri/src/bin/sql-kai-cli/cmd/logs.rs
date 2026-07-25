@@ -12,7 +12,7 @@ use clap::Args;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::Profile;
 
-use crate::remote::{self, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_FIND};
 use crate::session;
 
 #[derive(Args)]
@@ -45,7 +45,7 @@ pub struct LogsArgs {
     dry_run: bool,
 }
 
-/// Хвост поверх [`CONTAINER_DETECT`]: собирает опции `docker logs` в позиционные
+/// Хвост поверх [`CONTAINER_FIND`]: собирает опции `docker logs` в позиционные
 /// параметры — каждое значение отдельным аргументом в кавычках, поэтому пробелы
 /// и спецсимволы во времени/числе строк не расщепляются на лишние флаги (в
 /// отличие от `${KAI_PSQL_OPTS}` в exec, где опции задаёт не пользователь).
@@ -136,9 +136,10 @@ fn run_local(payload: &str) -> std::io::Result<ExitStatus> {
     child.wait()
 }
 
-/// Коды из [`CONTAINER_DETECT`]: 3 — контейнер не опознан, 5 — не определилась
-/// база. Для logs пятёрка особенно обидна (журнал нужен как раз когда psql в
-/// контейнере уже не отвечает), поэтому даём готовую команду в обход.
+/// Код 3 из [`CONTAINER_FIND`] — контейнер не опознан. Кода 5 («не определилась
+/// база») здесь быть не может: logs берёт только поиск контейнера, без
+/// `CONTAINER_DB_ENV` с его `docker exec` — именно чтобы журнал доставался и
+/// тогда, когда psql внутри уже не отвечает.
 fn print_hint(code: i32, a: &LogsArgs, target: &Target) {
     let via = match target {
         Target::Ssh(host) => format!("ssh {host} "),
@@ -146,19 +147,14 @@ fn print_hint(code: i32, a: &LogsArgs, target: &Target) {
     };
     match code {
         3 if a.container.is_some() => {
-            eprintln!("hint: список запущенных контейнеров — `{via}docker ps`");
+            eprintln!("hint: список контейнеров — `{via}docker ps -a`");
         }
         3 => eprintln!(
-            "hint: контейнер не опознан по имени — задай явно: \
-             `sql-kai logs {} --container <имя>` (список: `{via}docker ps`). \
+            "hint: контейнер не опознан — задай явно: \
+             `sql-kai logs {} --container <имя>` (список: `{via}docker ps -a`). \
              Если postgres на хосте не в docker, logs не поможет: смотри \
              `journalctl -u postgresql` или /var/log/postgresql",
             a.alias
-        ),
-        5 => eprintln!(
-            "hint: контейнер нашёлся, но не определилась база (psql внутри уже не отвечает?) — \
-             за журналом сходи напрямую: `{via}docker logs --tail {} <контейнер>`",
-            a.tail
         ),
         _ => {}
     }
@@ -178,6 +174,21 @@ pub fn run(a: LogsArgs) -> Result<ExitCode, AppError> {
 
     let env = [
         ("KAI_CONTAINER", a.container.clone().unwrap_or_default()),
+        // Локальный профиль (в т.ч. созданный `sql-kai fork`) опознаётся по
+        // опубликованному порту: имя контейнера форка под именную эвристику не
+        // подходит, а чужой локальный postgres — подходит, и его журнал выдался
+        // бы за журнал профиля. За ssh порт профиля — это порт внутри сети
+        // хоста, наружу он не опубликован, поэтому там признак не работает.
+        (
+            "KAI_PORT",
+            match &target {
+                Target::Local => profile.port.to_string(),
+                Target::Ssh(_) => String::new(),
+            },
+        ),
+        // Журнал остановленного/перезапускающегося контейнера `docker logs`
+        // отдаёт штатно — а это ровно тот случай, ради которого команда есть.
+        ("KAI_ANY_STATE", "1".to_string()),
         ("KAI_TAIL", a.tail.clone()),
         ("KAI_SINCE", a.since.clone().unwrap_or_default()),
         ("KAI_UNTIL", a.until.clone().unwrap_or_default()),
@@ -185,7 +196,7 @@ pub fn run(a: LogsArgs) -> Result<ExitCode, AppError> {
         ("KAI_FOLLOW", flag(a.follow)),
         ("KAI_VERBOSE", flag(a.verbose)),
     ];
-    let script = format!("{CONTAINER_DETECT}{LOGS_TAIL}");
+    let script = format!("{CONTAINER_FIND}{LOGS_TAIL}");
     let payload = remote::stdin_payload(&script, &env);
 
     if a.dry_run {

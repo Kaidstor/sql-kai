@@ -25,7 +25,12 @@ use crate::session;
 
 /// Дамп отдаёт строку на каждую колонку/индекс/констрейнт, поэтому
 /// `db::query_rows` с его 10k упёрся бы уже на паре сотен таблиц.
-pub(crate) const MAX_ROWS: usize = 200_000;
+///
+/// Ровно 100k, а не больше: столько же брокер разрешает на запрос
+/// (`max_rows.clamp(1, 100_000)`), а через него идёт MCP-tool `schema`. Возьми
+/// константа больше — CLI и MCP обрезали бы дамп на разной глубине, и «та же
+/// команда» отдавала бы разное.
+pub(crate) const MAX_ROWS: usize = 100_000;
 
 #[derive(Args)]
 pub struct SchemaArgs {
@@ -431,9 +436,11 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
     if !o.comments {
         hidden.push("комментарии (--comments)");
     }
-    if !hidden.is_empty() {
-        out.push_str(&format!("-- скрыто: {}\n", hidden.join("; ")));
-    }
+    // Права роли — не флаг, отключить их нельзя, но и умолчать нельзя: иначе
+    // урезанный правами дамп читается как полный. Поэтому клауза безусловна, и
+    // список пустым уже не бывает.
+    hidden.push("объекты, на которые нет прав у роли подключения");
+    out.push_str(&format!("-- скрыто: {}\n", hidden.join("; ")));
 
     if dump.schemas.iter().all(SchemaInfo::is_empty) {
         out.push_str("-- ничего не найдено (проверь --schema / --internal и права роли)\n");

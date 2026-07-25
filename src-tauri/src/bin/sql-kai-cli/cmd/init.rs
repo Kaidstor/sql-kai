@@ -216,11 +216,6 @@ async fn step_vault() -> Result<(), AppError> {
 
 fn step_mcp() -> Result<(), AppError> {
     let exe = std::env::current_exe()?;
-    if !mcp_install_available(&exe) {
-        println!("  в этой сборке нет `sql-kai mcp install` — шаг пропущен.");
-        println!("  Подключить сервер руками: команда `{} mcp <профиль>` в конфиге агента.", exe.display());
-        return Ok(());
-    }
     println!(
         "  Пропишет sql-kai как MCP-сервер в конфиги AI-агентов —\n  \
          агент сможет читать схему и выполнять запросы через tools."
@@ -240,30 +235,6 @@ fn step_mcp() -> Result<(), AppError> {
         return Ok(());
     }
     Ok(())
-}
-
-/// Подкоманду `mcp install` пишет соседняя ветка, и в конкретной сборке её
-/// может не быть — спрашиваем у самого бинаря, а не гадаем по версии.
-/// `mcp --help` безопасен при любом раскладе: даже когда `mcp` берёт алиас
-/// профиля позиционно, clap перехватывает `--help` до запуска сервера.
-fn mcp_install_available(exe: &Path) -> bool {
-    let mut cmd = Command::new(exe);
-    cmd.args(["mcp", "--help"]);
-    vault::scrub_master_password_env(&mut cmd);
-    let Ok(out) = cmd.output() else {
-        return false;
-    };
-    out.status.success() && help_lists(&String::from_utf8_lossy(&out.stdout), "install")
-}
-
-/// Есть ли в `--help` строка списка команд для `name`. Ищем именно начало
-/// строки, чтобы не поймать слово в описании соседней команды.
-fn help_lists(help: &str, name: &str) -> bool {
-    help.lines().any(|l| {
-        l.trim_start()
-            .strip_prefix(name)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', ',', '\t']))
-    })
 }
 
 // --- шаг 4: автодополнение ----------------------------------------------------
@@ -374,10 +345,7 @@ fn home() -> Result<PathBuf, AppError> {
 /// Вопрос перед изменением на диске. Печатается в stderr, чтобы вывод шагов
 /// оставался читаемым при `sql-kai init | tee`.
 fn confirm(question: &str) -> Result<bool, AppError> {
-    eprint!("  {question} [y/N] ");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "д" | "да"))
+    crate::input::confirm(&format!("  {question}"), "--skip-if-configured")
 }
 
 /// Всё ли уже настроено (для `--skip-if-configured`). MCP не проверяем:
@@ -436,22 +404,6 @@ fn print_manual(a: &InitArgs, shell: Option<CompletionShell>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Список команд в `--help` — строка, начинающаяся с имени.
-    #[test]
-    fn help_lists_sees_command_row() {
-        let help = "Usage: sql-kai mcp <COMMAND>\n\nCommands:\n  \
-                    install  Прописать сервер в агентов\n  help     Print this message\n";
-        assert!(help_lists(help, "install"));
-    }
-
-    /// Сборка без подкоманды: слово может встретиться в описании — это не она.
-    #[test]
-    fn help_lists_ignores_mentions_in_descriptions() {
-        let help = "Usage: sql-kai mcp <ALIAS>\n\nArguments:\n  \
-                    <ALIAS>  Профиль\n\nOptions:\n  -h  Print help (install manually)\n";
-        assert!(!help_lists(help, "install"));
-    }
 
     /// Симлинк ставим на бинарь в бандле — иначе обновление приложения не
     /// подхватится и шаг теряет смысл.

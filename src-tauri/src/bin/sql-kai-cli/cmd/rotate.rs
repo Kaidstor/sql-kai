@@ -8,7 +8,6 @@
 //! `ALTER ROLE … PASSWORD` → проверить свежим коннектом → только потом обновить
 //! vault. vault получает пароль лишь после того, как он подтверждён рабочим.
 
-use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::Args;
@@ -90,17 +89,9 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
          он сломается, пока не обновишь его секрет (sec push → передеплой).",
         profile.name, profile.database
     );
-    if !a.yes {
-        if !std::io::stdin().is_terminal() {
-            return Err(AppError::Msg("нет TTY для подтверждения — добавь --yes".into()));
-        }
-        eprint!("продолжить ротацию? [y/N] ");
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !matches!(line.trim(), "y" | "Y" | "yes") {
-            eprintln!("отменено");
-            return Ok(ExitCode::FAILURE);
-        }
+    if !a.yes && !crate::input::confirm("продолжить ротацию?", "--yes")? {
+        eprintln!("отменено");
+        return Ok(ExitCode::FAILURE);
     }
 
     let new_pw = gen_password(a.length.clamp(8, 128));

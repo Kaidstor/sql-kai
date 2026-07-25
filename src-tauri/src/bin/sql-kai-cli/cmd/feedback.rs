@@ -284,14 +284,11 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
     eprintln!(
         "\nsql-kai ничего никуда не отправляет: issue создашь ты сам в браузере кнопкой Submit."
     );
-    if !std::io::stdin().is_terminal() {
+    if !crate::input::is_interactive() {
         eprintln!("нет TTY для подтверждения — открой ссылку сам (или добавь --print-only)");
         return Ok(ExitCode::SUCCESS);
     }
-    eprint!("открыть ссылку в браузере? [y/N] ");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    if !matches!(line.trim(), "y" | "Y" | "yes") {
+    if !crate::input::confirm("открыть ссылку в браузере?", "--print-only")? {
         eprintln!("не открываю — ссылка выше");
         // Отказ открыть браузер не делает команду неуспешной: ссылка составлена
         // и напечатана, а это и есть её работа.

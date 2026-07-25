@@ -12,7 +12,7 @@ use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile, SshConfig};
 
-use crate::remote::{self, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_DB_ENV, CONTAINER_FIND};
 use crate::{sec, session};
 
 #[derive(Args)]
@@ -39,7 +39,7 @@ pub struct DiscoverArgs {
     dry_run: bool,
 }
 
-/// Хвост поверх [`CONTAINER_DETECT`]: тянет POSTGRES_PASSWORD и решает, куда
+/// Хвост поверх [`CONTAINER_FIND`] + [`CONTAINER_DB_ENV`]: тянет POSTGRES_PASSWORD и решает, куда
 /// туннелировать — опубликованный порт (docker port) или IP контейнера в
 /// bridge-сети (с хоста маршрутизируется). Пароль — base64, чтобы спецсимволы
 /// не ломали парсинг метастроки.
@@ -62,7 +62,7 @@ struct Discovered {
 }
 
 fn discover_host(alias: &str, container: Option<&str>) -> Result<Discovered, AppError> {
-    let script = format!("{CONTAINER_DETECT}{DISCOVER_TAIL}");
+    let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{DISCOVER_TAIL}");
     let env = [(
         "KAI_CONTAINER",
         container.unwrap_or_default().to_string(),

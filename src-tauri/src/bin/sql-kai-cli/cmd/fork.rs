@@ -3,7 +3,8 @@
 //! завести на него профиль. Идея из ghost.build («форкни базу и примени миграцию
 //! на копии»), но без copy-on-write: базы у нас удалённые и чужие, снапшот тома
 //! или файловой системы снять нечем — поэтому копия делается дампом, а «мгновенно»
-//! получается только для схемы (`--schema-only`), данные — по явному `--data`.
+//! получается только для схемы: она снимается по умолчанию, данные — по явному
+//! `--data`.
 //!
 //! Источник строго read-only, и это обеспечено на всех путях: соединение
 //! открывается через [`session::open_for`] с `write = false`, то есть сразу
@@ -20,7 +21,7 @@
 //! когда нужны расширения, которых нет в ванильном образе (postgis и т.п.).
 
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, IsTerminal, Write};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Output, Stdio};
 use std::time::Duration;
@@ -32,7 +33,7 @@ use sql_kai_lib::store::{self, Profile};
 use sql_kai_lib::tunnel;
 use sql_kai_lib::vault;
 
-use crate::remote::{self, CONTAINER_DETECT};
+use crate::remote::{self, CONTAINER_DB_ENV, CONTAINER_FIND};
 use crate::{sec, session};
 
 #[derive(Args)]
@@ -78,7 +79,7 @@ pub struct ForkArgs {
     verbose: bool,
 }
 
-/// Хвост поверх [`CONTAINER_DETECT`]: `pg_dump` внутри контейнера-источника, дамп
+/// Хвост поверх [`CONTAINER_FIND`] + [`CONTAINER_DB_ENV`]: `pg_dump` внутри контейнера-источника, дамп
 /// уезжает в stdout ssh. Имя базы берём из профиля (`KAI_DB`), а не из env
 /// контейнера: в одном кластере баз может быть несколько, а профиль знает нужную.
 /// Роль — из контейнера (`$U`), она ходит по unix-сокету через trust, так что
@@ -248,7 +249,7 @@ fn open_dump_file(path: &Path) -> Result<File, AppError> {
 }
 
 /// Дамп через ssh + `docker exec pg_dump` — тот же путь, что у `discover`/`exec`
-/// (общий [`CONTAINER_DETECT`]). stdout уходит прямо в файл, а не в память:
+/// (общий [`CONTAINER_FIND`] + [`CONTAINER_DB_ENV`]). stdout уходит прямо в файл, а не в память:
 /// дамп с `--data` бывает на гигабайты, и `remote::output_via_stdin` на нём
 /// раздул бы процесс.
 fn dump_remote(
@@ -259,7 +260,7 @@ fn dump_remote(
     verbose: bool,
     out: &Path,
 ) -> Result<ExitStatus, AppError> {
-    let script = format!("{CONTAINER_DETECT}{DUMP_TAIL}");
+    let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{DUMP_TAIL}");
     let env = [
         ("KAI_CONTAINER", container.unwrap_or_default().to_string()),
         ("KAI_DB", database.to_string()),
@@ -394,18 +395,6 @@ fn count_tables(cname: &str, user: &str, database: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn confirm(question: &str) -> Result<bool, AppError> {
-    if !std::io::stdin().is_terminal() {
-        return Err(AppError::Msg(
-            "нет TTY для подтверждения — добавь --yes".into(),
-        ));
-    }
-    eprint!("{question} [y/N] ");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
-}
-
 pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     // Docker проверяем до коннекта: незачем дёргать прод, если форк всё равно
     // некуда положить.
@@ -518,7 +507,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         println!("dry-run: ничего не сделано");
         return Ok(ExitCode::SUCCESS);
     }
-    if !a.yes && !confirm("продолжить?")? {
+    if !a.yes && !crate::input::confirm("продолжить?", "--yes")? {
         eprintln!("отменено");
         return Ok(ExitCode::FAILURE);
     }
@@ -544,7 +533,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         )?;
         match status.code() {
             Some(0) => dumped = true,
-            // 3/5 — коды CONTAINER_DETECT: postgres на хосте не в docker
+            // 3/5 — коды CONTAINER_FIND/CONTAINER_DB_ENV: postgres на хосте не в docker
             // (bastion -> RDS/облако). Дамп снимем локально через туннель.
             Some(3) | Some(5) => eprintln!(
                 "sql-kai: postgres-контейнер на '{alias}' не найден — снимаю дамп \

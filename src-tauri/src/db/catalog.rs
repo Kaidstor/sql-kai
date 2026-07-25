@@ -223,8 +223,14 @@ impl SchemaOptions {
             self.nsp("n"),
             self.no_ext("pg_class", "c.oid"),
             "has_schema_privilege(n.oid, 'USAGE')".to_string(),
-            "has_table_privilege(c.oid, 'SELECT, INSERT, UPDATE, DELETE, \
-             TRUNCATE, REFERENCES, TRIGGER')"
+            // A least-privilege role often gets column grants only
+            // (`GRANT SELECT (code) ON t`), and for those has_table_privilege is
+            // false — the table would vanish from the dump while constraints on
+            // other tables kept referencing it. has_any_column_privilege covers
+            // exactly that case.
+            "(has_table_privilege(c.oid, 'SELECT, INSERT, UPDATE, DELETE, \
+             TRUNCATE, REFERENCES, TRIGGER') \
+             OR has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES'))"
                 .to_string(),
         ];
         if !self.internal {
@@ -321,6 +327,10 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
     );
 
     // Constraint-backed indexes are skipped: they are printed as constraints.
+    // `conrelid = indrelid` matters — a FOREIGN KEY stores the *referenced*
+    // table's index in `conindid`, so matching on `conindid` alone dropped a
+    // plain unique index the moment some other table pointed a FK at it, and
+    // nothing else in the dump mentioned that uniqueness.
     let indexes = format!(
         "SELECT n.nspname, c.relname, ic.relname, i.indisunique::text,
                 pg_get_indexdef(i.indexrelid, 0, true)
@@ -328,7 +338,9 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
            JOIN pg_class c ON c.oid = i.indrelid
            JOIN pg_class ic ON ic.oid = i.indexrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
-          WHERE NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid)
+          WHERE NOT EXISTS (SELECT 1 FROM pg_constraint co
+                             WHERE co.conindid = i.indexrelid
+                               AND co.conrelid = i.indrelid)
             AND {rel}
           ORDER BY n.nspname, c.relname, ic.relname"
     );
@@ -503,7 +515,9 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
         &format!(
             "SELECT pg_get_indexdef(i.indexrelid, 0, true) FROM pg_index i \
              WHERE i.indrelid = {rel} \
-             AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid) \
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint co \
+                              WHERE co.conindid = i.indexrelid \
+                                AND co.conrelid = i.indrelid) \
              ORDER BY 1"
         ),
     )

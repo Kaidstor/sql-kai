@@ -137,7 +137,6 @@ table public.domains
   created_at  timestamptz   not null  default now()
   constraint domains_pkey PRIMARY KEY (id)
   constraint domains_name_key UNIQUE (name)
-  index domains_pkey unique USING btree (id)
   index domains_status_idx USING btree (status)
   trigger set_updated_at BEFORE UPDATE -> touch_updated_at()
 
@@ -145,6 +144,10 @@ enum public.domain_state = new | ok | failed
 
 -- итого: схем 1, таблиц 1, enum 1
 ```
+
+Индексы за `PRIMARY KEY` и `UNIQUE` отдельной строкой `index` не печатаются —
+они и есть строки `constraint` выше; отдельный `sql-kai indexes` за ними идти не
+нужно.
 
 Флаги: `--schema <name>` (сузить до одной схемы), `--definitions` (тела вьюх и
 исходники функций), `--comments` (тексты `COMMENT ON`), `--internal` (системные
@@ -306,8 +309,9 @@ WHERE id IN (SELECT id FROM t WHERE col IS NULL ORDER BY id LIMIT 10000);
 **6. Прогони на копии — для этого есть `fork`.**
 
 ```bash
-sql-kai fork <alias> --data              # копия базы профиля в локальном docker
+sql-kai fork <alias> --data --yes        # копия базы профиля в локальном docker
                                          # (без --data — только схема, быстро)
+                                         # --yes обязателен: без TTY подтвердить некому
 sql-kai <alias>-fork -f migration.sql --write   # прогон миграции на копии
 docker rm -f sql-kai-fork-<alias>-fork          # снести форк
 ```

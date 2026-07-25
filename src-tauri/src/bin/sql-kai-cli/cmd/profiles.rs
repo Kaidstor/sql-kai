@@ -1,7 +1,6 @@
 //! `sql-kai profiles` — профили подключений (общие с GUI): список, просмотр,
 //! удаление (вместе с секретами из vault).
 
-use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::Subcommand;
@@ -106,15 +105,11 @@ pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
         ProfilesCmd::Rm { alias, yes } => {
             let p = session::resolve_profile(&alias)?;
             if !yes {
-                if !std::io::stdin().is_terminal() {
-                    return Err(AppError::Msg(
-                        "нет TTY для подтверждения — добавь --yes".into(),
-                    ));
-                }
-                eprint!("удалить профиль '{}' ({}:{}/{})? [y/N] ", p.name, p.host, p.port, p.database);
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                if !matches!(line.trim(), "y" | "Y" | "yes") {
+                let q = format!(
+                    "удалить профиль '{}' ({}:{}/{})?",
+                    p.name, p.host, p.port, p.database
+                );
+                if !crate::input::confirm(&q, "--yes")? {
                     eprintln!("отменено");
                     return Ok(ExitCode::FAILURE);
                 }
