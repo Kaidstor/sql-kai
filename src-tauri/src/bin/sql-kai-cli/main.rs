@@ -87,7 +87,8 @@ enum Cmd {
     /// Индексы таблицы
     Indexes(TableArgs),
     /// MCP-сервер (stdio) для AI-агентов: tools query/tables/columns/ddl/
-    /// indexes + open_table/open_query (вкладки в GUI)
+    /// indexes + open_table/open_query (вкладки в GUI); mcp install — прописать
+    /// сервер в конфиг MCP-клиента, mcp status — где он уже прописан
     Mcp(McpArgs),
     /// История выполненных запросов
     History(HistoryArgs),
