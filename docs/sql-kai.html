@@ -147,9 +147,16 @@ sql-kai init --skip-if-configured  # для установщиков: молча
 
 <h2 id="query">Запросы</h2>
 <h3>Read-only по умолчанию</h3>
-<p>Каждая сессия сразу выполняет <code>SET default_transaction_read_only = on</code>.
+<p>Каждый читающий батч выполняется внутри явной транзакции <code>BEGIN READ ONLY</code>
+(<code>SET default_transaction_read_only = on</code> остаётся вторым слоем — сам по себе он
+границей не является, это USERSET-настройка, которую батч снял бы первой же строкой).
 <code>INSERT/UPDATE/DELETE/DDL</code> упадут с ошибкой сервера — это защита от случайной записи
-в прод. Запись — явным флагом:</p>
+в прод. Всё, что вывело бы батч из этого блока или сняло бы с него read-only
+(<code>COMMIT</code>, <code>ROLLBACK</code>, <code>DISCARD</code>, <code>SET TRANSACTION</code>,
+<code>SET …transaction_read_only</code> и его функциональная форма
+<code>set_config(…)</code>), отвергается до отправки в базу; отдельно отвергается запись
+мимо базы — <code>COPY … TO PROGRAM</code>, <code>COPY … TO '/путь'</code>,
+<code>lo_export</code>. Запись — явным флагом:</p>
 <pre><code>sql-kai domainator -c "UPDATE domains SET status='ok' WHERE id=42" --write</code></pre>
 
 <h3>Запись в production</h3>
@@ -205,8 +212,13 @@ sql-kai domainator -c "SELECT * FROM admins" --no-redact  # как есть</cod
 <h2 id="schema">Схема базы одним дампом</h2>
 <p><code>sql-kai schema &lt;alias&gt;</code> отдаёт <strong>всю структуру базы за один поход
 в каталог</strong>: таблицы (обычные, партиционированные, foreign), вьюхи и матвьюхи —
-с колонками, типами, nullability, дефолтами, identity/generated, констрейнтами, индексами,
-триггерами и RLS, плюс enum-типы, функции и процедуры. Это замена обхода
+с колонками, типами, nullability, дефолтами, identity/generated (<code>stored</code> или
+<code>virtual</code>), констрейнтами, индексами, триггерами, RLS-политиками и границами
+партиций, плюс enum-типы, домены, composite-типы, standalone-секвенции, функции и
+процедуры. Нужен <strong>PostgreSQL 12+</strong> (дамп читает <code>attgenerated</code>);
+на более старом сервере команда отказывает и отсылает к точечным
+<code>tables</code>/<code>columns</code>/<code>indexes</code>/<code>ddl</code>.
+Это замена обхода
 <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой
 таблице: вместо десятков round-trip — константное число каталожных запросов, отправленных
 одним батчем, то есть ещё и один согласованный снимок.</p>
@@ -273,6 +285,12 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 <code>\i</code>, <code>\gexec</code>, <code>\o</code>, <code>\copy</code>, <code>\!</code>),
 на чтении отвергаются; describe и переключатели вывода (<code>\d…</code>, <code>\l</code>,
 <code>\x</code>, <code>\timing</code>) проходят.</p>
+<p>Здесь же отвергается и запись <em>мимо</em> базы: <code>COPY … TO PROGRAM</code> запускает
+шелл на сервере, <code>COPY … TO '/путь'</code> и <code>lo_export</code> пишут его диск, а
+read-only транзакция не покрывает ни то, ни другое (Postgres проверяет только запись
+в базу). На exec-пути это особенно важно: psql внутри контейнера работает под
+<code>POSTGRES_USER</code>, как правило суперюзером. Выгрузка данных — через
+<code>COPY … TO STDOUT</code>.</p>
 <p>Когда нужен: до базы не достучаться туннелем (порт не публикуется и IP контейнера
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
@@ -353,7 +371,7 @@ vault уже разблокирован, туннели подняты, сесс
 <table>
 <tr><th>Tool</th><th>Что делает</th></tr>
 <tr><td><code>schema</code></td><td><strong>Основной инструмент интроспекции:</strong> вся схема базы за один вызов — таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи с колонками, типами, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. Одно обращение к каталогу вместо обхода <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой таблице, и один консистентный снимок. Параметры: <code>schema</code>, <code>definitions</code>, <code>comments</code>, <code>internal</code></td></tr>
-<tr><td><code>query</code></td><td>SQL; <code>parameters</code> для <code>$1..$N</code> (экранируются как литералы), <code>file</code> — выполнить .sql с диска, <code>maxRows</code>, <code>write</code>. Чувствительные колонки маскируются</td></tr>
+<tr><td><code>query</code></td><td>SQL; <code>parameters</code> для <code>$1..$N</code> (экранируются как литералы), <code>file</code> — выполнить .sql с диска, <code>maxRows</code>, <code>write</code>. Чувствительные колонки маскируются. Значения из <code>parameters</code> в историю запросов не попадают — там остаются плейсхолдеры <code>$1</code> (обратная сторона: такую запись из истории не перезапустить)</td></tr>
 <tr><td><code>profiles</code></td><td>Список баз (только в мультипрофильном режиме): имя, id, группа, база, хост, метка <code>production</code></td></tr>
 <tr><td><code>tables</code> / <code>columns</code> / <code>ddl</code> / <code>indexes</code></td><td>Точечная интроспекция, когда весь дамп не нужен</td></tr>
 <tr><td><code>open_table</code> / <code>open_query</code></td><td>Открыть таблицу или готовый (невыполненный) запрос вкладкой в GUI — «покажи мне это»</td></tr>
@@ -362,6 +380,15 @@ vault уже разблокирован, туннели подняты, сесс
 <p>У каждого tool'а объявлены <code>annotations</code> (<code>readOnlyHint</code>,
 <code>destructiveHint</code>, …) и <code>outputSchema</code>: ответ приходит и текстом
 (<code>content</code>), и разобранным деревом (<code>structuredContent</code>).</p>
+<p>Ответ ограничен и по строкам, и по объёму: <code>maxRows</code> клампится до 10000, на данные
+отводится 256 KiB, на одну ячейку — 16 KiB. Обрезка не молчаливая: в structuredContent
+приходят <code>truncated</code> и <code>truncated_by_size</code>, длинная ячейка получает
+пометку о том, сколько байт срезано. Так широкая таблица или многомегабайтный jsonb не
+уносят контекст модели целиком.</p>
+<p>Долгий запрос больше не затыкает сервер: <code>tools/call</code> выполняется параллельно
+(до 4 одновременно), <code>ping</code> и <code>tools/list</code> отвечают, пока он идёт.
+Отмены отдельного вызова нет — <code>cancel</code> у сервера сессий адресуется профилю и
+погасил бы соседний запрос к той же базе.</p>
 <p><strong>Запись в production через MCP не проходит по умолчанию.</strong> У сервера нет TTY
 (stdin занят протоколом), спросить человека невозможно, поэтому <code>"write": true</code> для
 профиля с меткой production разрешает только <code>SQL_KAI_ALLOW_PROD_WRITE</code> в окружении
