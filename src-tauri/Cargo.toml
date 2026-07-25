@@ -24,7 +24,7 @@ required-features = ["cli"]
 
 [features]
 default = []
-cli = ["dep:clap", "dep:rpassword"]
+cli = ["dep:clap", "dep:clap_complete", "dep:rpassword"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -55,6 +55,9 @@ rand = "0.8"
 base64 = "0.22"
 zeroize = "1"
 clap = { version = "4", features = ["derive", "wrap_help"], optional = true }
+# генератор скриптов автодополнения (`sql-kai completion`); только aot-часть,
+# unstable-dynamic не включаем — дополнение профилей сделано своим эпилогом
+clap_complete = { version = "4", optional = true }
 rpassword = { version = "7", optional = true }
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"

@@ -22,12 +22,14 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use sql_kai_lib::error::AppError;
 
+use cmd::completion::CompletionArgs;
 use cmd::discover::DiscoverArgs;
 use cmd::doctor::DoctorArgs;
 use cmd::exec::ExecArgs;
 use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
+use cmd::init::InitArgs;
 use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
 use cmd::mcp::McpArgs;
 use cmd::profiles::ProfilesCmd;
@@ -47,6 +49,7 @@ use cmd::vault::VaultCmd;
     version,
     about = "SQL к Postgres по профилям sql-kai (ssh-туннели, vault, история)",
     after_help = "Примеры:\n  \
+        sql-kai init                       # первичная настройка: PATH, vault, MCP, автодополнение\n  \
         sql-kai domainator -c \"SELECT count(*) FROM domains\"\n  \
         echo \"SELECT now()\" | sql-kai orchestrator --json\n  \
         sql-kai discover coordinator       # ssh-хост -> профиль (+ пароль в vault)\n  \
@@ -54,13 +57,19 @@ use cmd::vault::VaultCmd;
         sql-kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
         sql-kai vault trust                # тихий доступ CLI к паролям vault"
 )]
-struct Cli {
+// pub(crate), чтобы `sql-kai completion` мог отдать clap-описание генератору
+// скриптов — единственный источник правды о подкомандах и флагах.
+pub(crate) struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Первичная настройка: sql-kai в PATH, vault trust, MCP, автодополнение
+    Init(InitArgs),
+    /// Скрипт автодополнения шелла (zsh/bash/fish) + имена профилей
+    Completion(CompletionArgs),
     /// Выполнить SQL в базе профиля (sql-kai <alias> — то же самое)
     #[command(name = "q", alias = "query")]
     Query(QueryArgs),
@@ -161,6 +170,8 @@ fn main() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
     match cli.cmd {
+        Cmd::Init(a) => cmd::init::run(a).await,
+        Cmd::Completion(a) => cmd::completion::run(a),
         Cmd::Query(a) => cmd::query::run(a).await,
         Cmd::Exec(a) => cmd::exec::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
