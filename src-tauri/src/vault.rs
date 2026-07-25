@@ -366,6 +366,26 @@ pub fn lock() {
     *VAULT.lock().unwrap() = None;
 }
 
+/// Re-reads `vault.json` with the DEK already in memory, picking up secrets
+/// another process wrote after this one unlocked.
+///
+/// Secrets are decrypted once at unlock and kept in memory (the DEK is zeroized
+/// on lock), so a long-lived host — the GUI or the CLI holder — never saw a
+/// secret added by a separate `sql-kai` process. `sql-kai fork` hits this every
+/// time: it creates a profile, stores its password, and the very next query
+/// against that profile goes through the already-running holder, which then
+/// connects with no password at all.
+///
+/// No-op when the vault is locked (nothing to refresh) or absent.
+pub fn refresh_secrets() -> Result<(), AppError> {
+    let dek = match VAULT.lock().unwrap().as_ref() {
+        Some(v) => v.dek,
+        None => return Ok(()),
+    };
+    let file = read_file()?;
+    install_unlocked(dek, file)
+}
+
 pub fn get_secret(key: &str) -> Option<String> {
     VAULT
         .lock()

@@ -376,7 +376,11 @@ fn restore(cname: &str, user: &str, database: &str, dump: &Path, schema_only: bo
     let file = File::open(dump).map_err(AppError::Io)?;
     let mut cmd = docker();
     cmd.args(["exec", "-i", cname, "psql", "-U", user, "-d", database])
-        .args(["-v", "ON_ERROR_STOP=1", "-q"]);
+        // -q глушит только command-теги; дамп зовёт ещё и SELECT'ы
+        // (`set_config`, `setval` у сиквенсов), а их таблички результатов
+        // печатались прямо в вывод команды. -o шлёт результаты запросов в
+        // никуда, ошибки при этом остаются на stderr.
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-o", "/dev/null"]);
     if schema_only {
         cmd.arg("--single-transaction");
     }

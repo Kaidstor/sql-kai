@@ -345,6 +345,19 @@ async fn get_or_open(
         return Ok(entry);
     }
     let profile = store::profile_by_id(profile_id)?;
+    // Профиль заявляет пароль, а в нашей памяти его нет — значит секрет положил
+    // другой процесс уже после того, как мы разблокировали vault (типичный
+    // случай: `sql-kai fork` завёл профиль, и первый же запрос к нему пришёл
+    // сюда). Перечитываем секреты, иначе ушли бы коннектиться без пароля и
+    // получили бы от tokio-postgres невнятное "invalid configuration".
+    if profile.has_password && vault::get_secret(&profile.id).is_none() {
+        if let Err(e) = vault::refresh_secrets() {
+            logging::log(
+                "broker",
+                &format!("\"{profile_id}\": failed to refresh vault secrets ({e})"),
+            );
+        }
+    }
     let connected = db::connect(
         &profile,
         db::ConnectOptions {
