@@ -353,6 +353,30 @@ fn install_json(
     Ok(true)
 }
 
+/// Заголовок секции нашего сервера — в любом написании, допустимом в TOML:
+/// `[mcp_servers.sql-kai]`, `[mcp_servers."sql-kai"]`, с пробелами вокруг точки.
+/// Сравнение строкой пропускало квотированный вариант: рядом с ним добавлялась
+/// вторая секция того же имени, наша проверка «секция ровно одна» этого не
+/// видела, а TOML-парсер отвергал файл целиком как дубль таблицы.
+fn is_server_header(line: &str, name: &str) -> bool {
+    let Some(inner) = line.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return false;
+    };
+    let Some(rest) = inner.trim_start().strip_prefix("mcp_servers") else {
+        return false;
+    };
+    // ключ не режем по точке: `[mcp_servers."a.b"]` — одно имя, а не два уровня
+    let Some(key) = rest.trim_start().strip_prefix('.') else {
+        return false;
+    };
+    let key = key.trim();
+    key.strip_prefix('"')
+        .and_then(|k| k.strip_suffix('"'))
+        .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')))
+        .unwrap_or(key)
+        == name
+}
+
 /// Codex: секция `[mcp_servers.<имя>]` в TOML. Разбираем построчно — секция
 /// добавляется в конец файла, а при --force заменяется до следующего
 /// заголовка `[...]`; остальной конфиг не трогается.
@@ -365,7 +389,7 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
     };
     let header = format!("[mcp_servers.{}]", toml_key(&a.name));
     let lines: Vec<&str> = text.lines().collect();
-    let start = lines.iter().position(|l| l.trim() == header);
+    let start = lines.iter().position(|l| is_server_header(l, &a.name));
 
     let block = entry.toml(&a.name);
     let out = match start {
@@ -414,7 +438,7 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
     // TOML-парсера в зависимостях нет, поэтому проверка простая: секция на
     // месте и ровно одна
     let check = std::fs::read_to_string(path).map_err(AppError::Io)?;
-    if check.lines().filter(|l| l.trim() == header).count() != 1 {
+    if check.lines().filter(|l| is_server_header(l, &a.name)).count() != 1 {
         restore(path, backup.as_deref(), existed)?;
         return Err(verify_failed(path, backup.as_deref(), existed));
     }
@@ -424,13 +448,27 @@ fn install_toml(path: &Path, a: &InstallArgs, entry: &ServerEntry) -> Result<boo
 
 /// Копия конфига рядом с оригиналом. `skip` — файла нет или запрошен
 /// --no-backup.
+///
+/// Занятое имя не перезаписываем, а берём следующее: второй `mcp install
+/// --force` затирал бы `.bak` от первого — то есть единственную копию конфига,
+/// каким он был до нас.
 fn backup_file(path: &Path, skip: bool) -> Result<Option<PathBuf>, AppError> {
     if skip || !path.exists() {
         return Ok(None);
     }
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".bak");
-    let backup = path.with_file_name(name);
+    let backup = (0..100)
+        .map(|n| {
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(if n == 0 { ".bak".to_string() } else { format!(".bak.{n}") });
+            path.with_file_name(name)
+        })
+        .find(|candidate| !candidate.exists())
+        .ok_or_else(|| {
+            AppError::Msg(format!(
+                "рядом с {} уже сто копий .bak — убери лишние",
+                path.display()
+            ))
+        })?;
     std::fs::copy(path, &backup).map_err(AppError::Io)?;
     println!("бэкап: {}", backup.display());
     Ok(Some(backup))
@@ -501,7 +539,10 @@ fn print_status_table(
         .iter()
         .map(|spec| {
             let (state, detail) = match spec.path() {
-                Ok(p) => client_status(spec, &p, name),
+                Ok(p) => {
+                    let (state, detail) = client_status(spec, &p, name);
+                    (state.as_str().to_string(), detail)
+                }
                 Err(e) => ("ошибка".to_string(), e.to_string()),
             };
             vec![Some(spec.key.to_string()), Some(state), Some(detail)]
@@ -513,31 +554,83 @@ fn print_status_table(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Состояние клиента — типом, а не строкой: по нему принимает решение шаг
+/// `init`, а строка нужна только для таблицы.
+#[derive(PartialEq)]
+enum ClientState {
+    NoFile,
+    Unreadable,
+    NotParsed,
+    Absent,
+    Installed,
+}
+
+impl ClientState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoFile => "нет файла",
+            Self::Unreadable => "нечитаем",
+            Self::NotParsed => "не разобран",
+            Self::Absent => "не настроен",
+            Self::Installed => "настроен",
+        }
+    }
+}
+
+/// Клиент, конфиг которого есть на диске.
+pub struct PresentClient {
+    pub key: &'static str,
+    pub title: &'static str,
+    pub configured: bool,
+}
+
+/// Клиенты с существующим конфигом. Нужно шагу `init`: `mcp install` без
+/// аргумента только печатает список, поэтому шаг обязан сам выбрать, кому
+/// прописывать сервер.
+pub fn present_clients(name: &str) -> Vec<PresentClient> {
+    clients()
+        .into_iter()
+        .filter_map(|spec| {
+            let path = spec.path().ok()?;
+            let (state, _) = client_status(&spec, &path, name);
+            (state != ClientState::NoFile).then_some(PresentClient {
+                key: spec.key,
+                title: spec.title,
+                configured: state == ClientState::Installed,
+            })
+        })
+        .collect()
+}
+
+/// Имя записи по умолчанию — то же, что подставляет `mcp install`.
+pub fn default_name() -> &'static str {
+    DEFAULT_NAME
+}
+
 /// Статус одного клиента: есть ли файл, есть ли в нём наша запись и какой
 /// командой она запускается.
-fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (String, String) {
+fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (ClientState, String) {
     if !path.exists() {
-        return ("нет файла".into(), path.display().to_string());
+        return (ClientState::NoFile, path.display().to_string());
     }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) => return ("нечитаем".into(), e.to_string()),
+        Err(e) => return (ClientState::Unreadable, e.to_string()),
     };
     if spec.layout == Layout::CodexToml {
-        let header = format!("[mcp_servers.{}]", toml_key(name));
-        let mut lines = text.lines().skip_while(|l| l.trim() != header);
+        let mut lines = text.lines().skip_while(|l| !is_server_header(l, name));
         if lines.next().is_none() {
-            return ("не настроен".into(), path.display().to_string());
+            return (ClientState::Absent, path.display().to_string());
         }
         let command = lines
             .take_while(|l| !l.trim_start().starts_with('['))
             .find_map(|l| l.trim().strip_prefix("command").map(|v| v.trim_start_matches([' ', '=']).trim().to_string()))
             .unwrap_or_default();
-        return ("настроен".into(), command.trim_matches('"').to_string());
+        return (ClientState::Installed, command.trim_matches('"').to_string());
     }
     let root: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
-        Err(e) => return ("не разобран".into(), format!("{e}")),
+        Err(e) => return (ClientState::NotParsed, format!("{e}")),
     };
     match root.get(spec.wrapper()).and_then(|s| s.get(name)) {
         Some(entry) => {
@@ -552,9 +645,9 @@ fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (String, String)
                         .join(" ")
                 })
                 .unwrap_or_default();
-            ("настроен".into(), format!("{command} {args}").trim().to_string())
+            (ClientState::Installed, format!("{command} {args}").trim().to_string())
         }
-        None => ("не настроен".into(), path.display().to_string()),
+        None => (ClientState::Absent, path.display().to_string()),
     }
 }
 
@@ -663,6 +756,28 @@ mod tests {
         assert_eq!(text.matches("[mcp_servers.sql-kai]").count(), 1);
         assert!(text.contains("args = [\"mcp\", \"prod\"]"));
         assert!(text.contains("[mcp_servers.other]"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Квотированный ключ — то же имя: иначе рядом появлялась вторая секция, и
+    /// codex получал невалидный TOML (дубль таблицы).
+    #[test]
+    fn toml_install_recognizes_a_quoted_key() {
+        assert!(is_server_header("[mcp_servers.sql-kai]", "sql-kai"));
+        assert!(is_server_header("[mcp_servers.\"sql-kai\"]", "sql-kai"));
+        assert!(is_server_header("  [mcp_servers . \"sql-kai\"]  ", "sql-kai"));
+        assert!(!is_server_header("[mcp_servers.other]", "sql-kai"));
+        assert!(!is_server_header("[mcp_servers_extra.sql-kai]", "sql-kai"));
+        assert!(!is_server_header("command = \"x\"", "sql-kai"));
+
+        let path = tmp_path("quoted.toml");
+        std::fs::write(&path, "[mcp_servers.\"sql-kai\"]\ncommand = \"/old\"\n").unwrap();
+        // без --force это уже настроенный сервер, а не пустое место
+        assert!(install_toml(&path, &install_args("sql-kai", false), &entry()).is_err());
+        assert!(install_toml(&path, &install_args("sql-kai", true), &entry()).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("[mcp_servers.").count(), 1);
+        assert!(!text.contains("/old"));
         let _ = std::fs::remove_file(&path);
     }
 

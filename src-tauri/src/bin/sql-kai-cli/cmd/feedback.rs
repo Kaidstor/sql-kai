@@ -21,9 +21,13 @@ use crate::output::{self, Format, FormatArgs};
 
 /// Форма нового issue репозитория (title/body — её штатные query-параметры).
 const ISSUE_NEW_URL: &str = "https://github.com/Kaidstor/sql-kai/issues/new";
-/// Длинный URL режут и браузер, и сам GitHub (~8 КБ на строку запроса), а
-/// percent-encoding кириллицы раздувает текст втрое — держим запас.
-const MESSAGE_CAP: usize = 4000;
+/// Предел на саму ссылку: длинный URL режут и браузер, и сам GitHub (~8 КБ на
+/// строку запроса) — держим запас. Это и есть настоящее ограничение, см.
+/// [`fit_issue_url`].
+const URL_CAP: usize = 6000;
+/// Грубый предел на текст — только чтобы не гонять цикл подгонки по мегабайтам
+/// со stdin; в лимит ссылки его укладывает [`fit_issue_url`].
+const MESSAGE_CAP: usize = 20_000;
 /// Заголовок issue — первая строка сообщения; в GitHub он всё равно короткий.
 const TITLE_CAP: usize = 100;
 
@@ -188,6 +192,31 @@ fn issue_url(title: &str, body: &str) -> String {
     )
 }
 
+/// Ссылка, которая точно уложится в лимит. Резать надо собранный URL, а не
+/// сообщение: одна кириллическая буква — это 2 байта UTF-8, то есть 6 символов
+/// после percent-encoding, поэтому «4000 символов» превращались в ~24 КБ
+/// query-строки, и длинный отзыв по-русски получал от GitHub 414.
+fn fit_issue_url(title: &str, message: &str, diag: &[DiagRow]) -> String {
+    let total = message.chars().count();
+    let mut keep = total;
+    loop {
+        let text: String = message.chars().take(keep).collect();
+        let text = if keep < total {
+            format!("{text}\n\n…(обрезано: ссылка не влезала в лимит — длинные логи лучше приложить в issue файлом)")
+        } else {
+            text
+        };
+        let url = issue_url(title, &issue_body(&text, diag));
+        // keep == 0 — не влезает уже одна диагностика; она мала и ограничена, но
+        // ссылку всё равно отдаём: лучше длинная, чем никакая.
+        if url.len() <= URL_CAP || keep == 0 {
+            return url;
+        }
+        let over = url.len() - URL_CAP;
+        keep = keep.saturating_sub(over.div_ceil(6).max(16));
+    }
+}
+
 /// Сообщение из аргумента или со stdin (пайп). В терминале без аргумента ждать
 /// ввода не начинаем — это выглядит как зависшая команда.
 fn read_message(arg: Option<String>) -> Result<String, AppError> {
@@ -211,9 +240,7 @@ fn read_message(arg: Option<String>) -> Result<String, AppError> {
     }
     if msg.chars().count() > MESSAGE_CAP {
         let cut: String = msg.chars().take(MESSAGE_CAP).collect();
-        return Ok(format!(
-            "{cut}\n\n…(сообщение обрезано до {MESSAGE_CAP} символов — длинные логи лучше приложить в issue файлом)"
-        ));
+        return Ok(cut);
     }
     Ok(msg.to_string())
 }
@@ -242,7 +269,7 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
     let message = read_message(a.message.clone())?;
     let diag = collect_diag().await;
     let title = issue_title(&message);
-    let url = issue_url(&title, &issue_body(&message, &diag));
+    let url = fit_issue_url(&title, &message, &diag);
 
     let fmt = a.fmt.pick();
     if fmt == Format::Json {
@@ -300,7 +327,31 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{issue_title, issue_url, percent_encode, DiagRow};
+    use super::{fit_issue_url, issue_title, issue_url, percent_encode, DiagRow};
+
+    fn diag_row() -> Vec<DiagRow> {
+        vec![DiagRow {
+            key: "cliVersion",
+            label: "sql-kai CLI",
+            value: "1.2.3".into(),
+        }]
+    }
+
+    /// Ограничение — на длину ссылки, а не на число символов: кириллица после
+    /// percent-encoding занимает 6 символов на букву, и раньше длинный отзыв
+    /// по-русски давал ~24 КБ query-строки при лимите GitHub ~8 КБ.
+    #[test]
+    fn issue_url_fits_the_length_limit() {
+        let diag = diag_row();
+        let long = "ошибка ".repeat(2000);
+        let url = fit_issue_url("падает q", &long, &diag);
+        assert!(url.len() <= super::URL_CAP, "{} байт", url.len());
+        assert!(url.contains(&percent_encode("обрезано")));
+        // короткое сообщение не режется вовсе
+        let short = fit_issue_url("падает q", "падает q на проде", &diag);
+        assert!(short.contains(&percent_encode("падает q на проде")));
+        assert!(!short.contains(&percent_encode("обрезано")));
+    }
 
     #[test]
     fn percent_encode_keeps_unreserved_and_escapes_the_rest() {

@@ -18,6 +18,7 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::{fsio, vault};
 
 use crate::cmd::completion::{self, CompletionShell};
+use crate::cmd::mcp_setup;
 use crate::cmd::vault::VaultCmd;
 use crate::remote::shq;
 
@@ -216,23 +217,47 @@ async fn step_vault() -> Result<(), AppError> {
 
 fn step_mcp() -> Result<(), AppError> {
     let exe = std::env::current_exe()?;
+    // `mcp install` без имени клиента только печатает таблицу и выходит с нулём:
+    // шаг рапортовал об успехе, ничего не прописав. Клиента выбираем здесь — по
+    // тем, у кого конфиг реально лежит на диске.
+    let present = mcp_setup::present_clients(mcp_setup::default_name());
+    if present.is_empty() {
+        println!("  Не нашёл конфигов известных MCP-клиентов (claude-code, codex, cursor, …).");
+        println!("  Когда появятся: `sql-kai mcp install <клиент>` (список — `sql-kai mcp install`).");
+        return Ok(());
+    }
+    let pending: Vec<&mcp_setup::PresentClient> =
+        present.iter().filter(|c| !c.configured).collect();
+    if pending.is_empty() {
+        let titles: Vec<&str> = present.iter().map(|c| c.title).collect();
+        println!("  Уже прописан: {}.", titles.join(", "));
+        return Ok(());
+    }
     println!(
         "  Пропишет sql-kai как MCP-сервер в конфиги AI-агентов —\n  \
          агент сможет читать схему и выполнять запросы через tools."
     );
-    if !confirm("запустить `sql-kai mcp install`?")? {
+    let titles: Vec<&str> = pending.iter().map(|c| c.title).collect();
+    println!("  Найдены без записи: {}.", titles.join(", "));
+    if !confirm("прописать сервер этим клиентам?")? {
         println!("  пропущено");
         return Ok(());
     }
-    let mut cmd = Command::new(&exe);
-    cmd.args(["mcp", "install"]);
-    vault::scrub_master_password_env(&mut cmd);
-    let status = cmd
-        .status()
-        .map_err(|e| AppError::Msg(format!("не смог запустить {} mcp install: {e}", exe.display())))?;
-    if !status.success() {
-        println!("  ⚠ `mcp install` завершилась с кодом {}", status.code().unwrap_or(-1));
-        return Ok(());
+    for client in pending {
+        let mut cmd = Command::new(&exe);
+        cmd.args(["mcp", "install", client.key]);
+        vault::scrub_master_password_env(&mut cmd);
+        let status = cmd.status().map_err(|e| {
+            AppError::Msg(format!("не смог запустить {} mcp install: {e}", exe.display()))
+        })?;
+        if !status.success() {
+            println!(
+                "  ⚠ {}: `mcp install {}` завершилась с кодом {}",
+                client.title,
+                client.key,
+                status.code().unwrap_or(-1)
+            );
+        }
     }
     Ok(())
 }
@@ -344,13 +369,18 @@ fn home() -> Result<PathBuf, AppError> {
 
 /// Вопрос перед изменением на диске. Печатается в stderr, чтобы вывод шагов
 /// оставался читаемым при `sql-kai init | tee`.
+///
+/// Ветка `input::confirm` «нет TTY» сюда не доходит: без терминала `run` выходит
+/// раньше, напечатав ручные команды, — поэтому подсказка про флаг здесь только
+/// для формы вызова, живым текстом её не увидеть.
 fn confirm(question: &str) -> Result<bool, AppError> {
     crate::input::confirm(&format!("  {question}"), "--skip-if-configured")
 }
 
-/// Всё ли уже настроено (для `--skip-if-configured`). MCP не проверяем:
-/// узнать, прописан ли сервер у агента, отсюда нельзя, а вечно спрашивать
-/// про него — ровно то, от чего флаг спасает.
+/// Всё ли уже настроено (для `--skip-if-configured`). MCP считаем настроенным,
+/// если сервер прописан хотя бы одному найденному клиенту (или клиентов нет
+/// вовсе): требовать запись во все — значит спрашивать при каждом запуске у
+/// того, кто держит sql-kai в одном агенте из трёх.
 fn all_configured(a: &InitArgs, shell: Option<CompletionShell>) -> bool {
     let path_ok = match (bundle_cli(), link_target(a)) {
         (Some(src), Ok(target)) => {
@@ -375,7 +405,9 @@ fn all_configured(a: &InitArgs, shell: Option<CompletionShell>) -> bool {
             Err(_) => false,
         },
     };
-    path_ok && vault_ok && completion_ok
+    let present = mcp_setup::present_clients(mcp_setup::default_name());
+    let mcp_ok = present.is_empty() || present.iter().any(|c| c.configured);
+    path_ok && vault_ok && completion_ok && mcp_ok
 }
 
 /// Без TTY подтверждать нечего, поэтому init ничего не трогает — только

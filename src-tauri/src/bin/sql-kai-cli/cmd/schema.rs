@@ -280,9 +280,12 @@ pub(crate) fn build_dump(
     for row in &res[1].rows {
         let Some(i) = owner(row) else { continue };
         // generated-колонка хранит выражение там же, где default; показываем
-        // его один раз — как generated, иначе это выглядит как два разных факта
+        // его один раз — как generated, иначе это выглядит как два разных факта.
+        // 's' — stored, 'v' — virtual (PG 18); без 'v' виртуальная колонка
+        // отрендерилась бы как обычный `default <выражение>`, то есть неверно.
         let expr = cell_opt(row, 5);
-        let generated = (db::cell(row, 7) == "s").then(|| expr.clone().unwrap_or_default());
+        let generated =
+            matches!(db::cell(row, 7).as_str(), "s" | "v").then(|| expr.clone().unwrap_or_default());
         rels[i].columns.push(ColumnInfo {
             name: db::cell(row, 2),
             ty: db::cell(row, 3),
