@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { fmtDuration } from "../lib/format";
+import { isKey } from "../lib/keys";
 import {
   useApp,
   type ActivityInfo,
@@ -110,7 +111,7 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     if (!focus) return;
     const ri = rows.findIndex((r) => r.pid === focus.pid);
     if (ri < 0) return;
-    if ((e.metaKey || e.ctrlKey) && e.key === "c") {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && isKey(e, "c")) {
       e.preventDefault();
       copyAndToast(COLS[focus.col].value(rows[ri]));
     } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {

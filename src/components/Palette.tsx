@@ -2,6 +2,7 @@ import { Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { fuzzyScore, highlightRuns } from "../lib/fuzzy";
+import { isKey } from "../lib/keys";
 import { isMac } from "../lib/platform";
 import { profileAddr, queryScopeOf, scopeLabelOf } from "../lib/profile";
 import { sqlPreview } from "../lib/sql";
@@ -114,7 +115,7 @@ function PaletteModal({
               !e.metaKey &&
               !e.altKey &&
               !e.shiftKey &&
-              e.key.toLowerCase() === "x"
+              isKey(e, "x")
             ) {
               // on Windows/Linux Ctrl+X is "cut" — keep it while text is selected
               const cut = e.currentTarget.selectionStart !== e.currentTarget.selectionEnd;

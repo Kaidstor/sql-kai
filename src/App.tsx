@@ -21,6 +21,7 @@ import { WhatsNewDialog } from "./components/WhatsNewDialog";
 import { VaultGate } from "./components/VaultGate";
 import { api } from "./lib/api";
 import { buildGuiContext } from "./lib/guiContext";
+import { isKey, keyDigit } from "./lib/keys";
 import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
 import { useApp } from "./lib/store";
@@ -153,10 +154,10 @@ function App() {
     const hotkeys: Hotkey[] = [
       {
         combo: "Ctrl+1…9",
-        match: (e) => ctrlOnly(e) && /^[1-9]$/.test(e.key),
+        match: (e) => ctrlOnly(e) && (keyDigit(e) ?? 0) > 0,
         run: (s, e) => {
           const target =
-            connectedProfiles(s.profiles, s.sessions)[Number(e.key) - 1];
+            connectedProfiles(s.profiles, s.sessions)[keyDigit(e)! - 1];
           if (!target) return false;
           s.selectProfile(target.id);
         },
@@ -166,7 +167,7 @@ function App() {
         // claimed while one is actually running, so copy stays intact on
         // platforms where Ctrl+C is the copy shortcut.
         combo: "Ctrl+C",
-        match: (e) => ctrlOnly(e) && !e.shiftKey && e.key.toLowerCase() === "c",
+        match: (e) => ctrlOnly(e) && !e.shiftKey && isKey(e, "c"),
         run: (s) => {
           const tab = s.tabs.find((t) => t.id === s.activeTabId);
           if (tab?.state.kind !== "query" || !tab.state.running) return false;
@@ -204,14 +205,13 @@ function App() {
       },
       {
         combo: "⌘P",
-        match: (e) => mod(e) && !e.altKey && e.key.toLowerCase() === "p",
+        match: (e) => mod(e) && !e.altKey && isKey(e, "p"),
         run: (s) => s.setPalette(s.palette === "queries" ? null : "queries"),
       },
       {
         // Symbols palette (tables / columns / functions) — needs a live session.
         combo: "⌘T",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "t",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "t"),
         run: (s) => {
           if (!s.activeProfileId || !s.sessions[s.activeProfileId]) return false;
           s.setPalette(s.palette === "symbols" ? null : "symbols");
@@ -220,7 +220,11 @@ function App() {
       {
         // On mac the menu accelerator normally consumes this first.
         combo: "⌘,",
-        match: (e) => mod(e) && !e.altKey && !e.shiftKey && e.key === ",",
+        match: (e) =>
+          mod(e) &&
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.key === "," || e.code === "Comma"),
         run: (s) => s.setSettingsOpen(!s.settingsOpen),
       },
       {
@@ -230,26 +234,25 @@ function App() {
         match: (e) =>
           mod(e) &&
           !e.altKey &&
-          (e.key === "?" || (e.key === "/" && !e.defaultPrevented)),
+          (e.key === "?" || e.key === "/" || e.code === "Slash") &&
+          // shifted (⌘?) is always ours; bare ⌘/ yields to the editor
+          (e.shiftKey || !e.defaultPrevented),
         run: () => setShowShortcuts((v) => !v),
       },
       {
         combo: "⌘B — toggle sidebar",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "b"),
         run: (s) => s.toggleSidebar(),
       },
       {
         combo: "⌘J — toggle agent panel",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "j",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "j"),
         run: (s) => s.toggleAgentPanel(),
       },
       {
         // Chord leader: ⌘K then ⌘W closes all tabs.
         combo: "⌘K",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "k"),
         run: (s) => {
           chordAt.current = Date.now();
           s.showToast(
@@ -264,8 +267,7 @@ function App() {
         // Query tab saves, structure tab applies staged DDL (table grids
         // handle their own ⌘S apply).
         combo: "⌘S",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "s"),
         run: (s) => {
           const tab = s.tabs.find((t) => t.id === s.activeTabId);
           if (tab?.state.kind === "query") void s.saveQueryTab(tab.id);
@@ -278,8 +280,7 @@ function App() {
         // Refresh the active table page / structure / activity view (also
         // keeps the webview from reloading itself on Windows/Linux).
         combo: "⌘R",
-        match: (e) =>
-          mod(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "r",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "r"),
         run: (s) => {
           const tab = s.tabs.find((t) => t.id === s.activeTabId);
           if (tab?.state.kind === "table") void s.refreshTablePage(tab.id);
@@ -295,17 +296,12 @@ function App() {
         // of Shift, so this must claim the combo first.
         combo: "Ctrl+⇧W (non-mac)",
         match: (e) =>
-          !isMac &&
-          e.ctrlKey &&
-          !e.altKey &&
-          e.shiftKey &&
-          e.key.toLowerCase() === "w",
+          !isMac && e.ctrlKey && !e.altKey && e.shiftKey && isKey(e, "w"),
         run: (s) => closeActiveConnection(s),
       },
       {
         combo: "Ctrl+W (non-mac)",
-        match: (e) =>
-          !isMac && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "w",
+        match: (e) => !isMac && e.ctrlKey && !e.altKey && isKey(e, "w"),
         run: (s) => {
           if (chordFired()) closeAllVisibleTabs(s);
           else s.closeActiveTab();
@@ -314,21 +310,13 @@ function App() {
       {
         combo: "Ctrl+⇧T (non-mac)",
         match: (e) =>
-          !isMac &&
-          e.ctrlKey &&
-          !e.altKey &&
-          e.shiftKey &&
-          e.key.toLowerCase() === "t",
+          !isMac && e.ctrlKey && !e.altKey && e.shiftKey && isKey(e, "t"),
         run: (s) => s.reopenClosedTab(),
       },
       {
         combo: "Ctrl+N (non-mac)",
         match: (e) =>
-          !isMac &&
-          e.ctrlKey &&
-          !e.altKey &&
-          !e.shiftKey &&
-          e.key.toLowerCase() === "n",
+          !isMac && e.ctrlKey && !e.altKey && !e.shiftKey && isKey(e, "n"),
         run: (s) => s.newQueryTab(),
       },
     ];

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { type CSSProperties, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { accentColor } from "../lib/colors";
+import { isKey } from "../lib/keys";
 import { isMac } from "../lib/platform";
 import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
 import { UNDO_DELETE_MS, useApp } from "../lib/store";
@@ -136,7 +137,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
       onKeyDown={(e) => {
         // card-level shortcuts replace tabbing into the hover-only action
         // buttons: Enter/Space connect, ⌘E edits, Delete/Backspace deletes
-        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "e") {
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && isKey(e, "e")) {
           e.preventDefault();
           openDialog(profile);
           return;
@@ -329,7 +330,7 @@ export function Launcher() {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (e.key.toLowerCase() !== "f") return;
+      if (!isKey(e, "f")) return;
       const s = useApp.getState();
       // overlays on top of the launcher own the keyboard
       if (s.palette || s.dialog.open || s.settingsOpen || s.logViewerOpen) return;

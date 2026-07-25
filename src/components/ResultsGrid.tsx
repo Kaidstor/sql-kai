@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { ClipboardEvent } from "react";
 import { readClipboardText } from "../lib/clipboard";
+import { isKey } from "../lib/keys";
 import { useApp } from "../lib/store";
 import type { SortSpec, StatementResult } from "../lib/types";
 import {
@@ -210,7 +211,7 @@ function ResultsGridImpl({
     : (focused ?? (selRows.length > 0 ? { row: selRows[0], col: 0 } : null));
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "c") {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && isKey(e, "c")) {
       // column > cell selection > whole rows (via the row-number gutter)
       if (selColList.length > 0) {
         e.preventDefault();
@@ -226,7 +227,7 @@ function ResultsGridImpl({
         copy.copyRows(" ", "");
       }
     }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
+    if ((e.metaKey || e.ctrlKey) && isKey(e, "v")) {
       // ⌘V comes in as keydown: WKWebView never dispatches `paste` events
       // to non-editable elements, so the clipboard is read explicitly
       const t = e.target as HTMLElement;
@@ -237,7 +238,7 @@ function ResultsGridImpl({
         );
       }
     }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+    if ((e.metaKey || e.ctrlKey) && isKey(e, "d")) {
       const rows = n > 0 ? selRows : focused ? [focused.row] : [];
       if (rows.length > 0) {
         e.preventDefault();
@@ -263,7 +264,7 @@ function ResultsGridImpl({
       e.preventDefault();
       ed.openCellDialog(focused.row, focused.col);
     }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+    if ((e.metaKey || e.ctrlKey) && isKey(e, "s")) {
       e.preventDefault();
       if (dirty) editing?.onApply?.();
     }
