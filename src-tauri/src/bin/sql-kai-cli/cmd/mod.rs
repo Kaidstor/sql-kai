@@ -8,6 +8,7 @@ pub mod holder;
 pub mod import;
 pub mod introspect;
 pub mod mcp;
+pub mod mcp_setup;
 pub mod profiles;
 pub mod query;
 pub mod rotate;
