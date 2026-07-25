@@ -25,8 +25,20 @@ brew install kaidstor/tap/sql-kai
 Скачайте `.dmg` из [последнего релиза](https://github.com/Kaidstor/sql-kai/releases/latest) и перетащите sql-kai в Applications.
 
 Приложение подписано Developer ID и нотаризовано Apple (с v1.20.1) — Gatekeeper
-запускает его без предупреждений. Дальше оно обновляется само — кнопка в
-статус-баре.
+не блокирует запуск, но при первом открытии macOS один раз спросит подтверждение
+(«приложение скачано из интернета»): нажмите Open. Дальше оно обновляется само —
+кнопка в статус-баре.
+
+Сборки **до v1.20.1** подписаны сертификатом Apple Development и не нотаризованы —
+Gatekeeper блокирует их наглухо («приложение повреждено»). Если ставите такую
+версию, снимите карантин: `xattr -dr com.apple.quarantine /Applications/sql-kai.app`
+(или System Settings → Privacy & Security → Open Anyway).
+
+Апдейт на v1.20.1 меняет сертификат подписи, а вместе с ним — code signature
+приложения и CLI. ACL уже созданных keychain-элементов vault'а выданы старой
+подписи, поэтому после обновления macOS один раз спросит пароль от связки ключей:
+перевключите Touch ID на экране unlock и выполните `sql-kai vault trust`, чтобы
+вернуть тихий доступ.
 
 CLI `sql-kai` лежит внутри бандла — чтобы он был в PATH и обновлялся вместе с приложением:
 
@@ -86,7 +98,7 @@ npx skills add https://github.com/Kaidstor/sql-kai --skill sql-kai
 ## Возможности
 
 - Профили подключений: сохраняются в `~/Library/Application Support/sql-kai/profiles.json` (файл 0600, только несекретные поля). Пароли БД и SSH-passphrase шифруются в `vault.json`: один случайный ключ (DEK) шифрует все секреты одним AES-256-GCM блобом, сам DEK обёрнут ключом из мастер-пароля (Argon2id). При старте vault разблокируется один раз на всю сессию — никаких per-connection промптов ОС. Все конфиг-файлы пишутся атомарно (tmp+fsync+rename), DEK зачищается из памяти при блокировке.
-- Touch ID (macOS): опциональный быстрый путь — приложение проверяет биометрию через `LocalAuthentication` (LAContext, системный fallback — пароль аккаунта) и затем читает копию DEK из login keychain. Никаких entitlements/провижининг-профилей/платного Apple-аккаунта не требуется, работает и в `tauri dev`. Мастер-пароль всегда остаётся app-fallback'ом. Включается чекбоксом на экране setup/unlock. Release-сборка подписывается сертификатом Apple Development (`bundle.macOS.signingIdentity`) — стабильная подпись избавляет от повторных keychain-промптов между сборками.
+- Touch ID (macOS): опциональный быстрый путь — приложение проверяет биометрию через `LocalAuthentication` (LAContext, системный fallback — пароль аккаунта) и затем читает копию DEK из login keychain. Никаких entitlements/провижининг-профилей/платного Apple-аккаунта не требуется, работает и в `tauri dev`. Мастер-пароль всегда остаётся app-fallback'ом. Включается чекбоксом на экране setup/unlock. Release-сборка подписывается Developer ID (`bundle.macOS.signingIdentity`, hardened runtime) — стабильная подпись избавляет от повторных keychain-промптов между сборками. Смена самого сертификата (как в v1.20.1: Apple Development → Developer ID) меняет designated requirement, и ACL созданных ранее keychain-элементов перестают ему соответствовать — после такого релиза Touch ID и `sql-kai vault trust` нужно включить заново.
 - SSH-туннель на профиль: указываешь SSH-хост (работают alias из `~/.ssh/config`, включая ProxyJump), приложение само подбирает свободный локальный порт, поднимает `ssh -N -L`, следит за процессом и убивает его при дисконнекте/выходе.
 - SQL-редактор с подсветкой Postgres-диалекта, ⌘⏎ — выполнить, поддержка нескольких стейтментов через `;`, отмена длинного запроса (pg cancel protocol).
 - Браузер схемы: схемы → таблицы/вьюхи, фильтр по имени.
@@ -200,9 +212,14 @@ sql-kai holder stop                 # погасить фоновый держа
 Установка:
 
 ```bash
-# из репозитория (нужен dist: pnpm install && pnpm build)
-cargo install --path src-tauri --features cli --bin sql-kai
-codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/sql-kai
+# из репозитория (фронтенд не нужен: CLI не тянет dist)
+cargo install --path src-tauri --features cli --bin sql-kai-cli
+# стабильная подпись — иначе keychain-trust слетает после каждой пересборки.
+# В tauri.conf.json лежит Developer ID мейнтейнера; если его нет в связке ключей,
+# подставьте свой сертификат. Ad-hoc (`--sign -`, без --timestamp) тоже работает,
+# но такая подпись меняется при каждой сборке — `sql-kai vault trust` придётся повторять
+codesign --force --options runtime --timestamp \
+  --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri.conf.json)" ~/.cargo/bin/sql-kai-cli
 
 # готовый бинарь из GitHub-релиза (macOS arm64; собирает и грузит release.sh)
 curl -fL https://github.com/Kaidstor/sql-kai/releases/latest/download/sql-kai-cli-darwin-aarch64.tar.gz \
@@ -251,8 +268,12 @@ MCP-клиента, куда модель не пишет. Подробност�
 pnpm install
 pnpm tauri dev     # разработка
 pnpm tauri build   # сборка .app/.dmg
-./release.sh       # локальный релиз: бамп версии, сборка, подпись, GitHub-релиз
-                   # (артефакты автообновления + sql-kai-cli-darwin-aarch64.tar.gz)
+
+# локальный релиз: бамп версии, сборка, подпись, нотаризация, GitHub-релиз
+# (артефакты автообновления + sql-kai-cli-darwin-aarch64.tar.gz).
+# APPLE_PASSWORD хранится в sec — без него tauri молча пропустит нотаризацию,
+# и Gatekeeper заблокирует релиз у всех, кто его поставит
+sec run sql-kai --only APPLE_PASSWORD -- ./release.sh
 ```
 
 ## Тесты
