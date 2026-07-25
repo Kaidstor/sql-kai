@@ -94,6 +94,27 @@ Intel-мак или Linux — собирать из исходников (раз
 <p>У нового пользователя свой vault и пустой список профилей: <code>sql-kai vault setup</code>,
 затем <code>sql-kai discover &lt;ssh-alias&gt;</code> для каждого сервиса.</p>
 
+<h3>Первый запуск: <code>sql-kai init</code></h3>
+<p>Одна интерактивная команда вместо четырёх ручных шагов. Каждый шаг спрашивает отдельно и
+показывает, что именно сделает; отказ от шага не мешает остальным:</p>
+<pre><code>sql-kai init                       # [1/4] … [4/4], всё с подтверждением
+sql-kai init --skip-if-configured  # для установщиков: молча выйти, если всё уже настроено</code></pre>
+<ol>
+  <li><strong>Команда <code>sql-kai</code> в PATH</strong> — симлинк на CLI внутри бандла
+      (<code>--bin-dir</code>, по умолчанию <code>~/.local/bin</code>): так CLI обновляется вместе
+      с приложением. Если каталог не в PATH, init печатает строку для <code>~/.zshrc</code>.
+      Запуск не из бандла (<code>cargo install</code>) — шаг пропускается.</li>
+  <li><strong><code>vault trust</code></strong> — тихий доступ к паролям (см. «Vault»).</li>
+  <li><strong>MCP</strong> — <code>sql-kai mcp install</code> для AI-агента (см. «MCP»).</li>
+  <li><strong>Автодополнение</strong> — скрипт для шелла (<code>--shell zsh|bash|fish</code>,
+      по умолчанию из <code>$SHELL</code>) в стандартный каталог + строка подключения в rc-файл.</li>
+</ol>
+<div class="note">Без TTY <code>init</code> ничего не меняет — печатает список ручных команд,
+которые сделали бы то же самое. Это безопасно звать из скриптов.</div>
+<p>Отдельно скрипт автодополнения — <code>sql-kai completion zsh|bash|fish</code>. Кроме подкоманд
+и флагов он дополняет <strong>имена профилей и групп</strong>: сгенерированный скрипт для этого
+зовёт <code>sql-kai completion --profiles</code> (руками эта форма не нужна).</p>
+
 <h2 id="commands">Команды</h2>
 <table>
 <tr><th>Команда</th><th>Что делает</th></tr>
@@ -178,6 +199,47 @@ sql-kai domainator -c "SELECT * FROM admins" --no-redact  # как есть</cod
 <div class="note">Маскирование работает в <code>sql-kai q</code> / <code>sql-kai saved run</code>.
 Вывод <code>sql-kai exec</code> (сырой psql через ssh) не маскируется.</div>
 
+<h2 id="schema">Схема базы одним дампом</h2>
+<p><code>sql-kai schema &lt;alias&gt;</code> отдаёт <strong>всю структуру базы за один поход
+в каталог</strong>: таблицы (обычные, партиционированные, foreign), вьюхи и матвьюхи —
+с колонками, типами, nullability, дефолтами, identity/generated, констрейнтами, индексами,
+триггерами и RLS, плюс enum-типы, функции и процедуры. Это замена обхода
+<code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой
+таблице: вместо десятков round-trip — константное число каталожных запросов, отправленных
+одним батчем, то есть ещё и один согласованный снимок.</p>
+<pre><code>-- база: domainator   сервер: 16.4
+-- скрыто: системные схемы, объекты расширений, партиции (--internal); тела вьюх и функций (--definitions); комментарии (--comments)
+
+== схема public ==
+
+table public.domains
+  id          bigint        not null  identity always
+  name        text          not null
+  status      domain_state  not null  default 'new'::domain_state
+  created_at  timestamptz   not null  default now()
+  constraint domains_pkey PRIMARY KEY (id)
+  constraint domains_name_key UNIQUE (name)
+  index domains_pkey unique USING btree (id)
+  index domains_status_idx USING btree (status)
+  trigger set_updated_at BEFORE UPDATE -&gt; touch_updated_at()
+
+enum public.domain_state = new | ok | failed
+
+-- итого: схем 1, таблиц 1, enum 1</code></pre>
+<table>
+<tr><th>Флаг</th><th>Что делает</th></tr>
+<tr><td><code>--schema &lt;name&gt;</code></td><td>Только одна схема (можно и системную, например <code>pg_catalog</code>)</td></tr>
+<tr><td><code>--definitions</code></td><td>Тела вьюх и исходники функций</td></tr>
+<tr><td><code>--comments</code></td><td>Тексты <code>COMMENT ON</code>: таблиц, колонок, типов, функций</td></tr>
+<tr><td><code>--internal</code></td><td>Показать скрытое по умолчанию: системные схемы, объекты расширений (postgis, pg_trgm, timescaledb) и листовые партиции — у родителя вместо них стоит <code>(партиций: N)</code></td></tr>
+<tr><td><code>--json</code></td><td>Дерево схем вместо текста (<code>--csv</code>/<code>-t</code> здесь не бывает: это не таблица)</td></tr>
+</table>
+<p>Шапка дампа сама перечисляет, что скрыто, — по ней видно, какой флаг добавить. Итоговая
+строка считает только непустые категории.</p>
+<div class="note">Каталожные запросы используют <code>attgenerated</code> (generated-колонки),
+поэтому нужен <strong>PostgreSQL 12+</strong>; на 10/11 упадёт весь дамп целиком.
+Тот же дамп доступен агенту как MCP-tool <code>schema</code> (см. «MCP»).</div>
+
 <h2 id="discover">Профили и discover</h2>
 <p>Профиль — это host/port/база/юзер + опциональный ssh-туннель; хранится в
 <code>profiles.json</code> (общий с GUI: заведённое в CLI сразу видно в приложении и наоборот).</p>
@@ -205,13 +267,66 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
 
+<h2 id="logs">Журнал postgres-сервера</h2>
+<p><code>sql-kai logs &lt;alias&gt;</code> — ssh на хост профиля → <code>docker logs</code> его
+контейнера. Профиль из <code>discover</code> уже знает и ssh-хост, и контейнер, поэтому ответ на
+«почему запрос упал / что там происходит» достаётся без ручного похода на сервер. Главное:
+в отличие от <code>pg_stat_*</code>, это работает, <strong>когда postgres соединения уже не
+принимает</strong> — упал, перезапускается по кругу, забил диск.</p>
+<pre><code>sql-kai logs vuln                      # последние 500 строк
+sql-kai logs vuln -n 100 --since 10m   # хвост за последние 10 минут
+sql-kai logs vuln -f                   # стримить до Ctrl+C
+sql-kai logs vuln | grep -i error      # postgres пишет в stderr, но sql-kai сливает его в stdout
+sql-kai logs vuln --dry-run            # показать команду, не заходя на хост</code></pre>
+<table>
+<tr><th>Флаг</th><th>Что делает</th></tr>
+<tr><td><code>-n</code>/<code>--tail N</code></td><td>Сколько последних строк, число или <code>all</code> (по умолчанию 500)</td></tr>
+<tr><td><code>-f</code>/<code>--follow</code></td><td>Стримить новые строки до Ctrl+C</td></tr>
+<tr><td><code>--since</code> / <code>--until</code></td><td>Длительность (<code>10m</code>, <code>1h30m</code>) или момент в RFC3339</td></tr>
+<tr><td><code>--timestamps</code></td><td>Метка времени docker к каждой строке</td></tr>
+<tr><td><code>--container &lt;имя&gt;</code></td><td>Когда postgres-контейнеров на хосте несколько</td></tr>
+</table>
+<p>Локальный профиль (<code>127.0.0.1</code>) читается без ssh — тот же <code>docker logs</code>
+на этой машине. Профиль, который ходит в базу напрямую и без ssh (managed-Postgres), команда
+честно отвергает: журнала там взять неоткуда, он в панели провайдера.</p>
+
+<h2 id="fork">Форк базы: миграции не на проде</h2>
+<p><code>sql-kai fork &lt;alias&gt; [новое-имя]</code> поднимает <strong>копию базы профиля
+в локальном docker</strong> и заводит на неё профиль: песочница, где можно применять миграции,
+ронять таблицы и мерить время рерайта, ничем не рискуя.</p>
+<pre><code>sql-kai fork vuln --dry-run     # план: источник, объём дампа, образ, порт, имя профиля
+sql-kai fork vuln               # только схема (быстро)
+sql-kai fork vuln --data        # вместе с данными (дамп может быть на гигабайты)
+sql-kai vuln-fork -f migration.sql --write   # прогон миграции на копии
+docker rm -f sql-kai-fork-vuln-fork          # снести форк</code></pre>
+<ol>
+  <li>Подключение к источнику — обычной read-only-сессией sql-kai (vault/sec, ssh-туннель).</li>
+  <li><code>pg_dump</code> — через ssh + <code>docker exec</code> на хосте источника либо локальным
+      <code>pg_dump</code>, если ssh не нужен. С <code>--data</code> дамп держит ACCESS SHARE-локи:
+      обычные запросы не мешает, а вот DDL и <code>VACUUM FULL</code> на источнике подождут.</li>
+  <li><code>docker run postgres:&lt;мажор версии источника&gt;</code> (<code>--image</code> — задать
+      свой) на <code>127.0.0.1</code>, порт свободный или <code>--port</code>.</li>
+  <li>Заливка дампа и профиль <code>&lt;alias&gt;-fork</code> (или имя из аргумента/<code>--name</code>),
+      пароль — в vault.</li>
+</ol>
+<p>Флаги: <code>--replace</code> (снести прежний контейнер форка и создать заново),
+<code>--yes</code> (без подтверждения), <code>--container</code> (контейнер источника, когда их
+несколько), <code>--password-env</code> / <code>--from-sec</code> / <code>--sec-key</code>
+(откуда взять пароль источника).</p>
+<div class="note">Форк <strong>не наследует метку production</strong> — на нём запись не
+переспрашивает. Контейнер называется <code>sql-kai-fork-&lt;имя-профиля&gt;</code> и живёт, пока
+его не снесут: <code>docker rm -f</code>. Копия без данных проверяет синтаксис и совместимость
+схемы; чтобы оценить время рерайта и увидеть реальные планы, нужен <code>--data</code>.</div>
+
 <h2 id="mcp">MCP: sql-kai как инструмент агента</h2>
 <p><code>sql-kai mcp [&lt;alias&gt;]</code> — MCP-сервер поверх stdio (newline-delimited JSON-RPC на
 stdout, диагностика в stderr). Запросы идут через тот же сервер сессий, что и обычный CLI:
-vault уже разблокирован, туннели подняты, сессия по умолчанию read-only. С алиасом сервер
-закреплён за одной базой (эту форму запускает панель агента в GUI); без алиаса он обслуживает
-все профили — появляется tool <code>profiles</code>, а у остальных tools необязательный
-параметр <code>profile</code>, так что в конфиге клиента хватает одной записи на все базы.</p>
+vault уже разблокирован, туннели подняты, сессия по умолчанию read-only.</p>
+<table>
+<tr><th>Режим</th><th>Что получает агент</th></tr>
+<tr><td><code>sql-kai mcp &lt;alias&gt;</code><br><span class="muted">закреплённый</span></td><td>Девять tools, все работают с одной базой — параметра <code>profile</code> нет вовсе, перепутать базы невозможно. Эту форму запускает панель агента в GUI</td></tr>
+<tr><td><code>sql-kai mcp</code><br><span class="muted">мультипрофильный</span></td><td>Плюс tool <code>profiles</code> (десятый) и параметр <code>profile</code> у остальных: одна запись в конфиге клиента обслуживает все базы. Пропущенный <code>profile</code> — ошибка со списком доступных (кроме случая, когда профиль ровно один); <code>selection</code> без него берёт базу, открытую в GUI последней</td></tr>
+</table>
 <table>
 <tr><th>Tool</th><th>Что делает</th></tr>
 <tr><td><code>schema</code></td><td><strong>Основной инструмент интроспекции:</strong> вся схема базы за один вызов — таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи с колонками, типами, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. Одно обращение к каталогу вместо обхода <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой таблице, и один консистентный снимок. Параметры: <code>schema</code>, <code>definitions</code>, <code>comments</code>, <code>internal</code></td></tr>
@@ -229,12 +344,31 @@ vault уже разблокирован, туннели подняты, сесс
 профиля с меткой production разрешает только <code>SQL_KAI_ALLOW_PROD_WRITE</code> в окружении
 самого сервера — то есть в конфиге MCP-клиента, куда модель не пишет. См. «Запись в
 production».</p>
-<p><code>sql-kai mcp install [клиент]</code> прописывает сервер в конфиг клиента
-(claude-code, claude-desktop, codex, cursor, vscode, windsurf, gemini): чужие серверы и чужие
-ключи файла сохраняются, перед записью делается <code>.bak</code>, запись атомарная и
-проверяется перечитыванием. Без аргумента-клиента печатается только таблица клиентов и путей;
-<code>--dry-run</code> показывает, что будет записано. <code>sql-kai mcp status</code> — где
-сервер уже прописан.</p>
+<h3>Подключение к клиенту</h3>
+<pre><code>sql-kai mcp install                     # список клиентов и путей, ничего не пишется
+sql-kai mcp install claude-code         # прописать сервер по всем профилям
+sql-kai mcp install cursor --profile vuln --dry-run   # закрепить за одной базой, только показать
+sql-kai mcp status                      # где sql-kai уже прописан</code></pre>
+<table>
+<tr><th>Клиент</th><th>Файл конфига</th></tr>
+<tr><td><code>claude-code</code></td><td><code>~/.claude.json</code></td></tr>
+<tr><td><code>claude-desktop</code></td><td><code>~/Library/Application&nbsp;Support/Claude/claude_desktop_config.json</code></td></tr>
+<tr><td><code>codex</code></td><td><code>~/.codex/config.toml</code> (секция <code>[mcp_servers.sql-kai]</code>)</td></tr>
+<tr><td><code>cursor</code></td><td><code>~/.cursor/mcp.json</code></td></tr>
+<tr><td><code>vscode</code></td><td><code>~/Library/Application&nbsp;Support/Code/User/mcp.json</code> (запись с <code>"type": "stdio"</code>)</td></tr>
+<tr><td><code>windsurf</code></td><td><code>~/.codeium/windsurf/mcp_config.json</code></td></tr>
+<tr><td><code>gemini</code></td><td><code>~/.gemini/settings.json</code></td></tr>
+</table>
+<p>Конфиги пользовательские, не проектные: сервер ставится один раз на все проекты. Слияние
+аккуратное — чужие серверы и любые прочие ключи файла сохраняются, перед записью делается
+<code>.bak</code> (<code>--no-backup</code> отключает), запись атомарная и проверяется
+перечитыванием. Команда в записи — путь к текущему бинарю (<code>--command</code> переопределяет),
+имя записи — <code>sql-kai</code> (<code>--name</code>); существующую запись с тем же именем
+перезаписывает только <code>--force</code>. <code>--profile &lt;alias&gt;</code> проверяет алиас
+сразу, чтобы опечатка не всплыла при первом запросе агента.</p>
+<div class="note">Разрешить агенту запись в конкретную прод-базу можно только вручную —
+дописав в ту же запись конфига <code>"env": {"SQL_KAI_ALLOW_PROD_WRITE": "&lt;профиль&gt;"}</code>.
+<code>mcp install</code> этого не делает и никогда не предложит.</div>
 
 <h2 id="sec">Интеграция с sec</h2>
 <p><a href="https://go.dev">sec</a> — отдельный агент-безопасный менеджер секретов
@@ -423,6 +557,25 @@ env-переменной, vault не трогается вовсе.</p>
     <td>Использовать <code>sql-kai exec &lt;alias&gt;</code> — работает через docker exec без открытых портов.</td></tr>
 <tr><td><code>cannot execute … in a read-only transaction</code></td>
     <td>Так и задумано: добавь <code>--write</code>, если запись действительно согласована.</td></tr>
+<tr><td><code>запись в production-профиль … заблокирована</code></td>
+    <td>Одного <code>--write</code> для прода мало. В терминале — подтвердить именем профиля,
+        иначе <code>--prod-write</code>; из MCP/CI/пайпа — только
+        <code>SQL_KAI_ALLOW_PROD_WRITE</code> в окружении процесса (см. «Запись в production»).</td></tr>
+<tr><td><code>CREATE INDEX CONCURRENTLY cannot run inside a transaction block</code></td>
+    <td>Несколько стейтментов (повторные <code>-c</code>, <code>;</code>, файл) уходят одним
+        батчем — это транзакция. <code>CONCURRENTLY</code> (и <code>VACUUM</code>) нужно звать
+        отдельной командой с одним стейтментом.</td></tr>
+<tr><td><code>sql-kai schema</code>: ошибка про <code>attgenerated</code></td>
+    <td>Дамп требует PostgreSQL 12+; на 10/11 падает весь батч. Для старого сервера —
+        <code>tables</code>/<code>columns</code>/<code>ddl</code>.</td></tr>
+<tr><td><code>sql-kai logs</code>: «контейнер нашёлся, но не определилась база»</td>
+    <td>psql внутри контейнера уже не отвечает — sql-kai печатает готовую команду в обход
+        (<code>ssh &lt;host&gt; docker logs --tail N &lt;контейнер&gt;</code>). «Контейнер не опознан» —
+        задать явно: <code>--container &lt;имя&gt;</code>.</td></tr>
+<tr><td><code>mcp install claude-code</code> переписал весь <code>~/.claude.json</code></td>
+    <td>Файл перечитывается и пишется целиком, поэтому форматирование меняется; содержимое
+        сохраняется, рядом остаётся <code>.bak</code>. Конфиг с комментариями (JSONC) sql-kai
+        не трогает вовсе — скажет дописать запись руками.</td></tr>
 <tr><td>Внешний managed-Postgres (не в docker на хосте)</td>
     <td>discover его не найдёт — завести профиль руками в GUI (или найти DSN в .env/Infisical).</td></tr>
 <tr><td>ssh-мастер держит коннект к хосту после работы</td>
@@ -434,8 +587,8 @@ env-переменной, vault не трогается вовсе.</p>
         <code>--local</code> / <code>--no-mux</code>.</td></tr>
 </table>
 
-<p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/sql-kai/</code> ·
-пересборка: <code>cargo install --path src-tauri --features cli --bin sql-kai</code></p>
+<p class="muted" style="margin-top:3rem">sql-kai · исходники CLI: <code>src-tauri/src/bin/sql-kai-cli/</code> ·
+пересборка: <code>cargo install --path src-tauri --features cli --bin sql-kai-cli</code></p>
 
 </body>
 </html>

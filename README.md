@@ -117,10 +117,11 @@ sql-kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/
 sql-kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
 sql-kai import [--file f.json]      # массовый импорт профилей из JSON (пароли → vault)
 sql-kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
-sql-kai schema <alias> [--json]     # вся схема базы одним дампом (для агентов)
+sql-kai schema <alias> [--json]     # вся схема одним дампом: таблицы, вьюхи, enum, функции
 sql-kai logs <alias> [-f] [-n 200]  # журнал postgres профиля: ssh → docker logs
 sql-kai fork <alias> [новое-имя]    # копия базы в локальном docker + профиль на неё
-sql-kai mcp install [клиент]        # прописать MCP-сервер в конфиг агента (mcp status — где уже)
+sql-kai mcp [<alias>]               # MCP-сервер для агентов (см. ниже)
+sql-kai mcp install [клиент]        # прописать его в конфиг агента (mcp status — где уже)
 sql-kai tables|columns|ddl|indexes <alias> [schema.]table
 sql-kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
 sql-kai doctor                      # сохранённые пароли ещё аутентифицируются?
@@ -142,12 +143,20 @@ sql-kai holder stop                 # погасить фоновый держа
   Без TTY (MCP, CI, пайп) остаётся только env, поэтому по умолчанию агент в прод не пишет.
   Барьер общий для `q`, `saved run`, `rotate`, MCP-tool `query` и `exec` на ssh-хост
   prod-профиля; чтение ничего не спрашивает.
-- **MCP-сервер для агентов** — `sql-kai mcp` (без алиаса — все профили сразу,
-  с алиасом — закреплён за одной базой); подключается одной командой
-  `sql-kai mcp install <клиент>`. Главный tool — `schema`: вся схема базы за один
-  вызов вместо обхода `tables` → `columns`/`ddl`/`indexes` по каждой таблице.
-  Подробности — в [docs/sql-kai.html](docs/sql-kai.html#mcp).
+- **`sql-kai schema <alias>`** — вся структура базы за один поход в каталог
+  (таблицы, вьюхи, матвьюхи с колонками, констрейнтами, индексами, триггерами,
+  плюс enum-типы и функции) вместо обхода `tables` → `columns`/`ddl`/`indexes`
+  по каждой таблице. Ради этого команда и появилась: у агента один вызов вместо
+  десятков и один согласованный снимок. `--json`, `--schema`, `--definitions`,
+  `--comments`, `--internal`.
+- **`sql-kai fork <alias>`** — копия базы профиля в локальном docker (`pg_dump`
+  из read-only-сессии → `postgres:<мажор источника>`) плюс профиль на неё:
+  миграцию прогоняют там, а не на проде. По умолчанию только схема, `--data` —
+  с данными. Метку `production` форк не наследует.
+- **`sql-kai logs <alias>`** — журнал сервера (ssh → `docker logs`), работает и
+  когда postgres уже не принимает соединения: `-f`, `--since 10m`, `| grep`.
 - Мультистейтмент — одна неявная транзакция: ошибка в середине откатывает всё.
+  Отсюда следствие: `CREATE INDEX CONCURRENTLY` — только отдельной командой.
 - `sql-kai discover` сам находит postgres-контейнер на хосте (`docker ps` → env
   контейнера → published-порт или bridge-IP) и сохраняет профиль; пароль уходит
   в vault. Профиль сразу виден в GUI. Если контейнеров несколько — берётся
@@ -199,6 +208,42 @@ codesign --force --sign "$(jq -r '.bundle.macOS.signingIdentity' src-tauri/tauri
 curl -fL https://github.com/Kaidstor/sql-kai/releases/latest/download/sql-kai-cli-darwin-aarch64.tar.gz \
   | tar xz -C /usr/local/bin
 ```
+
+## MCP для AI-агентов
+
+`sql-kai mcp` — MCP-сервер поверх stdio: агент (Claude Code, Codex, Cursor, …)
+ходит в базы через тот же сервер сессий, что и CLI, — vault уже разблокирован,
+ssh-туннели подняты, сессия read-only по умолчанию, запросы попадают в общую
+историю. Подключается одной командой:
+
+```bash
+sql-kai mcp install                  # список клиентов и путей их конфигов
+sql-kai mcp install claude-code      # прописать (claude-desktop, codex, cursor, vscode, windsurf, gemini)
+sql-kai mcp install cursor --profile vuln   # закрепить сервер за одной базой
+sql-kai mcp status                   # где sql-kai уже прописан
+```
+
+Запись мержится в конфиг клиента, не затирая чужие MCP-серверы; перед правкой
+делается `.bak`, `--dry-run` показывает, что будет записано.
+
+Tools: **`schema`** (вся структура базы за один вызов — основной инструмент
+интроспекции), `query` (SQL с `$1..$N`-параметрами или .sql-файлом; чувствительные
+колонки маскируются), `tables`/`columns`/`ddl`/`indexes`, `open_table`/`open_query`
+(открыть таблицу или готовый запрос вкладкой в GUI) и `selection` (что пользователь
+сейчас видит и выделил — для реплик вроде «эта строка»). У всех объявлены
+`annotations` и `outputSchema`, ответ приходит и текстом, и структурой.
+
+Два режима: **закреплённый** (`sql-kai mcp <alias>`) — девять tools по одной базе,
+параметра `profile` нет вовсе, перепутать базы невозможно (эту форму запускает
+панель агента в GUI); **мультипрофильный** (`sql-kai mcp`) — добавляется tool
+`profiles`, у остальных появляется параметр `profile`, и одна запись в конфиге
+обслуживает все базы сразу.
+
+Запись в production через MCP по умолчанию не проходит: у сервера нет TTY,
+спросить человека невозможно, поэтому `"write": true` для prod-профиля разрешает
+только `SQL_KAI_ALLOW_PROD_WRITE` в окружении самого сервера — то есть в конфиге
+MCP-клиента, куда модель не пишет. Подробности — в
+[docs/sql-kai.html](docs/sql-kai.html#mcp).
 
 ## Запуск
 
