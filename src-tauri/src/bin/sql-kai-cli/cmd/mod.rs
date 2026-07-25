@@ -12,6 +12,7 @@ pub mod profiles;
 pub mod query;
 pub mod rotate;
 pub mod saved;
+pub mod schema;
 pub mod sessions;
 pub mod tunnel;
 pub mod vault;
