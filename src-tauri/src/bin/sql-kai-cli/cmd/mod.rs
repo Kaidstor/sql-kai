@@ -3,6 +3,7 @@
 pub mod discover;
 pub mod doctor;
 pub mod exec;
+pub mod fork;
 pub mod history;
 pub mod holder;
 pub mod import;
