@@ -58,10 +58,26 @@ $D exec -i "$C" psql -U "$U" -d "$DB" -v ON_ERROR_STOP=1 ${KAI_PSQL_OPTS:-} -f -
 
 pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
     let mut sql = input::collect_sql(&a.commands, &a.files)?;
-    if !a.write {
-        sql = format!("SET default_transaction_read_only = on;\n{sql}");
-    }
     let mut psql_opts: Vec<&str> = Vec::new();
+    if !a.write {
+        // psql выполняет стейтменты по одному, каждый своей транзакцией, поэтому
+        // `SET default_transaction_read_only = on` в прологе снимался следующей
+        // же строкой батча. Настоящая граница — одна read-only транзакция на
+        // весь прогон: --single-transaction оборачивает файл в BEGIN/COMMIT, а
+        // первый стейтмент делает её read-only. Внутри неё повысить права
+        // нельзя (25001), а выйти из неё не даёт гейт ниже.
+        if sql_kai_lib::db::escapes_read_only_tx(&sql) {
+            return Err(AppError::Msg(
+                "read-only режим: батч вышел бы из read-only транзакции или снял бы с неё \
+                 read-only (COMMIT/ROLLBACK/END/ABORT/PREPARE TRANSACTION/DISCARD/\
+                 SET TRANSACTION/SET …transaction_read_only). Добавь --write, если он \
+                 действительно должен менять данные."
+                    .into(),
+            ));
+        }
+        psql_opts.push("--single-transaction");
+        sql = format!("SET TRANSACTION READ ONLY;\n{sql}");
+    }
     if a.tuples {
         psql_opts.extend(["-t", "-A"]);
     }

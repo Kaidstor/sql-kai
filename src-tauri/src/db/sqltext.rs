@@ -242,6 +242,76 @@ pub fn is_tx_control_only(sql: &str) -> bool {
         })
 }
 
+/// True when the batch can leave the transaction block it runs in, i.e. escape
+/// an explicit `BEGIN READ ONLY` (see [`execute_read_only`](super::execute_read_only)).
+///
+/// This gate exists because `default_transaction_read_only` is a USERSET GUC:
+/// the client switches it off at will, so it states an intent and never a
+/// boundary. A read-only *transaction* is a real boundary — Postgres rejects
+/// both writes and `SET TRANSACTION READ WRITE` (SQLSTATE 25001) inside one —
+/// but only for as long as the batch stays inside it. `COMMIT; SET
+/// default_transaction_read_only = off; INSERT …` would otherwise walk straight
+/// out of the block and write.
+///
+/// Unlike "detect every write", this is a closed grammar: transaction control
+/// is a finite, enumerable set of commands, so the gate can be exhaustive
+/// rather than a best-effort blacklist. Statements that stay *inside* the block
+/// and cannot lift its access mode are deliberately allowed — `SAVEPOINT`, a
+/// nested `BEGIN` (a no-op warning), `SET search_path`, `SET statement_timeout`.
+/// `… AND CHAIN` is allowed for the same reason it is refused by
+/// [`is_tx_control_only`]: it opens a new transaction with the *same*
+/// characteristics, which here means read-only.
+pub fn escapes_read_only_tx(sql: &str) -> bool {
+    split_statements(sql).iter().any(|stmt| {
+        let (w0, w1) = head_keywords(stmt);
+        match w0.as_str() {
+            "COMMIT" | "END" | "ABORT" => !chains_new_tx(stmt),
+            // ROLLBACK TO [SAVEPOINT] stays inside the block; plain ROLLBACK ends it
+            "ROLLBACK" => w1 != "TO" && !chains_new_tx(stmt),
+            // two-phase commit ends the transaction exactly as COMMIT does
+            "PREPARE" => w1 == "TRANSACTION",
+            // DISCARD ALL resets the session, read-only defaults included (it
+            // errors inside a transaction block, but the exec path runs psql
+            // statement by statement, where it would land)
+            "DISCARD" => true,
+            // `SET TRANSACTION READ WRITE` (and its GUC spelling `SET
+            // transaction_read_only = off`) lifts the block's read-only mode
+            // outright. Postgres only refuses it once the transaction has taken
+            // a snapshot, so a batch opening with it would otherwise escalate
+            // before the first real statement — see the `SELECT 1` in
+            // [`execute_read_only`](super::execute_read_only).
+            "SET" | "RESET" => {
+                w1 == "TRANSACTION"
+                    || w1 == "ALL"
+                    || mentions_read_only_guc(stmt)
+                    || (w1 == "SESSION" && words_of(stmt).iter().any(|w| w == "CHARACTERISTICS"))
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Identifier-ish words of a statement, uppercased — keyword sniffing past the
+/// first two words (`SET SESSION CHARACTERISTICS AS TRANSACTION …`).
+fn words_of(stmt: &str) -> Vec<String> {
+    strip_leading_noise(stmt)
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_uppercase())
+        .collect()
+}
+
+/// True when the statement names one of the read-only GUCs. Both spellings are
+/// refused on the read-only path: `transaction_read_only` lifts the current
+/// block, and `default_transaction_read_only` — harmless on its own, since each
+/// call opens its own block — is refused too, so that "the read-only path never
+/// touches the read-only knobs" stays a rule with no exceptions to reason about.
+fn mentions_read_only_guc(stmt: &str) -> bool {
+    words_of(stmt)
+        .iter()
+        .any(|w| w == "TRANSACTION_READ_ONLY" || w == "DEFAULT_TRANSACTION_READ_ONLY")
+}
+
 /// True for `COMMIT/ROLLBACK/END/ABORT … AND CHAIN` (PG 12+): the statement
 /// ends the current transaction but immediately starts a new one with the same
 /// characteristics — including read-write mode, which is why the read-only gate
@@ -257,7 +327,48 @@ fn chains_new_tx(stmt: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_tx_control_only, split_statements};
+    use super::{escapes_read_only_tx, is_tx_control_only, split_statements};
+
+    #[test]
+    fn read_only_tx_escape_gate() {
+        // the bypass this gate exists for: end the block, then write
+        assert!(escapes_read_only_tx(
+            "COMMIT; SET default_transaction_read_only = off; INSERT INTO t VALUES (1)"
+        ));
+        assert!(escapes_read_only_tx("SELECT 1; ROLLBACK"));
+        assert!(escapes_read_only_tx("  end  "));
+        assert!(escapes_read_only_tx("ABORT;"));
+        assert!(escapes_read_only_tx("PREPARE TRANSACTION 'x'"));
+        assert!(escapes_read_only_tx("DISCARD ALL"));
+        assert!(escapes_read_only_tx("-- sneaky\nCOMMIT"));
+        // lifting the block's access mode — every spelling
+        assert!(escapes_read_only_tx("SET TRANSACTION READ WRITE; INSERT INTO t VALUES (1)"));
+        assert!(escapes_read_only_tx("SET transaction_read_only = off"));
+        assert!(escapes_read_only_tx("SET LOCAL transaction_read_only TO false"));
+        assert!(escapes_read_only_tx("SET default_transaction_read_only = off"));
+        assert!(escapes_read_only_tx(
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE"
+        ));
+        assert!(escapes_read_only_tx("RESET ALL"));
+        assert!(escapes_read_only_tx("RESET transaction_read_only"));
+        // plain reads, and statements that stay inside the block
+        assert!(!escapes_read_only_tx("SELECT 1"));
+        assert!(!escapes_read_only_tx("SET search_path = app; SELECT 1"));
+        assert!(!escapes_read_only_tx("SET statement_timeout = '5s'"));
+        assert!(!escapes_read_only_tx("RESET search_path"));
+        assert!(!escapes_read_only_tx("SAVEPOINT sp; ROLLBACK TO SAVEPOINT sp"));
+        // a nested BEGIN is a warning-only no-op, the block still holds
+        assert!(!escapes_read_only_tx("BEGIN; SELECT 1"));
+        // AND CHAIN reopens with the same (read-only) characteristics
+        assert!(!escapes_read_only_tx("COMMIT AND CHAIN"));
+        assert!(escapes_read_only_tx("COMMIT AND NO CHAIN"));
+        // PREPARE without TRANSACTION is a prepared statement, not tx control
+        assert!(!escapes_read_only_tx("PREPARE p AS SELECT 1"));
+        // the verbs must not be matched inside strings or dollar-quoted bodies
+        assert!(!escapes_read_only_tx("SELECT 'COMMIT'"));
+        assert!(!escapes_read_only_tx("DO $$ BEGIN PERFORM 1; END $$"));
+        assert!(!escapes_read_only_tx(""));
+    }
 
     #[test]
     fn tx_control_only_gate() {

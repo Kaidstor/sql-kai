@@ -140,12 +140,45 @@ pub fn guard_prod_write_by_id(profile_id: &str) -> Result<(), AppError> {
     }
 }
 
+/// Куда ssh-алиас ведёт на самом деле: (hostname, port, user) по `ssh -G`.
+/// `~/.ssh/config` разрешает называть один хост сколькими угодно именами —
+/// второй `Host`-блок, FQDN, голый IP, — поэтому сравнения алиасов строкой мало:
+/// под другим именем того же прода запись проходила мимо барьера. `ssh -G`
+/// только печатает итоговую конфигурацию и никуда не подключается.
+fn ssh_endpoint(alias: &str) -> Option<(String, String, String)> {
+    let out = std::process::Command::new("ssh")
+        .args(["-G", "--", alias])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut host, mut port, mut user) = (None, None, None);
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once(' ') {
+            let value = value.trim().to_ascii_lowercase();
+            match key {
+                "hostname" => host = Some(value),
+                "port" => port = Some(value),
+                "user" => user = Some(value),
+                _ => {}
+            }
+        }
+    }
+    Some((host?, port?, user?))
+}
+
 /// Барьер для `sql-kai exec <ssh-alias>`: профиля в аргументах нет, но если на
 /// тот же ssh-хост смотрит production-профиль, то `docker exec psql` — такая
 /// же запись в прод, как обычная сессия, и мимо барьера идти не должна.
+///
+/// Сначала дешёвое совпадение по имени, затем — резолв через [`ssh_endpoint`]
+/// для алиасов-синонимов. Если `ssh -G` недоступен, остаётся только первый
+/// уровень: барьер не строже прежнего, но и не слабее.
 pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppError> {
     let all = store::load_profiles()?;
-    let matched = all.iter().find(|p| {
+    let named = all.iter().find(|p| {
         p.production
             && (p
                 .ssh
@@ -154,7 +187,20 @@ pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppEr
                 || p.name.eq_ignore_ascii_case(alias)
                 || p.id == alias)
     });
-    match matched {
+    if let Some(profile) = named {
+        return authorize_prod_write(profile, explicit);
+    }
+    let target = ssh_endpoint(alias);
+    let resolved = target.and_then(|target| {
+        all.iter().find(|p| {
+            p.production
+                && p.ssh
+                    .as_ref()
+                    .and_then(|s| ssh_endpoint(&s.host))
+                    .is_some_and(|endpoint| endpoint == target)
+        })
+    });
+    match resolved {
         Some(profile) => authorize_prod_write(profile, explicit),
         None => Ok(()),
     }

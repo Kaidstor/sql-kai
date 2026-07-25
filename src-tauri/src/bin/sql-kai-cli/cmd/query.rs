@@ -229,7 +229,14 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     )
     .await?;
 
-    let outcome = db::execute(&connected.session.client, &sql, a.max_rows.max(1)).await;
+    // Автономная сессия (--local/--no-mux) идёт мимо брокера, поэтому read-only
+    // тут обеспечивает та же обёртка BEGIN READ ONLY, что и там: одного
+    // default_transaction_read_only мало — батч снимает его сам.
+    let outcome = if a.write {
+        db::execute(&connected.session.client, &sql, a.max_rows.max(1)).await
+    } else {
+        db::execute_read_only(&connected.session.client, &sql, a.max_rows.max(1)).await
+    };
     if !a.no_history {
         let _ = store::record_history(HistoryEntry {
             id: uuid::Uuid::new_v4().to_string(),

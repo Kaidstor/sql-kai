@@ -220,15 +220,37 @@ async fn do_query(
 
     let client = &entry.session.client;
     let executor = db::QueryExecutor::new(client, &entry.session.tx);
-    // Сессия постоянно read-only (default_transaction_read_only = on); --write
-    // снимает флаг только на время запроса. Но default_transaction_read_only
-    // действует лишь на НОВУЮ транзакцию: если --write оставил открытую
-    // read-write транзакцию (BEGIN без COMMIT), обычный запрос продолжит её и
-    // сможет писать. Поэтому дополнительно трекаем режим открытой транзакции и
-    // не пускаем read-only вызов внутрь read-write транзакции.
+    // Read-only держится на ЯВНОЙ read-only транзакции вокруг каждого читающего
+    // батча, а не на default_transaction_read_only: тот USERSET, и батч снимал
+    // его сам первым же стейтментом. GUC остаётся как второй слой (сессия
+    // открывается с ним, --write снимает его на время запроса), но границей
+    // теперь служит блок BEGIN READ ONLY — внутри него Postgres не даёт ни
+    // писать, ни повысить права (25001).
+    //
+    // Отдельно трекаем режим открытой транзакции: если --write оставил
+    // read-write транзакцию (BEGIN без COMMIT), читающий вызов продолжил бы её
+    // и смог писать, поэтому внутрь такой транзакции его не пускаем.
     let before = executor.status();
     let before_write = entry.session.tx_write.load(Ordering::Relaxed);
-    if !write && before != TxStatus::Idle && before_write && !db::is_tx_control_only(sql) {
+    // Читающий вызов идёт внутри явной read-only транзакции: снять с себя
+    // read-only внутри неё Postgres не даёт (25001), поэтому единственный обход
+    // — выйти из блока, и он отсекается здесь. Исключение — батч из одного лишь
+    // COMMIT/ROLLBACK: это штатный способ закрыть транзакцию, которую оставил
+    // открытой предыдущий --write, и писать он не умеет.
+    let tx_control_only = db::is_tx_control_only(sql);
+    let read_only_tx = !write && !tx_control_only;
+    if read_only_tx && db::escapes_read_only_tx(sql) {
+        return Err(MethodError {
+            code: "read_only_tx",
+            message: "read-only сессия: батч вышел бы из read-only транзакции, в которой \
+                      выполняется, или снял бы с неё read-only (COMMIT/ROLLBACK/END/ABORT/\
+                      PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only). \
+                      Повтори с --write, если он действительно должен менять данные."
+                .into(),
+            sqlstate: Some("25006".into()),
+        });
+    }
+    if !write && before != TxStatus::Idle && before_write && !tx_control_only {
         return Err(MethodError {
             code: "read_only_tx",
             message: "открыта read-write транзакция (её начал вызов с --write). \
@@ -248,7 +270,11 @@ async fn do_query(
             .map_err(|e| method_err("write_setup", format!("не удалось включить режим записи: {e}")))?;
     }
 
-    let result = executor.execute(sql, max_rows.clamp(1, 100_000)).await;
+    let result = if read_only_tx {
+        executor.execute_read_only(sql, max_rows.clamp(1, 100_000)).await
+    } else {
+        executor.execute(sql, max_rows.clamp(1, 100_000)).await
+    };
     let after = executor.status();
     // Открытая транзакция read-write, если её открыл (или продолжил) --write.
     let after_write = after != TxStatus::Idle && (write || before_write);

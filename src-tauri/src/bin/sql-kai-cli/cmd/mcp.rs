@@ -580,7 +580,7 @@ fn tool_definitions(multi: bool) -> Value {
     let mut tools = vec![
         json!({
             "name": "query",
-            "description": "Run SQL in a PostgreSQL database of sql-kai. The session is READ-ONLY unless `write` is set — set it only when the user explicitly asked to modify data. Databases marked `production` (see the `profiles` tool) reject `write` from here no matter what: the user has to allow it out-of-band via SQL_KAI_ALLOW_PROD_WRITE in this server's environment, so do not retry a refusal — report it and let the user decide. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output.",
+            "description": "Run SQL in a PostgreSQL database of sql-kai. Unless `write` is set the batch runs inside a READ ONLY transaction — set `write` only when the user explicitly asked to modify data. Because of that transaction, a read call also refuses statements that would leave it or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only); that refusal means the batch needs `write`, not a cleverer rewrite. Databases marked `production` (see the `profiles` tool) reject `write` from here no matter what: the user has to allow it out-of-band via SQL_KAI_ALLOW_PROD_WRITE in this server's environment, so do not retry a refusal — report it and let the user decide. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -16,10 +16,12 @@ pub use catalog::{
 };
 pub use connect::{connect, ConnectOptions, Connected, Session};
 pub use exec::{
-    cell, cell_bool, execute, query_rows, query_scalar, statement_column_types, ExecResult,
-    QueryExecutor, StatementResult,
+    cell, cell_bool, execute, execute_read_only, query_rows, query_scalar, statement_column_types,
+    ExecResult, QueryExecutor, StatementResult,
 };
 pub use export::{
     export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportResult,
 };
-pub use sqltext::{advance_tx, is_tx_control_only, split_statements, TxStatus};
+pub use sqltext::{
+    advance_tx, escapes_read_only_tx, is_tx_control_only, split_statements, TxStatus,
+};

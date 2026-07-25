@@ -197,7 +197,13 @@ impl BrokerClient {
             let code = v.get("code").and_then(Value::as_str).unwrap_or("");
             return Err(match code {
                 "vault_locked" => BrokerError::VaultLocked,
-                "query" => BrokerError::Query {
+                // Отказ по существу запроса. `read_only_tx` здесь обязателен:
+                // это решение брокера («батч вывел бы себя из read-only
+                // транзакции», «открыта чужая read-write транзакция»), а не сбой
+                // связи. Уехав в `_`, он выглядел бы как «брокер недоступен», и
+                // CLI молча повторил бы тот же SQL автономной сессией — то есть
+                // мимо только что вынесенного запрета.
+                "query" | "read_only_tx" => BrokerError::Query {
                     message: err.to_string(),
                     sqlstate: v
                         .get("sqlstate")

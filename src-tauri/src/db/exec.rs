@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-use super::sqltext::{advance_tx, split_statements, TxStatus};
+use super::sqltext::{advance_tx, escapes_read_only_tx, split_statements, TxStatus};
 use crate::error::AppError;
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -94,6 +94,54 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
     })
 }
 
+/// Runs `sql` inside an explicit `BEGIN READ ONLY` block — the only read-only
+/// guarantee Postgres actually enforces for a session we do not own the role of.
+///
+/// The session-wide `SET default_transaction_read_only = on` this used to rely
+/// on is a USERSET GUC: any batch could switch it off and write. Inside a
+/// read-only transaction Postgres refuses writes *and* `SET TRANSACTION READ
+/// WRITE` (SQLSTATE 25001), so the only way out is to end the block — which is
+/// what [`escapes_read_only_tx`] refuses up front.
+///
+/// `BEGIN`/`COMMIT` are sent as their own statements on purpose: folding them
+/// into the batch string would add their `CommandComplete` to [`ExecResult`]
+/// and break the 1:1 statement-to-result mapping that the CLI renderer, the MCP
+/// structured output and `sql-kai schema`'s result-set parsing all rely on.
+pub async fn execute_read_only(
+    client: &Client,
+    sql: &str,
+    max_rows: usize,
+) -> Result<ExecResult, AppError> {
+    if escapes_read_only_tx(sql) {
+        return Err(AppError::Msg(
+            "read-only session: the batch would leave the read-only transaction it \
+             runs in, or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE \
+             TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only). Re-run \
+             with write access enabled if it is meant to modify data."
+                .into(),
+        ));
+    }
+    // `SELECT 1` здесь не косметика: Postgres разрешает `SET TRANSACTION READ
+    // WRITE` в read-only транзакции, пока та не взяла снапшот
+    // (check_transaction_read_only смотрит на FirstSnapshotSet), а голый BEGIN
+    // его не берёт. Один запрос закрывает это окно, и повышение прав изнутри
+    // блока падает с 25001. Результат вызова отбрасывается, на ExecResult
+    // батча он не влияет.
+    execute(client, "BEGIN READ ONLY; SELECT 1", 1).await?;
+    let result = execute(client, sql, max_rows).await;
+    // Close the block either way: after a failed statement the transaction is
+    // aborted and every later statement on this connection errors until it is
+    // rolled back, so leaving it open would poison a pooled session.
+    let closed = execute(client, if result.is_ok() { "COMMIT" } else { "ROLLBACK" }, 1).await;
+    match (result, closed) {
+        (Ok(exec), Ok(_)) => Ok(exec),
+        // The read succeeded but the block is still open — the caller has to
+        // know, otherwise the next call inherits a transaction it never opened.
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), _) => Err(e),
+    }
+}
+
 /// Runs SQL on a session while keeping its heuristic transaction status
 /// ([`Session::tx`](super::Session)) in sync: load → execute → advance_tx →
 /// store. The single query path shared by the GUI commands and the broker,
@@ -127,6 +175,22 @@ impl<'a> QueryExecutor<'a> {
         let before = self.status();
         let result = execute(self.client, sql, max_rows).await;
         self.advance(before, sql, result.is_ok());
+        result
+    }
+
+    /// [`execute_read_only`] + status tracking. The status is set to `Idle`
+    /// rather than folded from the SQL: the wrapper always closes its block, so
+    /// the connection is out of any transaction whatever the batch did — a
+    /// user-typed `BEGIN` inside it is the no-op warning Postgres makes it, not
+    /// a transaction left open. If even the closing statement failed the
+    /// connection is gone, and the next call surfaces that.
+    pub async fn execute_read_only(
+        &self,
+        sql: &str,
+        max_rows: usize,
+    ) -> Result<ExecResult, AppError> {
+        let result = execute_read_only(self.client, sql, max_rows).await;
+        self.tx.store(TxStatus::Idle as u8, Ordering::Relaxed);
         result
     }
 }
