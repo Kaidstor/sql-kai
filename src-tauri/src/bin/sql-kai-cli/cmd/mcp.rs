@@ -17,6 +17,7 @@
 //! `outputSchema`. Тексты tools/описания/ошибки — по-английски: их читает
 //! модель, а не пользователь CLI.
 
+use std::io::Read;
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
@@ -62,6 +63,10 @@ pub async fn run(a: McpArgs) -> Result<ExitCode, AppError> {
         Some(McpCmd::Status(args)) => return mcp_setup::status(args),
         None => {}
     }
+    // Дальше stdin — транспорт JSON-RPC, а не человек, даже если сервер
+    // запустили руками в терминале: любой вопрос (прод-барьер, confirm) съел бы
+    // кадр протокола и завис бы, ожидая ответа, которого не будет.
+    crate::input::set_non_interactive();
     let pinned = match a.alias.as_deref() {
         Some(alias) => Some(session::resolve_profile(alias)?),
         None => None,
@@ -585,7 +590,7 @@ fn tool_definitions(multi: bool) -> Value {
                 "type": "object",
                 "properties": {
                     "sql": { "type": "string", "description": "SQL to execute; multiple ;-separated statements allowed" },
-                    "file": { "type": "string", "description": "Path to a .sql file to execute instead of `sql` (migrations and other on-disk scripts)" },
+                    "file": { "type": "string", "description": "Path to a .sql file to execute instead of `sql` (migrations and other on-disk scripts). Must be a regular file with a .sql extension — this is not a way to read other files." },
                     "parameters": {
                         "type": "array",
                         "description": "Values for $1, $2 … placeholders; single-statement SQL only. Values are always sent as text — cast in SQL when a different type is needed ($1::uuid).",
@@ -807,6 +812,43 @@ fn profiles_output() -> Result<ToolOutput, String> {
     Ok(ToolOutput::new(text, structured))
 }
 
+/// Предел на файл в `file`. Настоящие миграции — килобайты; ограничение не про
+/// удобство, а про то, что путь называет модель.
+const SQL_FILE_CAP: u64 = 4 * 1024 * 1024;
+
+/// SQL из файла, названного моделью. Путь недоверенный, поэтому три условия:
+///   * расширение `.sql` — иначе `file` превращается в чтение любого файла
+///     пользователя: содержимое не-SQL уедет модели обратно фрагментами в
+///     `syntax error at or near "…"`;
+///   * обычный файл — fifo заблокировал бы весь stdio-цикл сервера навсегда,
+///     `/dev/zero` съел бы память (stat, а не open: открытие fifo само висит);
+///   * размер — плюс `take` при чтении, чтобы файл не подрос между stat и open.
+fn read_sql_file(path: &str) -> Result<String, String> {
+    let p = std::path::Path::new(path);
+    if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
+        return Err(format!("`file` must point to a .sql file, got '{path}'"));
+    }
+    let meta = std::fs::metadata(p).map_err(|e| format!("cannot read file '{path}': {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("'{path}' is not a regular file"));
+    }
+    if meta.len() > SQL_FILE_CAP {
+        return Err(format!(
+            "'{path}' is {} bytes — over the {SQL_FILE_CAP}-byte limit for `file`",
+            meta.len()
+        ));
+    }
+    let f = std::fs::File::open(p).map_err(|e| format!("cannot read file '{path}': {e}"))?;
+    let mut sql = String::new();
+    f.take(SQL_FILE_CAP + 1)
+        .read_to_string(&mut sql)
+        .map_err(|e| format!("cannot read file '{path}': {e}"))?;
+    if sql.len() as u64 > SQL_FILE_CAP {
+        return Err(format!("'{path}' grew over the {SQL_FILE_CAP}-byte limit while reading"));
+    }
+    Ok(sql)
+}
+
 /// SQL, как его задал вызывающий: либо `sql`, либо `file` (ровно одно из
 /// двух), плюс подстановка `parameters`. Файл нужен для основного сценария
 /// «примени миграцию»: у агента нет способа передать серверу stdin.
@@ -818,8 +860,7 @@ fn sql_argument(args: &Value) -> Result<String, String> {
             return Err("pass either `sql` or `file`, not both".to_string());
         }
         (Some(sql), None) => sql.to_string(),
-        (None, Some(path)) => std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read file '{path}': {e}"))?,
+        (None, Some(path)) => read_sql_file(path)?,
         (None, None) => return Err("missing required argument: sql (or file)".to_string()),
     };
 
@@ -1147,6 +1188,39 @@ mod tests {
         let sql = "SELECT * FROM t WHERE name = $1 AND age > $2";
         let out = bind_parameters(sql, &["O'Brien".into(), "18".into()]).unwrap();
         assert_eq!(out, "SELECT * FROM t WHERE name = 'O''Brien' AND age > '18'");
+    }
+
+    /// `file` — не способ прочитать произвольный файл: путь называет модель, а
+    /// не-SQL вернулся бы ей фрагментами в тексте синтаксической ошибки. Плюс
+    /// fifo (повесил бы stdio-цикл) и каталог отсекаются как не regular file.
+    #[test]
+    fn sql_file_argument_is_restricted() {
+        let dir = std::env::temp_dir().join(format!("sql-kai-mcp-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("m.sql");
+        std::fs::write(&ok, "SELECT 1;").unwrap();
+        assert_eq!(read_sql_file(ok.to_str().unwrap()).unwrap(), "SELECT 1;");
+
+        let not_sql = dir.join("id_rsa");
+        std::fs::write(&not_sql, "-----BEGIN PRIVATE KEY-----").unwrap();
+        assert!(read_sql_file(not_sql.to_str().unwrap()).is_err());
+        // каталог с нужным расширением — тоже не файл
+        let as_dir = dir.join("d.sql");
+        std::fs::create_dir_all(&as_dir).unwrap();
+        assert!(read_sql_file(as_dir.to_str().unwrap()).is_err());
+        assert!(read_sql_file(dir.join("нет.sql").to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Значение с обратным слэшем уходит в E'…': при
+    /// `standard_conforming_strings = off` обычный литерал прочитал бы `\` как
+    /// escape, и значение поехало бы (а `'…\'` — сломало бы запрос).
+    #[test]
+    fn binds_backslash_as_an_escape_string() {
+        let out = bind_parameters("SELECT $1", &["C:\\tmp\\x".into()]).unwrap();
+        assert_eq!(out, "SELECT E'C:\\\\tmp\\\\x'");
+        let out = bind_parameters("SELECT $1", &["ends with \\".into()]).unwrap();
+        assert_eq!(out, "SELECT E'ends with \\\\'");
     }
 
     #[test]

@@ -15,14 +15,24 @@
 //! принципиально: окружение серверу задаёт клиент в своём конфиге, модель в
 //! него не пишет, а stdin занят протоколом — значит по умолчанию запись в
 //! прод оттуда просто не проходит.
+//!
+//! Спрашивает человека всегда клиент — у сервера сессий нет tty. Поэтому этот
+//! барьер парный: пройдя его, [`crate::broker_client`] помечает запрос
+//! `prodWriteAuthorized`, а сервер без такой пометки (или без своего
+//! `SQL_KAI_ALLOW_PROD_WRITE`) в prod-профиль не пишет — см.
+//! `broker::server::guard_prod_write`. Серверный чек ловит запись мимо этого
+//! файла: старый sql-kai, который про барьер не знает, и любого другого клиента
+//! сокета. Границей против враждебного процесса того же пользователя он не
+//! является и не может быть — пометку такой процесс поставит сам, как сам
+//! прочитает и профили; барьер защищает от нечаянной записи, а не от подмены.
 
-use std::io::IsTerminal;
 use std::sync::Mutex;
 
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
-use crate::envvar::{self, ALLOW_PROD_WRITE};
+use crate::envvar::{self, ALLOW_PROD_DUMP, ALLOW_PROD_WRITE};
+use crate::input;
 
 /// Профили (id), которым разрешение уже выдано в этом процессе. Путь записи
 /// проходит барьер дважды (команда → сессия/брокер), а спросить человека
@@ -91,12 +101,14 @@ pub fn guard_prod_write(profile: &Profile) -> Result<(), AppError> {
         grant(&profile.id);
         return Ok(());
     }
-    // Нет TTY — на том конце не человек (MCP, пайп, CI): спрашивать некого, а
-    // у MCP stdin вообще занят JSON-RPC. Строгий отказ без вопросов.
-    if !std::io::stdin().is_terminal() {
+    // Спрашивать некого: пайп/CI (нет TTY) или MCP, где stdin занят JSON-RPC —
+    // и это не выводится из TTY, потому что сервер бывает запущен руками в
+    // терминале. Строгий отказ без вопросов.
+    if !input::is_interactive() {
         return Err(denied(
             profile,
-            "подтвердить некому (stdin не терминал), а одного --write для прода мало",
+            "подтвердить некому (stdin занят протоколом или не терминал), \
+             а одного --write для прода мало",
         ));
     }
     eprintln!(
@@ -124,6 +136,56 @@ pub fn authorize_prod_write(profile: &Profile, explicit: bool) -> Result<(), App
         grant(&profile.id);
     }
     guard_prod_write(profile)
+}
+
+/// Барьер на выгрузку данных production-профиля (`fork --data`). Отдельный от
+/// записи, потому что риск другой: запись меняет боевую базу, а выгрузка кладёт
+/// её полную копию на эту машину — дамп во временном файле, том контейнера,
+/// потом профиль без метки `production`. Асимметрия «писать нельзя, а вынести
+/// всё можно по --yes» и была тем, что здесь закрывается: `--yes`, которым
+/// снимают обычный вопрос про форк, это подтверждение не снимает.
+pub fn authorize_prod_dump(profile: &Profile, explicit: bool) -> Result<(), AppError> {
+    if !profile.production || explicit {
+        return Ok(());
+    }
+    if envvar::value(ALLOW_PROD_DUMP)
+        .is_some_and(|raw| allowlist_matches(&raw, &profile.name, &profile.id))
+    {
+        return Ok(());
+    }
+    let deny = |why: &str| {
+        AppError::Msg(format!(
+            "выгрузка данных production-профиля '{}' ({}@{}:{}/{}) заблокирована: {}\n\
+             разрешить:\n  \
+             • в терминале — повтори команду и подтверди, введя имя профиля;\n  \
+             • флагом — добавь в команду --prod-data;\n  \
+             • неинтерактивно — {ALLOW_PROD_DUMP}={} в окружении процесса.\n  \
+             Схему можно снять и без этого: то же самое без --data.",
+            profile.name, profile.user, profile.host, profile.port, profile.database, why,
+            profile.name,
+        ))
+    };
+    if !input::is_interactive() {
+        return Err(deny("подтвердить некому (stdin занят протоколом или не терминал)"));
+    }
+    eprintln!(
+        "⚠ ВЫГРУЗКА БОЕВЫХ ДАННЫХ: профиль '{}' ({}@{}:{}/{})",
+        profile.name, profile.user, profile.host, profile.port, profile.database
+    );
+    eprintln!(
+        "  полная копия данных окажется на этой машине: дамп во временном файле \
+         и том docker-контейнера (тома до `docker rm -f` не удаляются)."
+    );
+    eprint!(
+        "введи имя профиля ('{}') для подтверждения, Enter — отмена: ",
+        profile.name
+    );
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    if !line.trim().eq_ignore_ascii_case(&profile.name) {
+        return Err(deny("подтверждение не совпало с именем профиля"));
+    }
+    Ok(())
 }
 
 /// Тот же барьер, когда на руках только id профиля: через сервер сессий

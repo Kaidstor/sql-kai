@@ -6,14 +6,20 @@
 //! получается только для схемы: она снимается по умолчанию, данные — по явному
 //! `--data`.
 //!
-//! Источник строго read-only, и это обеспечено на всех путях: соединение
-//! открывается через [`session::open_for`] с `write = false`, то есть сразу
-//! получает `default_transaction_read_only = on`; единственная операция над
-//! источником — `pg_dump` (SELECT-ы плюс ACCESS SHARE-локи, никакого DDL/DML).
-//! Ни одна команда этого модуля ничего не пишет в исходную базу — всё, что
-//! создаётся, создаётся локально: контейнер, дамп во временном файле и новый
-//! профиль. Форк не наследует флаг `production`, чтобы GUI не переспрашивал на
-//! копии то, ради чего копия и заводилась.
+//! Источник ничего не получает, кроме чтения, но держится это не на одном
+//! механизме: сессия [`session::open_for`] с `write = false` (то есть
+//! `default_transaction_read_only = on`) нужна лишь для `SHOW server_version` и
+//! туннеля, а сам дамп идёт отдельным процессом `pg_dump` — по ssh это вообще
+//! суперюзер контейнера через unix-сокет, мимо роли профиля. Гарантия поэтому
+//! не «сессия read-only», а «единственная операция над источником — pg_dump»:
+//! SELECT-ы плюс ACCESS SHARE-локи, никакого DDL/DML. Всё, что создаётся,
+//! создаётся локально: контейнер, дамп во временном файле и новый профиль.
+//! Форк не наследует флаг `production`, чтобы GUI не переспрашивал на копии то,
+//! ради чего копия и заводилась.
+//!
+//! Обратная сторона этого — `--data` с прод-профиля выносит боевые данные на
+//! машину пользователя, поэтому такой форк отдельно подтверждается
+//! (`session::authorize_prod_dump`), и `--yes` его не снимает.
 //!
 //! Версия образа берётся из `SHOW server_version` источника: восстановить дамп
 //! в чужой мажор нельзя (менялись и синтаксис, и системные каталоги), поэтому
@@ -48,6 +54,9 @@ pub struct ForkArgs {
     /// Копировать и данные (дамп может быть огромным; по умолчанию — только схема)
     #[arg(long)]
     data: bool,
+    /// Подтвердить выгрузку данных production-профиля (только вместе с --data)
+    #[arg(long, requires = "data")]
+    prod_data: bool,
     /// Docker-образ (по умолчанию postgres:<мажор версии сервера>)
     #[arg(long, value_name = "IMAGE")]
     image: Option<String>,
@@ -228,24 +237,42 @@ fn source_password(profile: &Profile, a: &ForkArgs) -> Result<Option<String>, Ap
     Ok(store::get_password(profile))
 }
 
-/// Пустой файл дампа с правами 0600 (в /tmp он может оказаться читаемым всем,
-/// а с `--data` внутри лежат боевые данные).
+/// Путь для дампа: имя со случайным хвостом. Предсказуемое имя в общем каталоге
+/// (`/tmp` на linux) — это и подложенный заранее симлинк, через который процесс
+/// обнулит чужой файл, и окно на чтение боевых данных.
+fn dump_path(cname: &str) -> PathBuf {
+    let tag: u64 = rand::thread_rng().gen();
+    std::env::temp_dir().join(format!("{cname}-{}-{tag:016x}.sql", std::process::id()))
+}
+
+/// Пустой файл дампа сразу с правами 0600 и только новый: `create_new` не даст
+/// пройти по существующей ссылке (а `set_permissions` после `File::create`
+/// оставлял окно, в котором файл 0644 и уже открыт).
 fn create_dump_file(path: &Path) -> Result<(), AppError> {
-    File::create(path).map_err(AppError::Io)?;
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
+    opts.open(path).map_err(AppError::Io)?;
     Ok(())
 }
 
+/// Тот же файл на запись — по разу на каждую попытку дампа (ssh, затем фолбэк
+/// на локальный pg_dump): stdout процесса перенаправляется в него целиком.
+/// `O_NOFOLLOW` — чтобы наш путь не подменили ссылкой между созданием и этим
+/// открытием.
 fn open_dump_file(path: &Path) -> Result<File, AppError> {
-    OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(AppError::Io)
+    let mut opts = OpenOptions::new();
+    opts.write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path).map_err(AppError::Io)
 }
 
 /// Дамп через ssh + `docker exec pg_dump` — тот же путь, что у `discover`/`exec`
@@ -515,13 +542,19 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         eprintln!("отменено");
         return Ok(ExitCode::FAILURE);
     }
+    // Отдельно от общего confirm и намеренно мимо --yes: вынести боевые данные
+    // на ноутбук — решение того же веса, что запись в прод, и подтверждается так
+    // же (имя профиля / --prod-data / env). Без --data барьера нет: схема
+    // данных не содержит.
+    if a.data {
+        session::authorize_prod_dump(&profile, a.prod_data)?;
+    }
 
     if !image_present(&image)? {
         pull_image(&image)?;
     }
 
-    let dump_path: PathBuf =
-        std::env::temp_dir().join(format!("{cname}-{}.sql", std::process::id()));
+    let dump_path: PathBuf = dump_path(&cname);
     create_dump_file(&dump_path)?;
     eprintln!("снимаю дамп…");
     let mut dumped = false;

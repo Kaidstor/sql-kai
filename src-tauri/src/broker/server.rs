@@ -13,10 +13,12 @@ use tokio_postgres::NoTls;
 use crate::db::{self, TxStatus};
 use crate::error::AppError;
 use crate::logging;
-use crate::store;
+use crate::store::{self, Profile};
 use crate::vault;
 
-use super::protocol::{HelloReply, Method, Request, WireColumnTypes, PROTOCOL_VERSION};
+use super::protocol::{
+    HelloReply, Method, QueryParams, Request, WireColumnTypes, PROTOCOL_VERSION,
+};
 use super::state::{BrokerState, CliEntry};
 use super::{BrokerHooks, GuiOpen};
 
@@ -123,13 +125,7 @@ async fn dispatch(
             list.extend(state.cli_sessions());
             Ok(json!(list))
         }
-        Method::Query {
-            profile_id,
-            sql,
-            max_rows,
-            write,
-            with_types,
-        } => do_query(state, hooks, &profile_id, &sql, max_rows, write, with_types).await,
+        Method::Query(q) => do_query(state, hooks, &q).await,
         Method::ProfilesChanged => {
             (hooks.profiles_changed)();
             Ok(json!({}))
@@ -198,19 +194,93 @@ async fn dispatch(
     }
 }
 
+/// `SQL_KAI_ALLOW_PROD_WRITE` в окружении *сервера*: `1`/`true`/`all` — любой
+/// prod-профиль, иначе список имён/id через запятую. Разбор повторяет
+/// `session::prod::allowlist_matches` на стороне cli — держать их в синхроне
+/// проще, чем тащить cli-модуль в библиотеку.
+fn env_allows_prod_write(profile: &Profile) -> bool {
+    let Ok(raw) = std::env::var("SQL_KAI_ALLOW_PROD_WRITE") else {
+        return false;
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .any(|item| {
+            matches!(
+                item.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on" | "all"
+            ) || item.eq_ignore_ascii_case(&profile.name)
+                || item == profile.id
+        })
+}
+
+/// Прод-барьер на стороне сервера. До этого он жил только в cli
+/// (`session::prod`), то есть обходился любым другим клиентом сокета — старым
+/// sql-kai, который про барьер не знает, или парой строк на питоне: сокет
+/// принадлежит пользователю, а секреты уже расшифрованы здесь.
+///
+/// Спросить человека сервер не может (он внутри GUI, tty у него нет), поэтому
+/// признаёт два источника разрешения:
+///   * `SQL_KAI_ALLOW_PROD_WRITE` в своём окружении — настоящая граница: env
+///     запущенного процесса чужой процесс не поменяет;
+///   * `prodWriteAuthorized` от клиента — блокировка: подтверждает, что клиент
+///     барьер реализует и человек через него прошёл. Процесс того же
+///     пользователя это поле подделает, и защитой от него служит не сокет, а
+///     права на файлы профилей; зато случайная запись мимо барьера
+///     (обновлённый GUI + старый cli) теперь невозможна.
+fn guard_prod_write(profile_id: &str, client_authorized: bool) -> Result<(), MethodError> {
+    // Профиль не читается — считаем прод: чего не видим, то не считаем безопасным.
+    let profile = store::profile_by_id(profile_id)
+        .map_err(|e| method_err("prod_write", format!("профиль не прочитан: {e}")))?;
+    if !profile.production {
+        return Ok(());
+    }
+    if env_allows_prod_write(&profile) || client_authorized {
+        logging::log(
+            "broker",
+            &format!(
+                "prod write allowed for \"{}\" ({}@{}:{}/{}) — {}",
+                profile.name,
+                profile.user,
+                profile.host,
+                profile.port,
+                profile.database,
+                if client_authorized { "client-authorized" } else { "env allowlist" }
+            ),
+        );
+        return Ok(());
+    }
+    logging::log(
+        "broker",
+        &format!("prod write refused for \"{}\": no authorization", profile.name),
+    );
+    Err(MethodError {
+        code: "prod_write",
+        message: format!(
+            "запись в production-профиль '{}' заблокирована сервером сессий: запрос пришёл \
+             без подтверждения прод-барьера. Обнови sql-kai (старый клиент барьер не \
+             проходит) либо задай SQL_KAI_ALLOW_PROD_WRITE={} в окружении процесса, \
+             который держит сессии (GUI или holder).",
+            profile.name, profile.name
+        ),
+        sqlstate: None,
+    })
+}
+
 async fn do_query(
     state: &Arc<BrokerState>,
     hooks: &Arc<BrokerHooks>,
-    profile_id: &str,
-    sql: &str,
-    max_rows: usize,
-    write: bool,
-    with_types: bool,
+    q: &QueryParams,
 ) -> Result<Value, MethodError> {
+    let (profile_id, sql) = (q.profile_id.as_str(), q.sql.as_str());
+    let (max_rows, write, with_types) = (q.max_rows, q.write, q.with_types);
     if !vault::is_unlocked() {
         // sql-kai по этому коду откатывается на автономный путь со своей
         // цепочкой разблокировки
         return Err(method_err("vault_locked", "vault заблокирован в GUI"));
+    }
+    if write {
+        guard_prod_write(profile_id, q.prod_write_authorized)?;
     }
     let entry = get_or_open(state, hooks, profile_id)
         .await

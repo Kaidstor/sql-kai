@@ -3,13 +3,26 @@
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sql_kai_lib::error::AppError;
+
+/// Взведён процессами, у которых stdin занят не человеком, даже когда это
+/// терминал. Ровно один такой режим — `sql-kai mcp`: по stdin идёт JSON-RPC, и
+/// стоит спросить оттуда «введи имя профиля», как вопрос съест кадр протокола
+/// (а запущенный руками в терминале сервер — обычная отладка, tty у него есть).
+static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Объявить, что спрашивать в этом процессе нельзя. Зовётся один раз, до
+/// обработки запросов.
+pub fn set_non_interactive() {
+    NON_INTERACTIVE.store(true, Ordering::Relaxed);
+}
 
 /// Есть ли на том конце человек. Отдельно от [`confirm`] для команд, которым
 /// без TTY нужно не упасть, а сделать что-то другое (feedback печатает ссылку).
 pub fn is_interactive() -> bool {
-    std::io::stdin().is_terminal()
+    !NON_INTERACTIVE.load(Ordering::Relaxed) && std::io::stdin().is_terminal()
 }
 
 /// Вопрос «да/нет». Единственная реализация на весь CLI: копий было пять, и они

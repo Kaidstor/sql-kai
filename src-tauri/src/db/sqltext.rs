@@ -33,6 +33,127 @@ impl TxStatus {
     }
 }
 
+/// If `i` starts something a scanner must step over as one unit — a comment, a
+/// string literal, a quoted identifier or a dollar-quoted body — returns the
+/// offset just past it plus whether it counts as statement content (comments
+/// don't). Single place, so every scanner here agrees where code ends and text
+/// begins: `$1` and a bare `$` fall through as ordinary bytes.
+fn skip_noise(b: &[u8], i: usize) -> Option<(usize, bool)> {
+    match b[i] {
+        b'-' if b.get(i + 1) == Some(&b'-') => {
+            let mut i = i;
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            Some((i, false))
+        }
+        b'/' if b.get(i + 1) == Some(&b'*') => {
+            let mut depth = 1;
+            let mut i = i + 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Some((i.min(b.len()), false))
+        }
+        b'\'' => {
+            // E'…' also understands backslash escapes
+            let estring = i > 0
+                && (b[i - 1] == b'e' || b[i - 1] == b'E')
+                && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
+            let mut i = i + 1;
+            while i < b.len() {
+                if estring && b[i] == b'\\' {
+                    i += 2;
+                } else if b[i] == b'\'' {
+                    if b.get(i + 1) == Some(&b'\'') {
+                        i += 2; // '' — escaped quote
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            Some((i.min(b.len()), true))
+        }
+        b'"' => {
+            let mut i = i + 1;
+            while i < b.len() {
+                if b[i] == b'"' {
+                    if b.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            Some((i.min(b.len()), true))
+        }
+        b'$' => {
+            // $tag$ … $tag$; $1 (a digit after $) is a parameter, not a tag
+            let mut j = i + 1;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                j += 1;
+            }
+            if !(j < b.len() && b[j] == b'$' && (j == i + 1 || !b[i + 1].is_ascii_digit())) {
+                return None;
+            }
+            let tag = &b[i..=j];
+            let mut i = j + 1;
+            while i + tag.len() <= b.len() && &b[i..i + tag.len()] != tag {
+                i += 1;
+            }
+            Some(((i + tag.len()).min(b.len()), true))
+        }
+        _ => None,
+    }
+}
+
+/// psql meta-commands (`\c`, `\i`, `\!`, …) found where the backslash is code
+/// rather than text, returned without the backslash and in order. psql reads
+/// them from the same stream as the SQL, so a batch piped to `psql -f -` can do
+/// things no SQL parser sees: reconnect (losing the surrounding transaction),
+/// include a file that never passed a gate, shell out. Skipping strings keeps
+/// `WHERE x ~ '\d+'` from reading as a command.
+pub fn psql_meta_commands(sql: &str) -> Vec<String> {
+    let b = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some((next, _)) = skip_noise(b, i) {
+            i = next;
+            continue;
+        }
+        if b[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        // `\dt+`, `\?` — an alphanumeric run; `\!`, `\.` — one punctuation byte.
+        let mut j = i + 1;
+        while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'+' || b[j] == b'?') {
+            j += 1;
+        }
+        if j == i + 1 && b.get(j).is_some_and(u8::is_ascii) {
+            j += 1;
+        }
+        out.push(sql[i + 1..j].to_string());
+        i = j.max(i + 1);
+    }
+    out
+}
+
 /// Splits multi-statement SQL on `;`, honoring '…'/E'…' strings, "…"
 /// identifiers, $tag$…$tag$ dollar quoting and --/nested /* */ comments.
 /// Statements that are only whitespace/comments are dropped — the simple-query
@@ -44,86 +165,12 @@ pub fn split_statements(sql: &str) -> Vec<String> {
     let mut has_token = false; // current statement has non-comment content
     let mut i = 0;
     while i < b.len() {
+        if let Some((next, content)) = skip_noise(b, i) {
+            has_token |= content;
+            i = next;
+            continue;
+        }
         match b[i] {
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                let mut depth = 1;
-                i += 2;
-                while i < b.len() && depth > 0 {
-                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
-                        depth += 1;
-                        i += 2;
-                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'\'' => {
-                // E'…' also understands backslash escapes
-                let estring = i > 0
-                    && (b[i - 1] == b'e' || b[i - 1] == b'E')
-                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
-                has_token = true;
-                i += 1;
-                while i < b.len() {
-                    if estring && b[i] == b'\\' {
-                        i += 2;
-                    } else if b[i] == b'\'' {
-                        if b.get(i + 1) == Some(&b'\'') {
-                            i += 2; // '' — escaped quote
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'"' => {
-                has_token = true;
-                i += 1;
-                while i < b.len() {
-                    if b[i] == b'"' {
-                        if b.get(i + 1) == Some(&b'"') {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'$' => {
-                // $tag$ … $tag$; $1 (a digit after $) is a parameter, not a tag
-                let mut j = i + 1;
-                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
-                    j += 1;
-                }
-                let is_tag = j < b.len()
-                    && b[j] == b'$'
-                    && (j == i + 1 || !b[i + 1].is_ascii_digit());
-                has_token = true;
-                if is_tag {
-                    let tag = &b[i..=j];
-                    i = j + 1;
-                    while i + tag.len() <= b.len() && &b[i..i + tag.len()] != tag {
-                        i += 1;
-                    }
-                    i = (i + tag.len()).min(b.len());
-                } else {
-                    i += 1;
-                }
-            }
             b';' => {
                 if has_token {
                     out.push(sql[start..i].trim().to_string());
@@ -327,7 +374,7 @@ fn chains_new_tx(stmt: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{escapes_read_only_tx, is_tx_control_only, split_statements};
+    use super::{escapes_read_only_tx, is_tx_control_only, psql_meta_commands, split_statements};
 
     #[test]
     fn read_only_tx_escape_gate() {
@@ -368,6 +415,27 @@ mod tests {
         assert!(!escapes_read_only_tx("SELECT 'COMMIT'"));
         assert!(!escapes_read_only_tx("DO $$ BEGIN PERFORM 1; END $$"));
         assert!(!escapes_read_only_tx(""));
+    }
+
+    #[test]
+    fn psql_meta_commands_seen_only_as_code() {
+        // the escapes a SQL-only gate misses: reconnect, include, shell, \gexec
+        assert_eq!(psql_meta_commands("SELECT 1; \\c postgres"), ["c"]);
+        assert_eq!(psql_meta_commands("\\i /etc/passwd"), ["i"]);
+        assert_eq!(psql_meta_commands("\\! id"), ["!"]);
+        assert_eq!(psql_meta_commands("SELECT 'x' \\gexec"), ["gexec"]);
+        assert_eq!(psql_meta_commands("\\dt+"), ["dt+"]);
+        assert_eq!(psql_meta_commands("\\c a\n\\i b"), ["c", "i"]);
+        // a backslash inside text is text: regex literals must keep working
+        assert!(psql_meta_commands("SELECT * FROM t WHERE x ~ '\\d+'").is_empty());
+        assert!(psql_meta_commands("SELECT E'\\\\c nope'").is_empty());
+        assert!(psql_meta_commands("SELECT \"we\\ird\"").is_empty());
+        assert!(psql_meta_commands("SELECT $$a\\c b$$").is_empty());
+        assert!(psql_meta_commands("-- \\c nope\nSELECT 1").is_empty());
+        assert!(psql_meta_commands("/* \\i x */ SELECT 1").is_empty());
+        assert!(psql_meta_commands("SELECT 1").is_empty());
+        // a trailing backslash must not slice past the end or spin
+        assert_eq!(psql_meta_commands("SELECT 1 \\"), [""]);
     }
 
     #[test]

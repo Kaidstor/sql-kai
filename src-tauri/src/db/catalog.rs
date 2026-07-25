@@ -7,8 +7,18 @@ pub fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
+/// A backslash forces the E'…' form: with `standard_conforming_strings = off`
+/// (one server config or `ALTER ROLE SET` away) a plain '…' reads backslashes as
+/// escapes, which changes the value or breaks the literal. Catalog queries pass
+/// their own identifiers here, but MCP `parameters` pass values from a model —
+/// the one caller whose input nobody vetted.
 pub fn quote_literal(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    let escaped = s.replace('\'', "''");
+    if escaped.contains('\\') {
+        format!("E'{}'", escaped.replace('\\', "\\\\"))
+    } else {
+        format!("'{escaped}'")
+    }
 }
 
 /// quote_literal()'d qualified name, ready for a `::regclass` cast.

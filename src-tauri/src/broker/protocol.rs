@@ -30,18 +30,7 @@ pub enum Method {
     Sessions,
     /// Выполнить SQL на cli-сессии профиля (открывается лениво, переживает
     /// выход sql-kai). `write` временно снимает session-wide read-only.
-    Query {
-        #[serde(rename = "profileId")]
-        profile_id: String,
-        sql: String,
-        #[serde(default = "default_max_rows", rename = "maxRows")]
-        max_rows: usize,
-        #[serde(default)]
-        write: bool,
-        /// Вернуть и типы колонок (Parse) — для типизированного --json в sql-kai.
-        #[serde(default, rename = "withTypes")]
-        with_types: bool,
-    },
+    Query(QueryParams),
     /// Отменить запрос, бегущий на cli-сессии профиля.
     Cancel {
         #[serde(rename = "profileId")]
@@ -94,6 +83,30 @@ pub enum GuiOpen {
         profile_id: String,
         sql: String,
     },
+}
+
+/// Параметры метода `query` — отдельной структурой, чтобы их можно было
+/// протащить до обработчика одним аргументом.
+#[derive(Deserialize)]
+pub struct QueryParams {
+    #[serde(rename = "profileId")]
+    pub profile_id: String,
+    pub sql: String,
+    #[serde(default = "default_max_rows", rename = "maxRows")]
+    pub max_rows: usize,
+    #[serde(default)]
+    pub write: bool,
+    /// Вернуть и типы колонок (Parse) — для типизированного --json в sql-kai.
+    #[serde(default, rename = "withTypes")]
+    pub with_types: bool,
+    /// Клиент уже провёл человека через прод-барьер (ввод имени профиля,
+    /// `--prod-write` или env). Блокировка, а не авторизация: сервер живёт в
+    /// GUI без tty и спросить сам не может, поэтому верит клиенту на слово —
+    /// но `write` в production-профиль без этого поля не проходит, и обойти
+    /// барьер, просто позвав сокет (старым sql-kai или своим скриптом), больше
+    /// нельзя. См. `session::prod` на стороне cli.
+    #[serde(default, rename = "prodWriteAuthorized")]
+    pub prod_write_authorized: bool,
 }
 
 pub(super) fn default_max_rows() -> usize {
@@ -155,18 +168,14 @@ mod tests {
         let req: Request = serde_json::from_str(line).unwrap();
         assert_eq!(req.id, 7);
         match req.method {
-            Method::Query {
-                profile_id,
-                sql,
-                max_rows,
-                write,
-                with_types,
-            } => {
-                assert_eq!(profile_id, "p1");
-                assert_eq!(sql, "SELECT 1");
-                assert_eq!(max_rows, 1000); // default
-                assert!(write);
-                assert!(!with_types);
+            Method::Query(q) => {
+                assert_eq!(q.profile_id, "p1");
+                assert_eq!(q.sql, "SELECT 1");
+                assert_eq!(q.max_rows, 1000); // default
+                assert!(q.write);
+                assert!(!q.with_types);
+                // старый клиент поля не присылает — прод-блокировка закрыта
+                assert!(!q.prod_write_authorized);
             }
             _ => panic!("wrong method"),
         }

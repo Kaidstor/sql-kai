@@ -21,3 +21,7 @@ pub const SSH_MUX_TTL: &str = "SQL_KAI_SSH_MUX_TTL";
 /// подтверждения: `1` — любой прод-профиль, иначе список имён/id через запятую
 /// (см. `session::prod`). Для MCP это единственный способ разрешить запись.
 pub const ALLOW_PROD_WRITE: &str = "SQL_KAI_ALLOW_PROD_WRITE";
+
+/// То же для выгрузки боевых данных на эту машину (`fork --data` с
+/// production-профиля): значения разбираются так же, как у [`ALLOW_PROD_WRITE`].
+pub const ALLOW_PROD_DUMP: &str = "SQL_KAI_ALLOW_PROD_DUMP";

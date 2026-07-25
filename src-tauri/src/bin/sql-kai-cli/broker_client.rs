@@ -203,7 +203,7 @@ impl BrokerClient {
                 // связи. Уехав в `_`, он выглядел бы как «брокер недоступен», и
                 // CLI молча повторил бы тот же SQL автономной сессией — то есть
                 // мимо только что вынесенного запрета.
-                "query" | "read_only_tx" => BrokerError::Query {
+                "query" | "read_only_tx" | "prod_write" => BrokerError::Query {
                     message: err.to_string(),
                     sqlstate: v
                         .get("sqlstate")
@@ -234,8 +234,8 @@ impl BrokerClient {
         write: bool,
         with_types: bool,
     ) -> Result<BrokerQuery, BrokerError> {
-        // Сессию держит сервер, но политику прода решает клиент: тут сходятся
-        // оба его потребителя — `sql-kai q` и MCP-tool query. Отказ отдаём как
+        // Человека про прод спрашивает клиент: тут сходятся оба потребителя —
+        // `sql-kai q` и MCP-tool query, а у сервера нет tty. Отказ отдаём как
         // Query — это финальный ответ, автономный путь его не переигрывает.
         if write {
             session::guard_prod_write_by_id(profile_id).map_err(|e| BrokerError::Query {
@@ -252,6 +252,11 @@ impl BrokerClient {
                     "maxRows": max_rows,
                     "write": write,
                     "withTypes": with_types,
+                    // Дошли сюда с write = true — барьер выше пройден. Сервер
+                    // держит свой чек и без этого подтверждения в prod-профиль
+                    // не пишет: иначе барьер обходился бы прямым запросом к
+                    // сокету, мимо всего этого файла.
+                    "prodWriteAuthorized": write,
                 }),
             )
             .await?;

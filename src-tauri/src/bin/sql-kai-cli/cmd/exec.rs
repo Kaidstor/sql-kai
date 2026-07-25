@@ -56,6 +56,37 @@ printf '%s' "${KAI_SQL_B64:-}" | base64 -d > "$SQLF"
 $D exec -i "$C" psql -U "$U" -d "$DB" -v ON_ERROR_STOP=1 ${KAI_PSQL_OPTS:-} -f - < "$SQLF"
 "#;
 
+/// Безопасна ли мета-команда psql на read-only пути. Разрешаем describe-семейство
+/// (`\d`…, все они только читают каталог) и переключатели вывода. Всё остальное
+/// отвергаем поимённо: `\c`/`\connect` теряет транзакцию, `\i`/`\ir` подключает
+/// непроверенный файл, `\gexec` выполняет полученный текст, `\o`/`\g`/`\copy`/`\w`
+/// пишут за пределы базы, `\set` меняет поведение самого psql (AUTOCOMMIT).
+fn psql_meta_read_only(name: &str) -> bool {
+    name.starts_with('d')
+        || matches!(
+            name,
+            "l" | "l+"
+                | "z"
+                | "sf"
+                | "sf+"
+                | "sv"
+                | "sv+"
+                | "x"
+                | "a"
+                | "t"
+                | "f"
+                | "H"
+                | "C"
+                | "pset"
+                | "timing"
+                | "echo"
+                | "qecho"
+                | "warn"
+                | "conninfo"
+                | "encoding"
+        )
+}
+
 pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
     let mut sql = input::collect_sql(&a.commands, &a.files)?;
     let mut psql_opts: Vec<&str> = Vec::new();
@@ -74,6 +105,24 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
                  действительно должен менять данные."
                     .into(),
             ));
+        }
+        // Гейт выше видит только SQL, а psql читает из того же потока свои
+        // мета-команды: `\c` переподключается (read-only транзакция теряется
+        // целиком), `\i` подключает файл, содержимое которого через гейт не
+        // проходило, `\gexec` выполняет как SQL то, что вернул запрос, `\!`
+        // уходит в шелл контейнера. На read-only пути оставляем только describe
+        // и переключатели вывода.
+        let forbidden: Vec<String> = sql_kai_lib::db::psql_meta_commands(&sql)
+            .into_iter()
+            .filter(|name| !psql_meta_read_only(name))
+            .collect();
+        if !forbidden.is_empty() {
+            return Err(AppError::Msg(format!(
+                "read-only режим: мета-команды psql (\\{}) выводят батч из read-only \
+                 транзакции либо тащат SQL и шелл мимо проверки. Оставь SQL и describe \
+                 (\\d…, \\l, \\x, \\timing) или добавь --write, если запись согласована.",
+                forbidden.join(", \\")
+            )));
         }
         psql_opts.push("--single-transaction");
         sql = format!("SET TRANSACTION READ ONLY;\n{sql}");
