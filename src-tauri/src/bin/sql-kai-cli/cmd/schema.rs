@@ -25,7 +25,7 @@ use crate::session;
 
 /// Дамп отдаёт строку на каждую колонку/индекс/констрейнт, поэтому
 /// `db::query_rows` с его 10k упёрся бы уже на паре сотен таблиц.
-const MAX_ROWS: usize = 200_000;
+pub(crate) const MAX_ROWS: usize = 200_000;
 
 #[derive(Args)]
 pub struct SchemaArgs {
@@ -52,9 +52,11 @@ pub struct SchemaArgs {
     verbose: bool,
 }
 
+/// Дерево дампа. `pub(crate)`, потому что тем же деревом отвечает MCP-tool
+/// `schema` (см. `cmd::mcp`) — рендер и разбор каталога у них общие.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SchemaDump {
+pub(crate) struct SchemaDump {
     database: String,
     server_version: String,
     schemas: Vec<SchemaInfo>,
@@ -204,13 +206,7 @@ pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
 
     let sql = db::schema_dump_sql(&opts);
     let exec = db::execute(&connected.session.client, &sql, MAX_ROWS).await?;
-    if exec.results.len() != db::SCHEMA_DUMP_PARTS {
-        return Err(AppError::Msg(format!(
-            "каталог вернул {} наборов строк вместо {} — дамп неполный",
-            exec.results.len(),
-            db::SCHEMA_DUMP_PARTS
-        )));
-    }
+    check_parts(&exec.results)?;
     if exec.results.iter().any(|r| r.truncated) {
         eprintln!("sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema");
     }
@@ -219,15 +215,28 @@ pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
     if a.json {
         println!("{}", serde_json::to_string_pretty(&dump).unwrap());
     } else {
-        print!("{}", render_text(&dump, &a));
+        print!("{}", render_text(&dump, &opts));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Форма ответа каталога: `build_dump` разбирает наборы строк по позиции, так
+/// что расхождение длины — это не «пустой дамп», а перекос разбора.
+pub(crate) fn check_parts(results: &[db::StatementResult]) -> Result<(), AppError> {
+    if results.len() == db::SCHEMA_DUMP_PARTS {
+        return Ok(());
+    }
+    Err(AppError::Msg(format!(
+        "каталог вернул {} наборов строк вместо {} — дамп неполный",
+        results.len(),
+        db::SCHEMA_DUMP_PARTS
+    )))
 }
 
 /// Семь наборов строк из `db::schema_dump_sql` -> дерево схем. Колонки,
 /// констрейнты, индексы и триггеры приезжают плоскими списками и подшиваются
 /// к своему отношению по паре (схема, имя).
-fn build_dump(
+pub(crate) fn build_dump(
     database: &str,
     server_version: &str,
     res: &[db::StatementResult],
@@ -401,23 +410,25 @@ fn index_tail(def: &str) -> &str {
     }
 }
 
-fn render_text(dump: &SchemaDump, a: &SchemaArgs) -> String {
+/// Текстовый дамп. Опции берутся из `db::SchemaOptions`, а не из `SchemaArgs`,
+/// чтобы тем же рендером отвечал MCP-tool `schema` (флаги там — поля JSON).
+pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "-- база: {}   сервер: {}\n",
         dump.database, dump.server_version
     ));
-    if let Some(s) = &a.schema {
+    if let Some(s) = &o.schema {
         out.push_str(&format!("-- только схема: {s}\n"));
     }
     let mut hidden: Vec<&str> = Vec::new();
-    if !a.internal {
+    if !o.internal {
         hidden.push("системные схемы, объекты расширений, партиции (--internal)");
     }
-    if !a.definitions {
+    if !o.definitions {
         hidden.push("тела вьюх и функций (--definitions)");
     }
-    if !a.comments {
+    if !o.comments {
         hidden.push("комментарии (--comments)");
     }
     if !hidden.is_empty() {
@@ -680,17 +691,12 @@ mod tests {
             ]]),
         ];
         let dump = build_dump("mydb", "16.2", &res);
-        let a = SchemaArgs {
-            alias: "x".into(),
-            schema: None,
-            internal: false,
+        let o = db::SchemaOptions {
             definitions: true,
             comments: true,
-            json: false,
-            password_env: None,
-            verbose: false,
+            ..Default::default()
         };
-        let text = render_text(&dump, &a);
+        let text = render_text(&dump, &o);
 
         assert!(text.contains("== схема public =="));
         assert!(text.contains("table public.users"));

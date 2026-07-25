@@ -28,6 +28,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::cmd::introspect::split_table;
 use crate::cmd::mcp_setup::{self, InstallArgs, StatusArgs};
+use crate::cmd::schema as schema_cmd;
 use crate::{broker_client, redact, session};
 
 /// Версия MCP, которую сервер заявляет, если клиентскую не знает.
@@ -228,9 +229,31 @@ impl Server {
                     .map(|n| n as usize)
                     .unwrap_or(DEFAULT_MAX_ROWS);
                 let write = args.get("write").and_then(Value::as_bool).unwrap_or(false);
+                // Барьер прода — до брокера и до записи в историю: у MCP нет
+                // TTY, поэтому спросить некого и разрешение может прийти только
+                // из SQL_KAI_ALLOW_PROD_WRITE в конфиге MCP-клиента. Второй
+                // (страховочный) чек-пойнт живёт в BrokerClient::query.
+                if write {
+                    session::guard_prod_write(&profile).map_err(|e| e.to_string())?;
+                }
                 let q = run_query(&profile, &sql, max_rows, write, true, true).await?;
                 let structured = query_structured(&sql, &q);
                 Ok(ToolOutput::new(q.text, structured))
+            }
+            "schema" => {
+                let profile = self.target(args)?;
+                let opts = db::SchemaOptions {
+                    schema: args
+                        .get("schema")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                    internal: flag(args, "internal"),
+                    definitions: flag(args, "definitions"),
+                    comments: flag(args, "comments"),
+                };
+                schema_output(&profile, &opts).await
             }
             "tables" => {
                 let profile = self.target(args)?;
@@ -440,6 +463,104 @@ fn query_output_schema() -> Value {
     })
 }
 
+/// outputSchema tool'а `schema` — дерево `cmd::schema::SchemaDump` (camelCase).
+fn schema_output_schema() -> Value {
+    let obj = |props: Value, required: Value| json!({
+        "type": "object", "properties": props, "required": required,
+    });
+    let str_or_null = json!({ "type": ["string", "null"] });
+    let relation = obj(
+        json!({
+            "schema": { "type": "string" },
+            "name": { "type": "string" },
+            "kind": {
+                "type": "string",
+                "enum": ["table", "partitioned", "view", "matview", "foreign"],
+            },
+            "comment": str_or_null,
+            "partitionKey": str_or_null,
+            "partitionOf": str_or_null,
+            "partitions": { "type": ["integer", "null"], "description": "Leaf partitions of a partitioned table (hidden unless `internal`)" },
+            "rowSecurity": { "type": "boolean" },
+            "definition": { "type": ["string", "null"], "description": "View body; only with `definitions`" },
+            "columns": { "type": "array", "items": obj(json!({
+                "name": { "type": "string" },
+                "type": { "type": "string" },
+                "nullable": { "type": "boolean" },
+                "default": str_or_null,
+                "identity": str_or_null,
+                "generated": str_or_null,
+                "comment": str_or_null,
+            }), json!(["name", "type", "nullable"])) },
+            "constraints": { "type": "array", "items": obj(json!({
+                "name": { "type": "string" },
+                "kind": {
+                    "type": "string",
+                    "enum": ["primary key", "unique", "foreign key", "exclude", "check"],
+                },
+                "definition": { "type": "string" },
+            }), json!(["name", "kind", "definition"])) },
+            "indexes": { "type": "array", "items": obj(json!({
+                "name": { "type": "string" },
+                "unique": { "type": "boolean" },
+                "definition": { "type": "string" },
+            }), json!(["name", "unique", "definition"])) },
+            "triggers": { "type": "array", "items": obj(json!({
+                "name": { "type": "string" },
+                "timing": { "type": "string" },
+                "events": { "type": "string" },
+                "function": { "type": "string" },
+                "enabled": { "type": "boolean" },
+            }), json!(["name", "timing", "events", "function", "enabled"])) },
+        }),
+        json!(["schema", "name", "kind", "columns"]),
+    );
+    // Форма отношения расписана один раз, у `tables`: развёрнутая четырежды,
+    // она весит больше, чем весь остальной tools/list. Остальные три массива
+    // ссылаются на неё словами — `$ref` тут стоил бы совместимости с
+    // клиентами, которые не резолвят ссылки в outputSchema.
+    let same_as_tables = |what: &str| json!({
+        "type": "array",
+        "description": format!("{what}; same object shape as `tables`"),
+        "items": { "type": "object" },
+    });
+    json!({
+        "type": "object",
+        "properties": {
+            "database": { "type": "string" },
+            "serverVersion": { "type": "string" },
+            "schemas": { "type": "array", "items": obj(
+                json!({
+                    "name": { "type": "string" },
+                    "tables": { "type": "array", "items": relation },
+                    "views": same_as_tables("Views"),
+                    "materializedViews": same_as_tables("Materialized views"),
+                    "foreignTables": same_as_tables("Foreign tables"),
+                    "enums": { "type": "array", "items": obj(json!({
+                        "schema": { "type": "string" },
+                        "name": { "type": "string" },
+                        "values": { "type": "array", "items": { "type": "string" } },
+                        "comment": str_or_null,
+                    }), json!(["schema", "name", "values"])) },
+                    "routines": { "type": "array", "items": obj(json!({
+                        "schema": { "type": "string" },
+                        "name": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["function", "procedure"] },
+                        "arguments": { "type": "string" },
+                        "returns": str_or_null,
+                        "language": { "type": "string" },
+                        "volatility": { "type": "string" },
+                        "definition": { "type": ["string", "null"], "description": "Source; only with `definitions`" },
+                        "comment": str_or_null,
+                    }), json!(["schema", "name", "kind", "arguments", "language"])) },
+                }),
+                json!(["name"]),
+            ) },
+        },
+        "required": ["database", "schemas"],
+    })
+}
+
 fn tool_definitions(multi: bool) -> Value {
     let table_schema = json!({
         "type": "object",
@@ -459,7 +580,7 @@ fn tool_definitions(multi: bool) -> Value {
     let mut tools = vec![
         json!({
             "name": "query",
-            "description": "Run SQL in a PostgreSQL database of sql-kai. The session is READ-ONLY unless `write` is set — set it only when the user explicitly asked to modify data. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output.",
+            "description": "Run SQL in a PostgreSQL database of sql-kai. The session is READ-ONLY unless `write` is set — set it only when the user explicitly asked to modify data. Databases marked `production` (see the `profiles` tool) reject `write` from here no matter what: the user has to allow it out-of-band via SQL_KAI_ALLOW_PROD_WRITE in this server's environment, so do not retry a refusal — report it and let the user decide. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -478,8 +599,23 @@ fn tool_definitions(multi: bool) -> Value {
             "annotations": annotations("Run SQL", false, true, false),
         }),
         json!({
+            "name": "schema",
+            "description": "The whole schema of the database in ONE call: tables (including partitioned and foreign ones), views and materialized views with their columns, types, nullability, defaults, constraints, indexes and triggers, plus enum types, functions and procedures. Prefer this over walking tables → columns/ddl/indexes table by table: it is a single round-trip and one consistent catalog snapshot, at a cost that does not grow with the number of tables. System schemas, extension-owned objects (postgis, timescaledb), leaf partitions, view/function bodies and COMMENT ON texts are left out by default — the flags below bring them back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "schema": { "type": "string", "description": "Restrict the dump to this schema (a system one is allowed, e.g. pg_catalog); default: every non-system schema" },
+                    "definitions": { "type": "boolean", "description": "Include view bodies and function sources (default false)" },
+                    "comments": { "type": "boolean", "description": "Include COMMENT ON texts of tables, columns, types and routines (default false)" },
+                    "internal": { "type": "boolean", "description": "Include system schemas, extension-owned objects and leaf partitions (default false) — usually a lot of noise" }
+                },
+            },
+            "outputSchema": schema_output_schema(),
+            "annotations": annotations("Database schema", true, false, true),
+        }),
+        json!({
             "name": "tables",
-            "description": "List tables, views and materialized views of the database. `kind` is pg_class.relkind: r=table, v=view, m=materialized view, p=partitioned table, f=foreign table.",
+            "description": "List tables, views and materialized views of the database — names only. For the actual structure prefer the `schema` tool, which returns everything in one call. `kind` is pg_class.relkind: r=table, v=view, m=materialized view, p=partitioned table, f=foreign table.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -604,6 +740,50 @@ fn last_gui_profile() -> Option<Profile> {
         .filter_map(|(id, m)| m.gui.map(|at| (id.clone(), at)))
         .max_by_key(|(_, at)| *at)?;
     store::load_profiles().ok()?.into_iter().find(|p| p.id == id)
+}
+
+/// Булев аргумент tool'а; отсутствие и `null` — false.
+fn flag(args: &Value, name: &str) -> bool {
+    args.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Дамп всей схемы силами сервера сессий — тот же батч каталожных запросов,
+/// что у `sql-kai schema` (см. [`crate::cmd::schema`]), и тот же рендер.
+///
+/// Ради этого tool всё и затевалось: без него модель делает `tables`, а затем
+/// `columns`/`indexes`/`ddl` на каждую таблицу — десятки round-trip'ов и
+/// каталог, собранный из разных моментов времени.
+async fn schema_output(profile: &Profile, opts: &db::SchemaOptions) -> Result<ToolOutput, String> {
+    // Версия сервера едет тем же round-trip'ом (в CLI она приходит из
+    // `SHOW server_version` при открытии сессии, а у брокера сессия уже
+    // открыта и наружу версию не отдаёт).
+    let sql = format!("SHOW server_version;\n{}", db::schema_dump_sql(opts));
+    let mut b = connect_broker().await?;
+    let res = b
+        .query(&profile.id, &sql, schema_cmd::MAX_ROWS, false, false)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut results = res.exec.results;
+    if results.is_empty() {
+        return Err("the catalog batch returned no result sets".to_string());
+    }
+    let server_version = results
+        .remove(0)
+        .rows
+        .first()
+        .and_then(|row| row.first().cloned())
+        .flatten()
+        .unwrap_or_default();
+    schema_cmd::check_parts(&results).map_err(|e| e.to_string())?;
+    let truncated = results.iter().any(|r| r.truncated);
+
+    let dump = schema_cmd::build_dump(&profile.database, &server_version, &results);
+    let mut text = schema_cmd::render_text(&dump, opts);
+    if truncated {
+        text.push_str("-- ВНИМАНИЕ: каталог обрезан по лимиту строк — дамп неполный, сузь вывод параметром schema\n");
+    }
+    let structured = serde_json::to_value(&dump).map_err(|e| e.to_string())?;
+    Ok(ToolOutput::new(text, structured))
 }
 
 fn profiles_output() -> Result<ToolOutput, String> {
@@ -1003,6 +1183,30 @@ mod tests {
         assert!(sql_argument(&json!({})).is_err());
     }
 
+    /// `schema` — главный tool сервера: он должен быть в обоих режимах, быть
+    /// read-only и объявлять все четыре фильтра дампа.
+    #[test]
+    fn schema_tool_is_declared_read_only_with_its_filters() {
+        for multi in [false, true] {
+            let tools = tool_definitions(multi);
+            let t = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "schema")
+                .expect("tool schema");
+            assert_eq!(t["annotations"]["readOnlyHint"], true);
+            assert_eq!(t["annotations"]["destructiveHint"], false);
+            let props = &t["inputSchema"]["properties"];
+            for f in ["schema", "definitions", "comments", "internal"] {
+                assert!(props[f].is_object(), "{f} missing (multi={multi})");
+            }
+            // профиль появляется только в мультирежиме — как у остальных tools
+            assert_eq!(props.get("profile").is_some(), multi);
+            assert!(t["outputSchema"]["properties"]["schemas"].is_object());
+        }
+    }
+
     #[test]
     fn multi_mode_adds_profile_argument_and_tool() {
         let pinned = tool_definitions(false);
@@ -1079,8 +1283,7 @@ mod tests {
 
     #[test]
     fn command_tag_reconstructs_postgres_tags() {
-        let mut r = StatementResult::default();
-        r.rows_affected = Some(3);
+        let r = StatementResult { rows_affected: Some(3), ..Default::default() };
         assert_eq!(command_tag(Some("UPDATE t SET a = 1"), &r), json!("UPDATE 3"));
         assert_eq!(command_tag(Some("INSERT INTO t VALUES (1)"), &r), json!("INSERT 0 3"));
         assert_eq!(command_tag(Some("CREATE TABLE t ()"), &r), json!("CREATE TABLE"));

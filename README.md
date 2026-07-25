@@ -111,12 +111,16 @@ npx skills add https://github.com/Kaidstor/sql-kai --skill sql-kai
 документация — [docs/sql-kai.html](docs/sql-kai.html).
 
 ```bash
+sql-kai init                        # первичная настройка: PATH, vault trust, MCP, автодополнение
+sql-kai completion zsh|bash|fish    # скрипт автодополнения (дополняет и имена профилей)
 sql-kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/--json/--csv/-t
 sql-kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
 sql-kai import [--file f.json]      # массовый импорт профилей из JSON (пароли → vault)
 sql-kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
 sql-kai schema <alias> [--json]     # вся схема базы одним дампом (для агентов)
 sql-kai logs <alias> [-f] [-n 200]  # журнал postgres профиля: ssh → docker logs
+sql-kai fork <alias> [новое-имя]    # копия базы в локальном docker + профиль на неё
+sql-kai mcp install [клиент]        # прописать MCP-сервер в конфиг агента (mcp status — где уже)
 sql-kai tables|columns|ddl|indexes <alias> [schema.]table
 sql-kai rotate <alias> --from-sec   # ротация пароля роли через sec + ALTER ROLE
 sql-kai doctor                      # сохранённые пароли ещё аутентифицируются?
@@ -138,6 +142,11 @@ sql-kai holder stop                 # погасить фоновый держа
   Без TTY (MCP, CI, пайп) остаётся только env, поэтому по умолчанию агент в прод не пишет.
   Барьер общий для `q`, `saved run`, `rotate`, MCP-tool `query` и `exec` на ssh-хост
   prod-профиля; чтение ничего не спрашивает.
+- **MCP-сервер для агентов** — `sql-kai mcp` (без алиаса — все профили сразу,
+  с алиасом — закреплён за одной базой); подключается одной командой
+  `sql-kai mcp install <клиент>`. Главный tool — `schema`: вся схема базы за один
+  вызов вместо обхода `tables` → `columns`/`ddl`/`indexes` по каждой таблице.
+  Подробности — в [docs/sql-kai.html](docs/sql-kai.html#mcp).
 - Мультистейтмент — одна неявная транзакция: ошибка в середине откатывает всё.
 - `sql-kai discover` сам находит postgres-контейнер на хосте (`docker ps` → env
   контейнера → published-порт или bridge-IP) и сохраняет профиль; пароль уходит

@@ -97,12 +97,17 @@ Intel-мак или Linux — собирать из исходников (раз
 <h2 id="commands">Команды</h2>
 <table>
 <tr><th>Команда</th><th>Что делает</th></tr>
+<tr><td><code>sql-kai init</code></td><td>Первичная настройка в четыре шага, каждый спрашивает отдельно: симлинк <code>sql-kai</code> в PATH (<code>--bin-dir</code>, по умолчанию <code>~/.local/bin</code>), <code>vault trust</code>, <code>mcp install</code>, автодополнение шелла. Без TTY ничего не меняет — печатает список ручных команд. <code>--skip-if-configured</code> — молча выйти, если всё уже настроено</td></tr>
+<tr><td><code>sql-kai completion [zsh|bash|fish]</code></td><td>Скрипт автодополнения (шелл по умолчанию — из <code>$SHELL</code>): подкоманды и флаги от clap плюс динамическое дополнение имён профилей и групп</td></tr>
 <tr><td><code>sql-kai &lt;alias&gt; -c "SQL"</code></td><td>Выполнить SQL в базе профиля (= <code>sql-kai q</code>). SQL: <code>-c</code> (повторяемо), <code>-f file.sql</code>, stdin</td></tr>
 <tr><td><code>sql-kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
 <tr><td><code>sql-kai import [--file f.json]</code></td><td>Массовый импорт профилей из JSON-массива (stdin/файл): пароли и ssh-passphrase → vault. Флаги <code>--dry-run</code>, <code>--replace</code> (перезаписать по имени)</td></tr>
 <tr><td><code>sql-kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
 <tr><td><code>sql-kai schema &lt;alias&gt;</code></td><td>Вся схема базы одним дампом (константное число каталожных запросов вместо обхода по таблицам): таблицы/партиционированные/foreign, вьюхи и матвьюхи с колонками, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. По умолчанию без системных схем, объектов расширений (postgis/timescale) и листовых партиций. Флаги: <code>--schema &lt;name&gt;</code>, <code>--internal</code>, <code>--definitions</code> (тела вьюх/функций), <code>--comments</code>, <code>--json</code></td></tr>
 <tr><td><code>sql-kai logs &lt;alias&gt; [-n 200] [-f]</code></td><td>Журнал postgres-сервера профиля: ssh на его хост → <code>docker logs</code> контейнера. Флаги <code>--since 10m</code>, <code>--until</code>, <code>--timestamps</code>, <code>--container</code>; строки контейнера идут в stdout (можно <code>| grep</code>)</td></tr>
+<tr><td><code>sql-kai fork &lt;alias&gt; [новое-имя]</code></td><td>Копия базы профиля в локальном docker (<code>pg_dump</code> из read-only-сессии → <code>postgres:&lt;мажор источника&gt;</code> на 127.0.0.1) плюс профиль на неё: песочница под миграции вместо экспериментов на проде. По умолчанию только схема, <code>--data</code> — с данными; <code>--image</code>, <code>--port</code>, <code>--replace</code>, <code>--yes</code>, <code>--dry-run</code>. Форк не наследует метку <code>production</code>; снос — <code>docker rm -f</code></td></tr>
+<tr><td><code>sql-kai mcp [&lt;alias&gt;]</code></td><td>MCP-сервер (stdio) для AI-агентов — см. «MCP» ниже. С алиасом закреплён за одной базой, без алиаса обслуживает все профили</td></tr>
+<tr><td><code>sql-kai mcp install [клиент]</code> / <code>sql-kai mcp status</code></td><td>Прописать сервер в конфиг MCP-клиента (claude-code, claude-desktop, codex, cursor, vscode, windsurf, gemini) — слияние без затирания чужих серверов, <code>.bak</code>, <code>--dry-run</code>, <code>--force</code>, <code>--profile</code>. Без аргумента-клиента печатается только таблица клиентов и путей. <code>status</code> — где сервер уже прописан</td></tr>
 <tr><td><code>sql-kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
 <tr><td><code>sql-kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
 <tr><td><code>sql-kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
@@ -199,6 +204,37 @@ prod-db: ssh на хост → найти контейнер → <code>docker ex
 <p>Когда нужен: до базы не достучаться туннелем (порт не публикуется и IP контейнера
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
+
+<h2 id="mcp">MCP: sql-kai как инструмент агента</h2>
+<p><code>sql-kai mcp [&lt;alias&gt;]</code> — MCP-сервер поверх stdio (newline-delimited JSON-RPC на
+stdout, диагностика в stderr). Запросы идут через тот же сервер сессий, что и обычный CLI:
+vault уже разблокирован, туннели подняты, сессия по умолчанию read-only. С алиасом сервер
+закреплён за одной базой (эту форму запускает панель агента в GUI); без алиаса он обслуживает
+все профили — появляется tool <code>profiles</code>, а у остальных tools необязательный
+параметр <code>profile</code>, так что в конфиге клиента хватает одной записи на все базы.</p>
+<table>
+<tr><th>Tool</th><th>Что делает</th></tr>
+<tr><td><code>schema</code></td><td><strong>Основной инструмент интроспекции:</strong> вся схема базы за один вызов — таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи с колонками, типами, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. Одно обращение к каталогу вместо обхода <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой таблице, и один консистентный снимок. Параметры: <code>schema</code>, <code>definitions</code>, <code>comments</code>, <code>internal</code></td></tr>
+<tr><td><code>query</code></td><td>SQL; <code>parameters</code> для <code>$1..$N</code> (экранируются как литералы), <code>file</code> — выполнить .sql с диска, <code>maxRows</code>, <code>write</code>. Чувствительные колонки маскируются</td></tr>
+<tr><td><code>profiles</code></td><td>Список баз (только в мультипрофильном режиме): имя, id, группа, база, хост, метка <code>production</code></td></tr>
+<tr><td><code>tables</code> / <code>columns</code> / <code>ddl</code> / <code>indexes</code></td><td>Точечная интроспекция, когда весь дамп не нужен</td></tr>
+<tr><td><code>open_table</code> / <code>open_query</code></td><td>Открыть таблицу или готовый (невыполненный) запрос вкладкой в GUI — «покажи мне это»</td></tr>
+<tr><td><code>selection</code></td><td>Что пользователь сейчас видит и выделил в GUI — для реплик вроде «эта строка», «выделенные записи»</td></tr>
+</table>
+<p>У каждого tool'а объявлены <code>annotations</code> (<code>readOnlyHint</code>,
+<code>destructiveHint</code>, …) и <code>outputSchema</code>: ответ приходит и текстом
+(<code>content</code>), и разобранным деревом (<code>structuredContent</code>).</p>
+<p><strong>Запись в production через MCP не проходит по умолчанию.</strong> У сервера нет TTY
+(stdin занят протоколом), спросить человека невозможно, поэтому <code>"write": true</code> для
+профиля с меткой production разрешает только <code>SQL_KAI_ALLOW_PROD_WRITE</code> в окружении
+самого сервера — то есть в конфиге MCP-клиента, куда модель не пишет. См. «Запись в
+production».</p>
+<p><code>sql-kai mcp install [клиент]</code> прописывает сервер в конфиг клиента
+(claude-code, claude-desktop, codex, cursor, vscode, windsurf, gemini): чужие серверы и чужие
+ключи файла сохраняются, перед записью делается <code>.bak</code>, запись атомарная и
+проверяется перечитыванием. Без аргумента-клиента печатается только таблица клиентов и путей;
+<code>--dry-run</code> показывает, что будет записано. <code>sql-kai mcp status</code> — где
+сервер уже прописан.</p>
 
 <h2 id="sec">Интеграция с sec</h2>
 <p><a href="https://go.dev">sec</a> — отдельный агент-безопасный менеджер секретов
