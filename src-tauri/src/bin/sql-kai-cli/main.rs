@@ -26,6 +26,7 @@ use cmd::completion::CompletionArgs;
 use cmd::discover::DiscoverArgs;
 use cmd::doctor::DoctorArgs;
 use cmd::exec::ExecArgs;
+use cmd::fork::ForkArgs;
 use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
@@ -83,6 +84,8 @@ enum Cmd {
     Discover(DiscoverArgs),
     /// Массовый импорт профилей из JSON (stdin/файл), пароли — в vault
     Import(ImportArgs),
+    /// Копия базы профиля в локальном docker + профиль на неё (миграции — не на проде)
+    Fork(ForkArgs),
     /// Профили (общие с GUI)
     Profiles {
         #[command(subcommand)]
@@ -184,6 +187,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Logs(a) => cmd::logs::run(a),
         Cmd::Discover(a) => cmd::discover::run(a).await,
         Cmd::Import(a) => cmd::import::run(a).await,
+        Cmd::Fork(a) => cmd::fork::run(a).await,
         Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { filter: None, fmt: Default::default() })).await,
         Cmd::Schema(a) => cmd::schema::run(a).await,
         Cmd::Tables(a) => cmd::introspect::tables(a).await,
