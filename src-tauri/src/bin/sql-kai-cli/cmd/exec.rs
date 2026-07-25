@@ -101,8 +101,22 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
             return Err(AppError::Msg(
                 "read-only режим: батч вышел бы из read-only транзакции или снял бы с неё \
                  read-only (COMMIT/ROLLBACK/END/ABORT/PREPARE TRANSACTION/DISCARD/\
-                 SET TRANSACTION/SET …transaction_read_only). Добавь --write, если он \
-                 действительно должен менять данные."
+                 SET TRANSACTION/SET …transaction_read_only, включая форму set_config()). \
+                 Добавь --write, если он действительно должен менять данные."
+                    .into(),
+            ));
+        }
+        // Read-only транзакция ограничивает запись в базу — и только её. `COPY
+        // … TO PROGRAM` запускает шелл на сервере, `COPY … TO '/path'` и
+        // lo_export пишут его файловую систему, и ни одно из этого Postgres
+        // read-only-флагом не проверяет. Здесь это опаснее всего: psql внутри
+        // контейнера работает под POSTGRES_USER, обычно суперюзером.
+        if sql_kai_lib::db::reaches_server_side_io(&sql) {
+            return Err(AppError::Msg(
+                "read-only режим: батч пишет мимо базы — COPY … TO PROGRAM запускает шелл \
+                 на сервере, COPY … TO '/путь' и lo_export пишут его диск. Read-only \
+                 транзакция это не покрывает. Чтобы забрать данные, используй COPY … TO \
+                 STDOUT, а для записи на сервере — --write и осознанное решение."
                     .into(),
             ));
         }
@@ -138,6 +152,12 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
         ("KAI_PSQL_OPTS", psql_opts.join(" ")),
         ("KAI_VERBOSE", if a.verbose { "1" } else { "" }.to_string()),
         ("KAI_CONTAINER", a.container.clone().unwrap_or_default()),
+        // Неоднозначность контейнера здесь заканчивается отказом, а не выбором
+        // первого кандидата: на хосте с двумя кластерами (db_admin + db_app)
+        // «первый попавшийся» значит выполнить SQL не в той базе — а на
+        // exec-пути это ещё и запись. Предупреждение в stderr для этого слабо:
+        // при `--json | jq` его никто не читает. Выход — `--container`.
+        ("KAI_STRICT", "1".to_string()),
     ];
     let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{EXEC_TAIL}");
     let payload = remote::stdin_payload(&script, &env);

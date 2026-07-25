@@ -5,7 +5,9 @@ use serde::Serialize;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-use super::sqltext::{advance_tx, escapes_read_only_tx, split_statements, TxStatus};
+use super::sqltext::{
+    advance_tx, escapes_read_only_tx, reaches_server_side_io, split_statements, TxStatus,
+};
 use crate::error::AppError;
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -94,14 +96,19 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
     })
 }
 
-/// Runs `sql` inside an explicit `BEGIN READ ONLY` block — the only read-only
-/// guarantee Postgres actually enforces for a session we do not own the role of.
+/// Runs `sql` inside an explicit `BEGIN READ ONLY` block — the strongest
+/// read-only guarantee available on a session whose role we do not own.
 ///
 /// The session-wide `SET default_transaction_read_only = on` this used to rely
 /// on is a USERSET GUC: any batch could switch it off and write. Inside a
 /// read-only transaction Postgres refuses writes *and* `SET TRANSACTION READ
 /// WRITE` (SQLSTATE 25001), so the only way out is to end the block — which is
 /// what [`escapes_read_only_tx`] refuses up front.
+///
+/// What the block covers is *database* writes, and nothing wider: `COPY … TO
+/// PROGRAM`, `COPY … TO '/path'` and `lo_export` touch the server's shell and
+/// filesystem without ever setting the flag Postgres checks, so they need their
+/// own gate ([`reaches_server_side_io`]).
 ///
 /// `BEGIN`/`COMMIT` are sent as their own statements on purpose: folding them
 /// into the batch string would add their `CommandComplete` to [`ExecResult`]
@@ -116,8 +123,18 @@ pub async fn execute_read_only(
         return Err(AppError::Msg(
             "read-only session: the batch would leave the read-only transaction it \
              runs in, or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE \
-             TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only). Re-run \
-             with write access enabled if it is meant to modify data."
+             TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only, including \
+             its set_config() spelling). Re-run with write access enabled if it is \
+             meant to modify data."
+                .into(),
+        ));
+    }
+    if reaches_server_side_io(sql) {
+        return Err(AppError::Msg(
+            "read-only session: the batch would write outside the database — COPY … TO \
+             PROGRAM runs a shell on the server, COPY … TO '/path' and lo_export write \
+             its filesystem. A read-only transaction does not cover any of these. Use \
+             COPY … TO STDOUT to stream data back instead."
                 .into(),
         ));
     }

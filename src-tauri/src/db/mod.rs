@@ -23,6 +23,6 @@ pub use export::{
     export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportResult,
 };
 pub use sqltext::{
-    advance_tx, escapes_read_only_tx, is_tx_control_only, psql_meta_commands, split_statements,
-    TxStatus,
+    advance_tx, commits_tx, escapes_read_only_tx, is_tx_control_only, psql_meta_commands,
+    reaches_server_side_io, split_statements, TxStatus,
 };
