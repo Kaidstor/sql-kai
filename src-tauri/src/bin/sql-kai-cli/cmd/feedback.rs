@@ -60,13 +60,17 @@ fn row(key: &'static str, label: &'static str, value: impl Into<String>) -> Diag
 /// Домашний каталог в путях сворачивается в `~`: issue публичный, а имя
 /// пользователя в пути — лишняя деталь.
 fn tilde(path: &Path) -> String {
-    let full = path.display().to_string();
-    match dirs::home_dir() {
-        Some(home) => match full.strip_prefix(&home.display().to_string()) {
-            Some(rest) => format!("~{rest}"),
-            None => full,
-        },
-        None => full,
+    tilde_from(path, dirs::home_dir().as_deref())
+}
+
+/// Сворачивание по компонентам пути, а не по подстроке: у дома `/Users/kai`
+/// путь `/Users/kaiden/bin/sql-kai` иначе превращался в `~den/bin/sql-kai` —
+/// в отчёте оказывался путь, которого на машине нет.
+fn tilde_from(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 
@@ -327,7 +331,8 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fit_issue_url, issue_title, issue_url, percent_encode, DiagRow};
+    use super::{fit_issue_url, issue_title, issue_url, percent_encode, tilde_from, DiagRow};
+    use std::path::Path;
 
     fn diag_row() -> Vec<DiagRow> {
         vec![DiagRow {
@@ -369,6 +374,32 @@ mod tests {
         let title = issue_title(&long);
         assert_eq!(title.chars().count(), super::TITLE_CAP);
         assert!(title.ends_with('…'));
+    }
+
+    /// Дом сворачивается по границе компонента: сосед по /Users с домом в
+    /// префиксе имени не должен превращаться в `~den/…`.
+    #[test]
+    fn tilde_folds_home_by_path_components() {
+        let home = Path::new("/Users/kai");
+        assert_eq!(
+            tilde_from(Path::new("/Users/kai/.local/bin/sql-kai"), Some(home)),
+            "~/.local/bin/sql-kai"
+        );
+        assert_eq!(tilde_from(Path::new("/Users/kai"), Some(home)), "~");
+        // чужой дом с тем же префиксом остаётся как есть
+        assert_eq!(
+            tilde_from(Path::new("/Users/kaiden/bin/sql-kai"), Some(home)),
+            "/Users/kaiden/bin/sql-kai"
+        );
+        assert_eq!(
+            tilde_from(Path::new("/Applications/sql-kai.app"), Some(home)),
+            "/Applications/sql-kai.app"
+        );
+        // дома нет — путь без изменений
+        assert_eq!(
+            tilde_from(Path::new("/Users/kai/bin/sql-kai"), None),
+            "/Users/kai/bin/sql-kai"
+        );
     }
 
     #[test]

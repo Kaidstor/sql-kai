@@ -39,14 +39,15 @@ const APP_DIR: &str = "/Applications";
 /// и каждый вариант ниже подкреплён путём, который видно в выводе.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallKind {
-    /// Бинарь из бандла .app, и рядом лежит каталог каска Homebrew.
+    /// Бинарь из того самого бандла .app, который поставил каск Homebrew.
     BrewCask,
-    /// Бинарь из бандла .app без следов Homebrew: .dmg вручную (симлинк сделан
-    /// руками или кнопкой «Install CLI» в GUI).
+    /// Бинарь из бандла .app, который каску не принадлежит: .dmg вручную
+    /// (симлинк сделан руками или кнопкой «Install CLI» в GUI).
     Bundle,
     /// `~/.cargo/bin` — поставлен `cargo install`.
     Cargo,
-    /// `target/debug|release` — сборка из исходников.
+    /// `target/debug|release` — сборка из исходников (в т.ч. .app из
+    /// `target/release/bundle`).
     Dev,
     Unknown,
 }
@@ -87,16 +88,39 @@ fn caskroom_dir() -> Option<PathBuf> {
         .find(|p| p.is_dir())
 }
 
-/// `…/target/{debug,release}/sql-kai-cli` — рабочая сборка из дерева исходников
-/// (в т.ч. с общим CARGO_TARGET_DIR).
+/// Путь внутри `…/target/{debug,release}/…` — рабочая сборка из дерева
+/// исходников (в т.ч. с общим CARGO_TARGET_DIR). Смотрим всех предков, а не
+/// только каталог бинаря: у `cargo tauri build` бинарь лежит глубже —
+/// `target/release/bundle/macos/sql-kai.app/Contents/MacOS/sql-kai-cli`.
 fn in_target_dir(path: &Path) -> bool {
-    let dir = path.parent();
-    let profile = dir.and_then(Path::file_name).and_then(|n| n.to_str());
-    let parent = dir
-        .and_then(Path::parent)
-        .and_then(Path::file_name)
-        .and_then(|n| n.to_str());
-    matches!(profile, Some("debug") | Some("release")) && parent == Some("target")
+    path.ancestors().any(|p| {
+        let profile = p.file_name().and_then(|n| n.to_str());
+        let parent = p.parent().and_then(Path::file_name).and_then(|n| n.to_str());
+        matches!(profile, Some("debug") | Some("release")) && parent == Some("target")
+    })
+}
+
+/// Куда каск кладёт .app: штатный /Applications и пользовательский
+/// ~/Applications (`brew --appdir`). Других мест без явной настройки нет.
+fn cask_app_dirs() -> Vec<PathBuf> {
+    let mut out = vec![PathBuf::from(APP_DIR)];
+    if let Some(home) = dirs::home_dir() {
+        out.push(home.join("Applications"));
+    }
+    out
+}
+
+/// Этот ли бандл поставил каск. Одного факта «каск установлен» мало: рядом
+/// может лежать другой .app — dev-сборка из `target/release/bundle/macos` или
+/// копия, принесённая руками. Им `brew upgrade --cask` ничего не обновит, а
+/// ложный диагноз уезжает ещё и в issue из `sql-kai feedback`.
+/// Признак принадлежности — путь: либо каталог назначения каска, либо
+/// staged-копия внутри самого Caskroom.
+fn cask_owns_bundle(bundle: &Path, caskroom: &Path, app_dirs: &[PathBuf]) -> bool {
+    bundle.starts_with(caskroom)
+        || app_dirs
+            .iter()
+            .any(|d| bundle == d.join(format!("{APP_NAME}.app")))
 }
 
 /// `$CARGO_HOME/bin` (по умолчанию `~/.cargo/bin`) — результат `cargo install`.
@@ -115,13 +139,23 @@ pub(crate) fn detect_install() -> InstallInfo {
     // симлинком; настоящее место бинаря даёт только canonicalize.
     let real = std::fs::canonicalize(&invoked).unwrap_or_else(|_| invoked.clone());
     let bundle = bundle_of(&real);
-    let caskroom = bundle.as_ref().and_then(|_| caskroom_dir());
-    let kind = match (&bundle, &caskroom) {
-        (Some(_), Some(_)) => InstallKind::BrewCask,
-        (Some(_), None) => InstallKind::Bundle,
-        (None, _) if in_target_dir(&real) => InstallKind::Dev,
-        (None, _) if in_cargo_bin(&real) => InstallKind::Cargo,
-        _ => InstallKind::Unknown,
+    // Каталог каска показываем только когда он и правда объясняет установку:
+    // в выводе это строка «признак», по которой выбран BrewCask.
+    let caskroom = match (&bundle, caskroom_dir()) {
+        (Some(b), Some(c)) if cask_owns_bundle(b, &c, &cask_app_dirs()) => Some(c),
+        _ => None,
+    };
+    // Бандл внутри target/ — всегда своя сборка, чей бы каск ни стоял рядом.
+    let kind = if in_target_dir(&real) {
+        InstallKind::Dev
+    } else if caskroom.is_some() {
+        InstallKind::BrewCask
+    } else if bundle.is_some() {
+        InstallKind::Bundle
+    } else if in_cargo_bin(&real) {
+        InstallKind::Cargo
+    } else {
+        InstallKind::Unknown
     };
     InstallInfo {
         kind,
@@ -392,7 +426,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundle_of, in_target_dir};
+    use super::{bundle_of, cask_owns_bundle, in_target_dir};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -410,8 +444,47 @@ mod tests {
     fn in_target_dir_matches_cargo_layout() {
         assert!(in_target_dir(Path::new("/repo/src-tauri/target/debug/sql-kai-cli")));
         assert!(in_target_dir(Path::new("/repo/src-tauri/target/release/sql-kai-cli")));
+        // бандл tauri лежит глубже, но это всё та же сборка из исходников
+        assert!(in_target_dir(Path::new(
+            "/repo/src-tauri/target/release/bundle/macos/sql-kai.app/Contents/MacOS/sql-kai-cli"
+        )));
         // чужой каталог с тем же именем профиля — не сборка
         assert!(!in_target_dir(Path::new("/opt/release/sql-kai-cli")));
         assert!(!in_target_dir(Path::new("/opt/homebrew/bin/sql-kai")));
+        assert!(!in_target_dir(Path::new(
+            "/Applications/sql-kai.app/Contents/MacOS/sql-kai-cli"
+        )));
+    }
+
+    /// Каск объясняет только свой бандл. Иначе dev-сборка на машине, где стоит
+    /// каск, получала бы диагноз «Homebrew cask» и совет `brew upgrade`,
+    /// который её не обновит, — и тот же диагноз уезжал бы в issue.
+    #[test]
+    fn cask_owns_only_its_own_bundle() {
+        let caskroom = PathBuf::from("/opt/homebrew/Caskroom/sql-kai");
+        let app_dirs = vec![
+            PathBuf::from("/Applications"),
+            PathBuf::from("/Users/kai/Applications"),
+        ];
+        for owned in [
+            "/Applications/sql-kai.app",
+            "/Users/kai/Applications/sql-kai.app",
+            "/opt/homebrew/Caskroom/sql-kai/1.20.1/sql-kai.app",
+        ] {
+            assert!(
+                cask_owns_bundle(Path::new(owned), &caskroom, &app_dirs),
+                "{owned}"
+            );
+        }
+        for alien in [
+            "/Users/kai/sql-kai/src-tauri/target/release/bundle/macos/sql-kai.app",
+            "/Users/kai/Desktop/sql-kai.app",
+            "/Applications/sql-kai-old.app",
+        ] {
+            assert!(
+                !cask_owns_bundle(Path::new(alien), &caskroom, &app_dirs),
+                "{alien}"
+            );
+        }
     }
 }

@@ -140,23 +140,24 @@ enum Cmd {
     },
 }
 
-/// `sql-kai <alias> -c ...` — шорткат для `sql-kai q <alias> -c ...`: если первый
-/// аргумент не подкоманда и не флаг, считаем его алиасом профиля.
-fn preprocess_args() -> Vec<OsString> {
+/// Имена подкоманд вместе с алиасами — прямо из определения clap.
+/// Single source of truth: новый вариант `Cmd` не может молча начать читаться
+/// как алиас профиля.
+fn subcommand_names() -> Vec<String> {
     use clap::CommandFactory;
-    // Single source of truth: derive the subcommand names (+ aliases) straight
-    // from the clap definition, so a new `Cmd` variant can never be silently
-    // misread as a profile alias.
-    let cmd = Cli::command();
-    let known: Vec<String> = cmd
+    Cli::command()
         .get_subcommands()
         .flat_map(|c| {
             std::iter::once(c.get_name().to_string())
                 .chain(c.get_all_aliases().map(str::to_string))
         })
         .chain(std::iter::once("help".to_string()))
-        .collect();
-    let mut args: Vec<OsString> = std::env::args_os().collect();
+        .collect()
+}
+
+/// `sql-kai <alias> -c ...` — шорткат для `sql-kai q <alias> -c ...`: если первый
+/// аргумент не подкоманда и не флаг, считаем его алиасом профиля.
+fn preprocess(mut args: Vec<OsString>, known: &[String]) -> Vec<OsString> {
     if let Some(first) = args.get(1) {
         let s = first.to_string_lossy();
         if !s.starts_with('-') && !known.iter().any(|k| k == s.as_ref()) {
@@ -166,8 +167,47 @@ fn preprocess_args() -> Vec<OsString> {
     args
 }
 
+/// Профиль, чьё имя совпало с именем подкоманды, шорткатом `sql-kai <alias>`
+/// недоступен: первым аргументом его всегда перехватит подкоманда. Молча это
+/// выглядит как «после обновления sql-kai schema сломался», поэтому в момент,
+/// когда подкоманда не разобрала аргументы, называем обходной путь. Проверка
+/// профилей — замыканием: на успешном разборе в profiles.json не ходим вовсе.
+fn shortcut_hint(first: &str, profile_exists: impl FnOnce(&str) -> bool) -> Option<String> {
+    // `q` первым аргументом — это либо явный вызов, либо уже развёрнутый нами
+    // шорткат: коллизии имён там нет по определению.
+    if first.starts_with('-') || first == "q" || !profile_exists(first) {
+        return None;
+    }
+    Some(format!(
+        "подсказка: `{first}` — подкоманда sql-kai, поэтому первым аргументом она \
+         заслоняет одноимённый профиль.\n  запрос к профилю: sql-kai q {first} -c \"…\""
+    ))
+}
+
+/// clap печатает ошибку разбора (и --help/--version) сам; мы дописываем к ней
+/// подсказку про заслонённый профиль и повторяем его код выхода.
+fn report_parse_error(err: clap::Error, args: &[OsString]) -> ExitCode {
+    let _ = err.print();
+    if err.use_stderr() {
+        let hint = args.get(1).and_then(|first| {
+            shortcut_hint(&first.to_string_lossy(), |alias| {
+                let profiles = sql_kai_lib::store::load_profiles().unwrap_or_default();
+                !session::filter_profiles(&profiles, alias).is_empty()
+            })
+        });
+        if let Some(hint) = hint {
+            eprintln!("\n{hint}");
+        }
+    }
+    ExitCode::from(err.exit_code().clamp(0, 255) as u8)
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(preprocess_args());
+    let args = preprocess(std::env::args_os().collect(), &subcommand_names());
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(e) => return report_parse_error(e, &args),
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -207,5 +247,45 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Tunnel { cmd } => cmd::tunnel::run(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd::vault::run(cmd).await,
         Cmd::Holder { cmd } => cmd::holder::run(cmd).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    /// Шорткат профиля разворачивается только для слова, которого нет среди
+    /// подкоманд и их алиасов.
+    #[test]
+    fn shortcut_expands_only_an_unknown_first_word() {
+        let known = subcommand_names();
+        assert_eq!(
+            preprocess(args(&["sql-kai", "domainator", "-c", "SELECT 1"]), &known),
+            args(&["sql-kai", "q", "domainator", "-c", "SELECT 1"])
+        );
+        // подкоманда, её алиас, help и флаг остаются как есть
+        for first in ["schema", "logs", "query", "help", "--version"] {
+            let given = args(&["sql-kai", first, "x"]);
+            assert_eq!(preprocess(given.clone(), &known), given, "{first}");
+        }
+        // без аргументов вообще: usage напечатает clap
+        assert_eq!(preprocess(args(&["sql-kai"]), &known), args(&["sql-kai"]));
+    }
+
+    /// Профиль, названный как подкоманда, шорткатом недоступен — обход должен
+    /// быть назван, иначе смена поведения выглядит как поломка `sql-kai schema`.
+    #[test]
+    fn hint_names_the_explicit_form_for_a_shadowed_profile() {
+        let hint = shortcut_hint("schema", |_| true).expect("подсказка");
+        assert!(hint.contains("sql-kai q schema"), "{hint}");
+        // профиля с таким именем нет — подсказка была бы мусором
+        assert!(shortcut_hint("schema", |_| false).is_none());
+        // явный `q` и флаги коллизией не являются
+        assert!(shortcut_hint("q", |_| true).is_none());
+        assert!(shortcut_hint("--json", |_| true).is_none());
     }
 }

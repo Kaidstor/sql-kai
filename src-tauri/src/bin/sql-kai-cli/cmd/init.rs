@@ -243,6 +243,10 @@ fn step_mcp() -> Result<(), AppError> {
         println!("  пропущено");
         return Ok(());
     }
+    // Клиенты обрабатываются независимо (побитый конфиг одного не повод не
+    // прописать остальным), но провал каждого обязан дойти до итога init:
+    // иначе «Готово» и код 0 при неработающей настройке.
+    let mut failed: Vec<&str> = Vec::new();
     for client in pending {
         let mut cmd = Command::new(&exe);
         cmd.args(["mcp", "install", client.key]);
@@ -257,7 +261,14 @@ fn step_mcp() -> Result<(), AppError> {
                 client.key,
                 status.code().unwrap_or(-1)
             );
+            failed.push(client.key);
         }
+    }
+    if !failed.is_empty() {
+        return Err(AppError::Msg(format!(
+            "не прописан клиентам: {} (причина — в выводе выше; повтор: `sql-kai mcp install <клиент>`)",
+            failed.join(", ")
+        )));
     }
     Ok(())
 }
