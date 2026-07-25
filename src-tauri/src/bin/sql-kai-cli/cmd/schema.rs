@@ -64,6 +64,11 @@ pub struct SchemaArgs {
 pub(crate) struct SchemaDump {
     database: String,
     server_version: String,
+    /// Каталог не влез в лимит строк, дерево ниже неполное. Для текстового
+    /// вывода про это пишет вызывающий (в stderr, а MCP — припиской к тексту),
+    /// а потребителю JSON сказать больше некому — без этого поля он молча
+    /// примет обрезок за весь каталог.
+    pub(crate) truncated: bool,
     schemas: Vec<SchemaInfo>,
 }
 
@@ -75,7 +80,10 @@ struct SchemaInfo {
     views: Vec<RelationInfo>,
     materialized_views: Vec<RelationInfo>,
     foreign_tables: Vec<RelationInfo>,
+    sequences: Vec<SequenceInfo>,
     enums: Vec<EnumInfo>,
+    domains: Vec<DomainInfo>,
+    composite_types: Vec<CompositeTypeInfo>,
     routines: Vec<RoutineInfo>,
 }
 
@@ -87,7 +95,10 @@ impl SchemaInfo {
             views: Vec::new(),
             materialized_views: Vec::new(),
             foreign_tables: Vec::new(),
+            sequences: Vec::new(),
             enums: Vec::new(),
+            domains: Vec::new(),
+            composite_types: Vec::new(),
             routines: Vec::new(),
         }
     }
@@ -97,7 +108,10 @@ impl SchemaInfo {
             && self.views.is_empty()
             && self.materialized_views.is_empty()
             && self.foreign_tables.is_empty()
+            && self.sequences.is_empty()
             && self.enums.is_empty()
+            && self.domains.is_empty()
+            && self.composite_types.is_empty()
             && self.routines.is_empty()
     }
 }
@@ -112,6 +126,9 @@ struct RelationInfo {
     comment: Option<String>,
     partition_key: Option<String>,
     partition_of: Option<String>,
+    /// `FOR VALUES FROM … TO …` / `DEFAULT` — за какой кусок данных отвечает
+    /// эта партиция (есть только у листовых, т.е. под `--internal`).
+    partition_bound: Option<String>,
     partitions: Option<i64>,
     row_security: bool,
     definition: Option<String>,
@@ -119,6 +136,7 @@ struct RelationInfo {
     constraints: Vec<ConstraintInfo>,
     indexes: Vec<IndexInfo>,
     triggers: Vec<TriggerInfo>,
+    policies: Vec<PolicyInfo>,
 }
 
 #[derive(Serialize)]
@@ -131,6 +149,9 @@ struct ColumnInfo {
     default: Option<String>,
     identity: Option<String>,
     generated: Option<String>,
+    /// stored | virtual — у virtual (PG 18) значение не хранится и индекс по
+    /// нему не построить, так что назвать её stored значит соврать о схеме.
+    generated_kind: Option<String>,
     comment: Option<String>,
 }
 
@@ -162,10 +183,60 @@ struct TriggerInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct PolicyInfo {
+    name: String,
+    /// SELECT | INSERT | UPDATE | DELETE | ALL
+    command: String,
+    /// false — RESTRICTIVE: политика не добавляет доступ, а сужает общий
+    permissive: bool,
+    roles: String,
+    using: Option<String>,
+    with_check: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EnumInfo {
     schema: String,
     name: String,
+    /// Пусто у `CREATE TYPE … AS ENUM ()` — легального шага миграции
     values: Vec<String>,
+    comment: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SequenceInfo {
+    schema: String,
+    name: String,
+    #[serde(rename = "type")]
+    ty: String,
+    start: String,
+    increment: String,
+    min: String,
+    max: String,
+    cycle: bool,
+    comment: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DomainInfo {
+    schema: String,
+    name: String,
+    base_type: String,
+    /// `NOT NULL DEFAULT … CHECK (…)` одной строкой, как это печатает сервер
+    constraints: Option<String>,
+    comment: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompositeTypeInfo {
+    schema: String,
+    name: String,
+    /// «поле тип, поле тип» в порядке объявления
+    attributes: String,
     comment: Option<String>,
 }
 
@@ -209,20 +280,45 @@ pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
     )
     .await?;
 
+    check_server_version(&connected.server_version)?;
     let sql = db::schema_dump_sql(&opts);
     let exec = db::execute(&connected.session.client, &sql, MAX_ROWS).await?;
     check_parts(&exec.results)?;
-    if exec.results.iter().any(|r| r.truncated) {
-        eprintln!("sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema");
-    }
 
     let dump = build_dump(&profile.database, &connected.server_version, &exec.results);
+    if dump.truncated {
+        eprintln!("sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema");
+    }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&dump).unwrap());
     } else {
         print!("{}", render_text(&dump, &opts));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Минимальный сервер: дамп читает `pg_attribute.attgenerated`, которого нет
+/// до PG 12. Батч атомарен — на старом сервере падает целиком, поэтому версию
+/// проверяем до запроса, а не разбираем сырое `column a.attgenerated does not
+/// exist`. Больше нигде минимальная версия не заявлена, так что заявляем тут.
+pub(crate) const MIN_SERVER_MAJOR: u32 = 12;
+
+/// Пустая или неразобранная версия — не повод отказывать: значит, её просто
+/// некому было сообщить, и пусть решает сервер.
+pub(crate) fn check_server_version(server_version: &str) -> Result<(), AppError> {
+    let major: u32 = server_version
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    if major == 0 || major >= MIN_SERVER_MAJOR {
+        return Ok(());
+    }
+    Err(AppError::Msg(format!(
+        "схема снимается только с PostgreSQL {MIN_SERVER_MAJOR}+ (сервер: {server_version}); \
+         на более старом бери структуру по частям: tables, columns, indexes, ddl"
+    )))
 }
 
 /// Форма ответа каталога: `build_dump` разбирает наборы строк по позиции, так
@@ -265,14 +361,16 @@ pub(crate) fn build_dump(
             kind: kind.to_string(),
             partition_key: cell_opt(row, 3),
             partition_of: cell_opt(row, 4),
-            partitions: cell_opt(row, 5).and_then(|v| v.parse().ok()),
-            row_security: db::cell_bool(row, 6),
-            comment: cell_opt(row, 7),
-            definition: cell_opt(row, 8),
+            partition_bound: cell_opt(row, 5),
+            partitions: cell_opt(row, 6).and_then(|v| v.parse().ok()),
+            row_security: db::cell_bool(row, 7),
+            comment: cell_opt(row, 8),
+            definition: cell_opt(row, 9),
             columns: Vec::new(),
             constraints: Vec::new(),
             indexes: Vec::new(),
             triggers: Vec::new(),
+            policies: Vec::new(),
         });
     }
     let owner = |row: &Vec<Option<String>>| at.get(&(db::cell(row, 0), db::cell(row, 1))).copied();
@@ -284,8 +382,14 @@ pub(crate) fn build_dump(
         // 's' — stored, 'v' — virtual (PG 18); без 'v' виртуальная колонка
         // отрендерилась бы как обычный `default <выражение>`, то есть неверно.
         let expr = cell_opt(row, 5);
-        let generated =
-            matches!(db::cell(row, 7).as_str(), "s" | "v").then(|| expr.clone().unwrap_or_default());
+        let generated_kind = match db::cell(row, 7).as_str() {
+            "s" => Some("stored".to_string()),
+            "v" => Some("virtual".to_string()),
+            _ => None,
+        };
+        let generated = generated_kind
+            .is_some()
+            .then(|| expr.clone().unwrap_or_default());
         rels[i].columns.push(ColumnInfo {
             name: db::cell(row, 2),
             ty: db::cell(row, 3),
@@ -297,6 +401,7 @@ pub(crate) fn build_dump(
                 _ => None,
             },
             generated,
+            generated_kind,
             comment: cell_opt(row, 8),
         });
     }
@@ -337,19 +442,72 @@ pub(crate) fn build_dump(
         });
     }
 
-    // одна строка на метку, отсортированы по enumsortorder — склеиваем подряд идущие
+    // одна строка на метку, отсортированы по enumsortorder — склеиваем подряд
+    // идущие. Метка приходит NULL ровно у enum'а без меток (LEFT JOIN), и
+    // тогда тип есть, а список значений пуст — это не одна пустая метка.
     let mut enums: Vec<EnumInfo> = Vec::new();
     for row in &res[5].rows {
         let schema = db::cell(row, 0);
         let name = db::cell(row, 1);
+        let label = cell_opt(row, 2);
         match enums.last_mut() {
-            Some(e) if e.schema == schema && e.name == name => e.values.push(db::cell(row, 2)),
+            Some(e) if e.schema == schema && e.name == name => e.values.extend(label),
             _ => enums.push(EnumInfo {
                 schema,
                 name,
-                values: vec![db::cell(row, 2)],
+                values: label.into_iter().collect(),
                 comment: cell_opt(row, 3),
             }),
+        }
+    }
+
+    for row in &res[7].rows {
+        let Some(i) = owner(row) else { continue };
+        rels[i].policies.push(PolicyInfo {
+            name: db::cell(row, 2),
+            command: db::cell(row, 3),
+            permissive: db::cell_bool(row, 4),
+            roles: db::cell(row, 5),
+            using: cell_opt(row, 6),
+            with_check: cell_opt(row, 7),
+        });
+    }
+
+    let sequences: Vec<SequenceInfo> = res[8]
+        .rows
+        .iter()
+        .map(|row| SequenceInfo {
+            schema: db::cell(row, 0),
+            name: db::cell(row, 1),
+            ty: db::cell(row, 2),
+            start: db::cell(row, 3),
+            increment: db::cell(row, 4),
+            min: db::cell(row, 5),
+            max: db::cell(row, 6),
+            cycle: db::cell_bool(row, 7),
+            comment: cell_opt(row, 8),
+        })
+        .collect();
+
+    // Домены и composite-типы приезжают одним набором, различаются typtype.
+    let mut domains: Vec<DomainInfo> = Vec::new();
+    let mut composites: Vec<CompositeTypeInfo> = Vec::new();
+    for row in &res[9].rows {
+        if db::cell(row, 2) == "d" {
+            domains.push(DomainInfo {
+                schema: db::cell(row, 0),
+                name: db::cell(row, 1),
+                base_type: db::cell(row, 3),
+                constraints: cell_opt(row, 4).filter(|s| !s.is_empty()),
+                comment: cell_opt(row, 5),
+            });
+        } else {
+            composites.push(CompositeTypeInfo {
+                schema: db::cell(row, 0),
+                name: db::cell(row, 1),
+                attributes: db::cell(row, 4),
+                comment: cell_opt(row, 5),
+            });
         }
     }
 
@@ -380,9 +538,25 @@ pub(crate) fn build_dump(
             _ => s.tables.push(r),
         }
     }
+    for s in sequences {
+        let key = s.schema.clone();
+        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&s.schema)).sequences.push(s);
+    }
     for e in enums {
         let key = e.schema.clone();
         by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&e.schema)).enums.push(e);
+    }
+    for d in domains {
+        let key = d.schema.clone();
+        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&d.schema)).domains.push(d);
+    }
+    for c in composites {
+        let key = c.schema.clone();
+        by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&c.schema))
+            .composite_types
+            .push(c);
     }
     for r in routines {
         let key = r.schema.clone();
@@ -392,6 +566,10 @@ pub(crate) fn build_dump(
     SchemaDump {
         database: database.to_string(),
         server_version: server_version.to_string(),
+        // Обрезку считаем здесь, а не у вызывающего: так признак попадает и в
+        // JSON CLI, и в structuredContent MCP-тула, который зовёт тот же
+        // build_dump.
+        truncated: res.iter().any(|r| r.truncated),
         schemas: by_schema.into_values().collect(),
     }
 }
@@ -406,6 +584,22 @@ fn push_block(out: &mut String, label: &str, body: &str) {
     out.push_str(&format!("  {label}:\n"));
     for line in body.trim_end().lines() {
         out.push_str(&format!("    {}\n", line.trim_end()));
+    }
+}
+
+/// Границы, которые Postgres проставляет секвенции сам (`CREATE SEQUENCE` без
+/// MINVALUE/MAXVALUE): у убывающей это [тип_min, -1], у возрастающей —
+/// [1, тип_max]. Сравнением с ними отличаем заданное руками от умолчания.
+fn default_bounds(ty: &str, increment: &str) -> (String, String) {
+    let (lo, hi): (i64, i64) = match ty {
+        "smallint" => (i16::MIN as i64, i16::MAX as i64),
+        "integer" => (i32::MIN as i64, i32::MAX as i64),
+        _ => (i64::MIN, i64::MAX),
+    };
+    if increment.starts_with('-') {
+        (lo.to_string(), "-1".to_string())
+    } else {
+        ("1".to_string(), hi.to_string())
     }
 }
 
@@ -464,14 +658,56 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
         {
             render_relation(&mut out, r);
         }
+        for q in &s.sequences {
+            let mut line = format!(
+                "\nsequence {}.{} {}  start {} increment {}",
+                q.schema, q.name, q.ty, q.start, q.increment
+            );
+            // min/max печатаем, только если они не те, что сервер ставит сам:
+            // дефолтные границы — это шум на каждую секвенцию.
+            let (min, max) = default_bounds(&q.ty, &q.increment);
+            if q.min != min {
+                line.push_str(&format!(" min {}", q.min));
+            }
+            if q.max != max {
+                line.push_str(&format!(" max {}", q.max));
+            }
+            if q.cycle {
+                line.push_str(" cycle");
+            }
+            out.push_str(&line);
+            out.push('\n');
+            if let Some(c) = &q.comment {
+                out.push_str(&format!("  -- {}\n", one_line(c)));
+            }
+        }
         for e in &s.enums {
-            out.push_str(&format!(
-                "\nenum {}.{} = {}\n",
-                e.schema,
-                e.name,
+            let values = if e.values.is_empty() {
+                "(без меток)".to_string()
+            } else {
                 e.values.join(" | ")
-            ));
+            };
+            out.push_str(&format!("\nenum {}.{} = {}\n", e.schema, e.name, values));
             if let Some(c) = &e.comment {
+                out.push_str(&format!("  -- {}\n", one_line(c)));
+            }
+        }
+        for d in &s.domains {
+            out.push_str(&format!("\ndomain {}.{} AS {}", d.schema, d.name, d.base_type));
+            if let Some(c) = &d.constraints {
+                out.push_str(&format!(" {c}"));
+            }
+            out.push('\n');
+            if let Some(c) = &d.comment {
+                out.push_str(&format!("  -- {}\n", one_line(c)));
+            }
+        }
+        for t in &s.composite_types {
+            out.push_str(&format!(
+                "\ntype {}.{} = ({})\n",
+                t.schema, t.name, t.attributes
+            ));
+            if let Some(c) = &t.comment {
                 out.push_str(&format!("  -- {}\n", one_line(c)));
             }
         }
@@ -498,6 +734,9 @@ fn render_relation(out: &mut String, r: &RelationInfo) {
     if let Some(p) = &r.partition_of {
         line.push_str(&format!(" PARTITION OF {p}"));
     }
+    if let Some(b) = &r.partition_bound {
+        line.push_str(&format!(" {b}"));
+    }
     if let Some(n) = r.partitions.filter(|n| *n > 0) {
         line.push_str(&format!("  (партиций: {n})"));
     }
@@ -515,7 +754,8 @@ fn render_relation(out: &mut String, r: &RelationInfo) {
             tail.push("not null".to_string());
         }
         if let Some(g) = &c.generated {
-            tail.push(format!("generated ({g}) stored"));
+            let kind = c.generated_kind.as_deref().unwrap_or("stored");
+            tail.push(format!("generated ({g}) {kind}"));
         } else if let Some(i) = &c.identity {
             tail.push(format!("identity {i}"));
         } else if let Some(d) = &c.default {
@@ -555,8 +795,28 @@ fn render_relation(out: &mut String, r: &RelationInfo) {
             if t.enabled { "" } else { " [disabled]" }
         ));
     }
+    // Одного «RLS включён» мало: кто и что видит, написано только в политиках,
+    // а без них агент возвращается к обходу таблиц по одной. Выключенный RLS
+    // при живых политиках — тоже факт: они лежат, но ничего не фильтруют.
     if r.row_security {
         out.push_str("  row level security enabled\n");
+    } else if !r.policies.is_empty() {
+        out.push_str("  row level security disabled — политики ниже не действуют\n");
+    }
+    for p in &r.policies {
+        let mut line = format!("policy {}", p.name);
+        if !p.permissive {
+            line.push_str(" restrictive");
+        }
+        line.push_str(&format!(" FOR {} TO {}", p.command, p.roles));
+        if let Some(u) = &p.using {
+            line.push_str(&format!(" USING {u}"));
+        }
+        if let Some(w) = &p.with_check {
+            line.push_str(&format!(" WITH CHECK {w}"));
+        }
+        // Выражение политики бывает многострочным — но строка тут одна.
+        out.push_str(&format!("  {}\n", one_line(&line)));
     }
     if let Some(d) = &r.definition {
         push_block(out, "definition", d);
@@ -591,7 +851,16 @@ fn summary(dump: &SchemaDump) -> String {
             "foreign",
             dump.schemas.iter().map(|s| s.foreign_tables.len()).sum(),
         ),
+        (
+            "секвенций",
+            dump.schemas.iter().map(|s| s.sequences.len()).sum(),
+        ),
         ("enum", dump.schemas.iter().map(|s| s.enums.len()).sum()),
+        ("доменов", dump.schemas.iter().map(|s| s.domains.len()).sum()),
+        (
+            "composite-типов",
+            dump.schemas.iter().map(|s| s.composite_types.len()).sum(),
+        ),
         ("функций", dump.schemas.iter().map(|s| s.routines.len()).sum()),
     ];
     counts.retain(|(_, n)| *n > 0);
@@ -657,12 +926,21 @@ mod tests {
         let res = vec![
             part(&[
                 &[
-                    Some("public"), Some("users"), Some("r"), None, None, None,
-                    Some("false"), Some("люди"), None,
+                    Some("public"), Some("users"), Some("r"), None, None, None, None,
+                    Some("true"), Some("люди"), None,
                 ],
                 &[
-                    Some("public"), Some("v_active"), Some("v"), None, None, None,
+                    Some("public"), Some("v_active"), Some("v"), None, None, None, None,
                     Some("false"), None, Some("SELECT id\n  FROM users"),
+                ],
+                &[
+                    Some("public"), Some("ev_2024"), Some("r"), None, Some("public.ev"),
+                    Some("FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')"), None,
+                    Some("false"), None, None,
+                ],
+                &[
+                    Some("public"), Some("gen"), Some("r"), None, None, None, None,
+                    Some("false"), None, None,
                 ],
             ]),
             part(&[
@@ -677,6 +955,15 @@ mod tests {
                 &[
                     Some("public"), Some("users"), Some("org_id"), Some("bigint"), Some("false"),
                     None, Some(""), Some(""), None,
+                ],
+                // stored и virtual (PG 18) — разные вещи, рендер обязан их различать
+                &[
+                    Some("public"), Some("gen"), Some("lo"), Some("text"), Some("false"),
+                    Some("lower(email)"), Some(""), Some("s"), None,
+                ],
+                &[
+                    Some("public"), Some("gen"), Some("len"), Some("integer"), Some("false"),
+                    Some("length(email)"), Some(""), Some("v"), None,
                 ],
             ]),
             part(&[&[
@@ -694,11 +981,43 @@ mod tests {
             part(&[
                 &[Some("public"), Some("status"), Some("new"), None],
                 &[Some("public"), Some("status"), Some("done"), None],
+                // enum без меток: LEFT JOIN отдаёт одну строку с NULL-меткой
+                &[Some("public"), Some("stage"), None, None],
             ]),
             part(&[&[
                 Some("public"), Some("calc"), Some("f"), Some("a integer"), Some("integer"),
                 Some("sql"), Some("immutable"), None, None,
             ]]),
+            part(&[
+                &[
+                    Some("public"), Some("users"), Some("users_sel"), Some("SELECT"), Some("true"),
+                    Some("public"), Some("(org_id = current_org())"), None,
+                ],
+                &[
+                    Some("public"), Some("users"), Some("users_ins"), Some("INSERT"), Some("false"),
+                    Some("app"), None, Some("(org_id IS NOT NULL)"),
+                ],
+            ]),
+            part(&[
+                &[
+                    Some("public"), Some("invoice_seq"), Some("bigint"), Some("100"), Some("5"),
+                    Some("10"), Some("900"), Some("true"), Some("счётчик"),
+                ],
+                &[
+                    Some("public"), Some("plain_seq"), Some("bigint"), Some("1"), Some("1"),
+                    Some("1"), Some("9223372036854775807"), Some("false"), None,
+                ],
+            ]),
+            part(&[
+                &[
+                    Some("public"), Some("email"), Some("d"), Some("text"),
+                    Some("NOT NULL CHECK (VALUE ~ '@'::text)"), Some("адрес почты"),
+                ],
+                &[
+                    Some("public"), Some("addr"), Some("c"), None,
+                    Some("street text, city text"), None,
+                ],
+            ]),
         ];
         let dump = build_dump("mydb", "16.2", &res);
         let o = db::SchemaOptions {
@@ -723,7 +1042,71 @@ mod tests {
         assert!(text.contains("  definition:\n    SELECT id\n      FROM users"));
         assert!(text.contains("enum public.status = new | done"));
         assert!(text.contains("function public.calc(a integer) -> integer  [sql immutable]"));
-        assert!(text.contains("-- итого: схем 1, таблиц 1, вьюх 1, enum 1, функций 1"));
+        // границы партиции: без них не видно, какой кусок данных в ней лежит
+        assert!(text.contains(
+            "table public.ev_2024 PARTITION OF public.ev \
+             FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')"
+        ));
+        // virtual-колонку нельзя печатать как stored — это разные таблицы
+        assert!(text.contains("lo   text     generated (lower(email)) stored"));
+        assert!(text.contains("len  integer  generated (length(email)) virtual"));
+        // RLS: сам факт бесполезен без политик
+        assert!(text.contains("  row level security enabled\n"));
+        assert!(text.contains("  policy users_sel FOR SELECT TO public USING (org_id = current_org())\n"));
+        assert!(text.contains(
+            "  policy users_ins restrictive FOR INSERT TO app WITH CHECK (org_id IS NOT NULL)\n"
+        ));
+        // enum без меток: тип есть, значений нет — и это видно
+        assert!(text.contains("enum public.stage = (без меток)\n"));
+        // границы секвенции печатаются, только если заданы руками
+        assert!(text.contains("sequence public.invoice_seq bigint  start 100 increment 5 min 10 max 900 cycle\n"));
+        assert!(text.contains("sequence public.plain_seq bigint  start 1 increment 1\n"));
+        assert!(text.contains("domain public.email AS text NOT NULL CHECK (VALUE ~ '@'::text)\n"));
+        assert!(text.contains("type public.addr = (street text, city text)\n"));
+        assert!(text.contains(
+            "-- итого: схем 1, таблиц 3, вьюх 1, секвенций 2, enum 2, доменов 1, \
+             composite-типов 1, функций 1"
+        ));
+        assert!(!dump.truncated);
+    }
+
+    /// Обрезка каталога — часть ответа, а не только предупреждение в stderr:
+    /// потребитель JSON иначе примет неполный дамп за полный.
+    #[test]
+    fn truncated_result_marks_the_dump() {
+        let mut res: Vec<db::StatementResult> =
+            (0..db::SCHEMA_DUMP_PARTS).map(|_| part(&[])).collect();
+        res[1].truncated = true;
+        assert!(build_dump("mydb", "16.2", &res).truncated);
+    }
+
+    /// Индекс за FK-констрейнтом (в т.ч. самоссылающимся) — не «индекс
+    /// констрейнта»: свой индекс есть только у p/u/x.
+    #[test]
+    fn dump_sql_skips_only_constraint_owned_indexes() {
+        let sql = db::schema_dump_sql(&db::SchemaOptions::default());
+        assert!(sql.contains("co.contype IN ('p','u','x')"));
+        assert!(!sql.contains("co.conrelid = i.indrelid"));
+    }
+
+    /// enum без меток должен доезжать до дампа — значит LEFT JOIN.
+    #[test]
+    fn dump_sql_keeps_enums_without_labels() {
+        let sql = db::schema_dump_sql(&db::SchemaOptions::default());
+        assert!(sql.contains("LEFT JOIN pg_enum e ON e.enumtypid = t.oid"));
+    }
+
+    /// Версия сервера: батч атомарен, поэтому на PG < 12 честнее отказать до
+    /// запроса, чем отдать сырое «column a.attgenerated does not exist».
+    #[test]
+    fn old_server_is_refused_with_a_readable_message() {
+        assert!(check_server_version("16.2").is_ok());
+        assert!(check_server_version("12.0 (Debian)").is_ok());
+        // версию сообщить некому (брокер её не отдаёт) — не мешаем
+        assert!(check_server_version("").is_ok());
+        let err = check_server_version("11.5").unwrap_err().to_string();
+        assert!(err.contains("PostgreSQL 12+"), "{err}");
+        assert!(check_server_version("9.6.24").is_err());
     }
 
     /// Имя схемы приходит от пользователя — только через quote_literal.

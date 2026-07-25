@@ -254,29 +254,42 @@ impl SchemaOptions {
 
 /// Number of result sets [`schema_dump_sql`] produces, in this order:
 /// 0 relations, 1 columns, 2 constraints, 3 indexes, 4 triggers, 5 enum
-/// labels, 6 routines.
-pub const SCHEMA_DUMP_PARTS: usize = 7;
+/// labels, 6 routines, 7 policies, 8 sequences, 9 domains + composite types.
+pub const SCHEMA_DUMP_PARTS: usize = 10;
 
 /** Whole-database schema as one simple-query batch: a single round-trip and a
  *  single catalog snapshot instead of the per-table walk (tables → columns →
  *  indexes → ddl) an agent would otherwise do. The cost is therefore constant
  *  in the number of tables, which is the entire point of the command.
  *
+ *  Requires PostgreSQL 12 or newer (`pg_attribute.attgenerated`); the caller
+ *  checks the server version, because a batch this size fails as a whole.
+ *
  *  Column layout per result set (all values arrive as text):
  *  - relations: nspname, relname, relkind, partkeydef, partition parent,
- *    partition count, rowsecurity, comment, viewdef
+ *    partition bound, partition count, rowsecurity, comment, viewdef
  *  - columns: nspname, relname, attname, type, notnull, default, identity,
  *    generated, comment
  *  - constraints: nspname, relname, conname, contype, definition
  *  - indexes: nspname, relname, index name, unique, definition
  *  - triggers: nspname, relname, tgname, timing, events, function, enabled
- *  - enums: nspname, typname, label, comment (one row per label, sorted)
+ *  - enums: nspname, typname, label, comment (one row per label, sorted;
+ *    label is NULL for an enum with no labels yet)
  *  - routines: nspname, proname, prokind, arguments, result, language,
  *    volatility, definition, comment
+ *  - policies: nspname, relname, polname, command, permissive, roles, using,
+ *    with check
+ *  - sequences: nspname, relname, type, start, increment, min, max, cycle,
+ *    comment
+ *  - types: nspname, typname, typtype, base type (domains), constraints
+ *    (domains) / attributes (composites), comment
  */
 pub fn schema_dump_sql(o: &SchemaOptions) -> String {
     let rel = o.rel_filter();
 
+    // relpartbound (`FOR VALUES FROM … TO …` / `DEFAULT`) is what makes leaf
+    // partitions worth printing at all: without it nothing in the dump says
+    // which partition holds which range.
     let relations = format!(
         "SELECT n.nspname, c.relname, c.relkind::text,
                 pg_get_partkeydef(c.oid),
@@ -286,6 +299,7 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
                     JOIN pg_class pc ON pc.oid = i.inhparent
                     JOIN pg_namespace pn ON pn.oid = pc.relnamespace
                    WHERE i.inhrelid = c.oid LIMIT 1) END,
+                CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END,
                 CASE WHEN c.relkind = 'p' THEN (
                   SELECT count(*)::text FROM pg_inherits i WHERE i.inhparent = c.oid) END,
                 c.relrowsecurity::text,
@@ -337,10 +351,11 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
     );
 
     // Constraint-backed indexes are skipped: they are printed as constraints.
-    // `conrelid = indrelid` matters — a FOREIGN KEY stores the *referenced*
-    // table's index in `conindid`, so matching on `conindid` alone dropped a
-    // plain unique index the moment some other table pointed a FK at it, and
-    // nothing else in the dump mentioned that uniqueness.
+    // The contype filter is what makes "backed by" precise — only p/u/x own
+    // their index. A FOREIGN KEY merely points `conindid` at the *referenced*
+    // table's index, so a laxer test dropped a plain unique index the moment
+    // any FK referenced it (`conrelid = indrelid` still let a self-referencing
+    // FK through), and nothing else in the dump mentioned that uniqueness.
     let indexes = format!(
         "SELECT n.nspname, c.relname, ic.relname, i.indisunique::text,
                 pg_get_indexdef(i.indexrelid, 0, true)
@@ -350,7 +365,7 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
            JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE NOT EXISTS (SELECT 1 FROM pg_constraint co
                              WHERE co.conindid = i.indexrelid
-                               AND co.conrelid = i.indrelid)
+                               AND co.contype IN ('p','u','x'))
             AND {rel}
           ORDER BY n.nspname, c.relname, ic.relname"
     );
@@ -377,11 +392,13 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
           ORDER BY n.nspname, c.relname, t.tgname"
     );
 
+    // LEFT JOIN, not JOIN: `CREATE TYPE … AS ENUM ()` is a legal migration
+    // step, and an inner join made such a type vanish from the dump entirely.
     let enums = format!(
         "SELECT n.nspname, t.typname, e.enumlabel, {comment}
            FROM pg_type t
            JOIN pg_namespace n ON n.oid = t.typnamespace
-           JOIN pg_enum e ON e.enumtypid = t.oid
+           LEFT JOIN pg_enum e ON e.enumtypid = t.oid
           WHERE t.typtype = 'e'
             AND {nsp}
             AND {no_ext}
@@ -419,6 +436,97 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
         no_ext = o.no_ext("pg_proc", "p.oid"),
     );
 
+    // Without the policies themselves `rowsecurity` is a dead end: the dump
+    // says reads are filtered but not by what, and the agent has to fall back
+    // to the per-table walk this command exists to replace. polroles = {0} is
+    // PUBLIC, which has no pg_roles row to aggregate.
+    let policies = format!(
+        "SELECT n.nspname, c.relname, pol.polname,
+                CASE pol.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT'
+                     WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END,
+                pol.polpermissive::text,
+                CASE WHEN pol.polroles = '{{0}}'::oid[] THEN 'public'
+                     ELSE (SELECT string_agg(r.rolname, ', ' ORDER BY r.rolname)
+                             FROM pg_roles r WHERE r.oid = ANY(pol.polroles)) END,
+                pg_get_expr(pol.polqual, pol.polrelid),
+                pg_get_expr(pol.polwithcheck, pol.polrelid)
+           FROM pg_policy pol
+           JOIN pg_class c ON c.oid = pol.polrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE {rel}
+          ORDER BY n.nspname, c.relname, pol.polname"
+    );
+
+    // Standalone sequences only: the ones behind identity/serial columns are
+    // already visible on the column itself, while a `nextval('invoice_seq')`
+    // called from application code had nothing to point at in the dump.
+    // has_sequence_privilege has to sit inside a CASE — the planner may run it
+    // before the relkind test, and on a non-sequence it errors out.
+    let sequences = format!(
+        "SELECT n.nspname, c.relname,
+                format_type(s.seqtypid, NULL),
+                s.seqstart::text, s.seqincrement::text,
+                s.seqmin::text, s.seqmax::text, s.seqcycle::text,
+                {comment}
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_sequence s ON s.seqrelid = c.oid
+          WHERE c.relkind = 'S'
+            AND {nsp}
+            AND {no_ext}
+            AND has_schema_privilege(n.oid, 'USAGE')
+            AND CASE WHEN c.relkind = 'S'
+                     THEN has_sequence_privilege(c.oid, 'SELECT, USAGE, UPDATE')
+                     ELSE false END
+            AND NOT EXISTS (SELECT 1 FROM pg_depend dep
+                             WHERE dep.classid = 'pg_class'::regclass AND dep.objid = c.oid
+                               AND dep.refclassid = 'pg_class'::regclass
+                               AND dep.deptype IN ('a','i'))
+          ORDER BY n.nspname, c.relname",
+        comment = o.opt_expr(o.comments, "obj_description(c.oid, 'pg_class')"),
+        nsp = o.nsp("n"),
+        no_ext = o.no_ext("pg_class", "c.oid"),
+    );
+
+    // Domains and composite types, the two remaining kinds of user-defined
+    // type next to enums. Every table has a row type of typtype = 'c' too, so
+    // a standalone composite is recognized by relkind = 'c' on typrelid.
+    // Domain NOT NULL comes from typnotnull; PG17+ also stores it as a
+    // constraint row, hence contype = 'c' — otherwise it printed twice.
+    let types = format!(
+        "SELECT n.nspname, t.typname, t.typtype::text,
+                CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod) END,
+                CASE WHEN t.typtype = 'd' THEN
+                       concat_ws(' ',
+                         CASE WHEN t.typnotnull THEN 'NOT NULL' END,
+                         CASE WHEN t.typdefault IS NOT NULL THEN 'DEFAULT ' || t.typdefault END,
+                         (SELECT string_agg(pg_get_constraintdef(co.oid, true), ' '
+                                            ORDER BY co.conname)
+                            FROM pg_constraint co
+                           WHERE co.contypid = t.oid AND co.contype = 'c'))
+                     ELSE (SELECT string_agg(a.attname || ' ' ||
+                                             format_type(a.atttypid, a.atttypmod),
+                                             ', ' ORDER BY a.attnum)
+                             FROM pg_attribute a
+                            WHERE a.attrelid = t.typrelid AND a.attnum > 0
+                              AND NOT a.attisdropped) END,
+                {comment}
+           FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE (t.typtype = 'd'
+                 OR (t.typtype = 'c'
+                     AND EXISTS (SELECT 1 FROM pg_class rc
+                                  WHERE rc.oid = t.typrelid AND rc.relkind = 'c')))
+            AND {nsp}
+            AND {no_ext}
+            AND has_schema_privilege(n.oid, 'USAGE')
+            AND has_type_privilege(t.oid, 'USAGE')
+          ORDER BY n.nspname, t.typtype, t.typname",
+        comment = o.opt_expr(o.comments, "obj_description(t.oid, 'pg_type')"),
+        nsp = o.nsp("n"),
+        no_ext = o.no_ext("pg_type", "t.oid"),
+    );
+
     [
         relations,
         columns,
@@ -427,6 +535,9 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
         triggers,
         enums,
         routines,
+        policies,
+        sequences,
+        types,
     ]
     .join(";\n")
 }
@@ -473,10 +584,15 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
     for row in &cols {
         let mut line = format!("  {} {}", quote_ident(&cell(row, 0)), cell(row, 1));
         let default = row[3].as_deref();
+        // A generated column keeps its expression in the default slot, so the
+        // fallback arm would emit `DEFAULT (expr)` — a different table. 'v'
+        // (virtual, PG18) must not be folded into 's' either: STORED and
+        // VIRTUAL differ in storage and in what an index can be built on.
         match (row[5].as_deref(), row[4].as_deref()) {
-            (Some("s"), _) => line.push_str(&format!(
-                " GENERATED ALWAYS AS ({}) STORED",
-                default.unwrap_or_default()
+            (Some(kind @ ("s" | "v")), _) => line.push_str(&format!(
+                " GENERATED ALWAYS AS ({}) {}",
+                default.unwrap_or_default(),
+                if kind == "v" { "VIRTUAL" } else { "STORED" }
             )),
             (_, Some("a")) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
             (_, Some("d")) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
@@ -520,6 +636,9 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
     }
     ddl.push(';');
 
+    // Only p/u/x constraints own an index (they are already printed above); a
+    // FOREIGN KEY just points conindid at the index it references — including
+    // one on this very table, when the FK is self-referencing.
     let idx = query_rows(
         client,
         &format!(
@@ -527,7 +646,7 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
              WHERE i.indrelid = {rel} \
              AND NOT EXISTS (SELECT 1 FROM pg_constraint co \
                               WHERE co.conindid = i.indexrelid \
-                                AND co.conrelid = i.indrelid) \
+                                AND co.contype IN ('p','u','x')) \
              ORDER BY 1"
         ),
     )
