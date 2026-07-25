@@ -25,6 +25,7 @@ use sql_kai_lib::error::AppError;
 use cmd::discover::DiscoverArgs;
 use cmd::doctor::DoctorArgs;
 use cmd::exec::ExecArgs;
+use cmd::feedback::FeedbackArgs;
 use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
@@ -97,6 +98,8 @@ enum Cmd {
     Rotate(RotateArgs),
     /// Здоровье соединений: сохранённые пароли ещё аутентифицируются?
     Doctor(DoctorArgs),
+    /// Ссылка на issue с диагностикой (ничего не отправляет сам)
+    Feedback(FeedbackArgs),
     /// Живые сессии запущенного GUI: его собственные и cli-сессии брокера
     Sessions(SessionsArgs),
     /// Персистентные ssh-туннели (ControlMaster), переиспользуемые между вызовами
@@ -175,6 +178,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Saved { cmd } => cmd::saved::run(cmd).await,
         Cmd::Rotate(a) => cmd::rotate::run(a).await,
         Cmd::Doctor(a) => cmd::doctor::run(a).await,
+        Cmd::Feedback(a) => cmd::feedback::run(a).await,
         Cmd::Sessions(a) => cmd::sessions::run(a).await,
         Cmd::Tunnel { cmd } => cmd::tunnel::run(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd::vault::run(cmd).await,

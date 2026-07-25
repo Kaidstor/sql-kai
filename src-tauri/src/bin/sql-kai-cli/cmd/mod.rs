@@ -3,6 +3,7 @@
 pub mod discover;
 pub mod doctor;
 pub mod exec;
+pub mod feedback;
 pub mod history;
 pub mod holder;
 pub mod import;

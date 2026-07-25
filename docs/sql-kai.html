@@ -106,7 +106,8 @@ Intel-мак или Linux — собирать из исходников (раз
 <tr><td><code>sql-kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
 <tr><td><code>sql-kai saved list [&lt;alias&gt;]</code> / <code>sql-kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
 <tr><td><code>sql-kai rotate &lt;alias&gt;</code></td><td>Ротация пароля роли Postgres через sec (см. «Интеграция с sec»)</td></tr>
-<tr><td><code>sql-kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются</td></tr>
+<tr><td><code>sql-kai doctor [&lt;alias&gt;]</code></td><td>Проверить, что сохранённые пароли ещё аутентифицируются; в шапке — чем поставлен сам CLI и чем его обновлять. <code>--install-info</code> — только этот блок (в любом формате, без проверки паролей)</td></tr>
+<tr><td><code>sql-kai feedback [сообщение]</code></td><td>Ссылка на предзаполненный issue с несекретной диагностикой (версии, способ установки, запущен ли GUI/holder). Сообщение — аргументом или со stdin. Сама команда никуда ничего не отправляет: печатает URL и спрашивает, открыть ли браузер (<code>--print-only</code> — не спрашивать)</td></tr>
 <tr><td><code>sql-kai history --scan</code></td><td>Прогнать history.json через <code>sec scan</code></td></tr>
 <tr><td><code>sql-kai tunnel list|close [--all]</code></td><td>Персистентные ssh-мастера (см. «Переиспользование ssh»)</td></tr>
 <tr><td><code>sql-kai sessions</code></td><td>Живые сессии GUI-брокера и holder'а (origin: gui / cli / holder, простой)</td></tr>
