@@ -34,6 +34,7 @@ use cmd::profiles::ProfilesCmd;
 use cmd::query::QueryArgs;
 use cmd::rotate::RotateArgs;
 use cmd::saved::SavedCmd;
+use cmd::schema::SchemaArgs;
 use cmd::sessions::SessionsArgs;
 use cmd::tunnel::TunnelCmd;
 use cmd::vault::VaultCmd;
@@ -75,6 +76,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<ProfilesCmd>,
     },
+    /// Вся схема базы одним дампом: таблицы, вьюхи, enum, функции
+    Schema(SchemaArgs),
     /// Список таблиц/вьюх базы
     Tables(TablesArgs),
     /// Колонки таблицы
@@ -166,6 +169,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Discover(a) => cmd::discover::run(a).await,
         Cmd::Import(a) => cmd::import::run(a).await,
         Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { filter: None, fmt: Default::default() })).await,
+        Cmd::Schema(a) => cmd::schema::run(a).await,
         Cmd::Tables(a) => cmd::introspect::tables(a).await,
         Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
         Cmd::Ddl(a) => cmd::introspect::table_info(a, TableInfoKind::Ddl).await,

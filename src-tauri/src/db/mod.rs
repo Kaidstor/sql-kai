@@ -11,7 +11,8 @@ pub use tokio_postgres::types::Type;
 
 pub use catalog::{
     columns_sql, indexes_sql, policies_sql, quote_ident, quote_literal, regclass_literal,
-    relations_sql, rls_sql, table_ddl, triggers_sql, ENUMS_SQL, TABLES_COUNTS_SQL, TABLES_SQL,
+    relations_sql, rls_sql, schema_dump_sql, table_ddl, triggers_sql, SchemaOptions, ENUMS_SQL,
+    SCHEMA_DUMP_PARTS, TABLES_COUNTS_SQL, TABLES_SQL,
 };
 pub use connect::{connect, ConnectOptions, Connected, Session};
 pub use exec::{

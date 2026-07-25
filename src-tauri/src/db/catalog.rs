@@ -158,6 +158,257 @@ pub fn rls_sql(regclass: &str) -> String {
     )
 }
 
+/// Filters of the whole-database dump ([`schema_dump_sql`]).
+#[derive(Default)]
+pub struct SchemaOptions {
+    /// Dump this schema only (a system one is allowed); None = every
+    /// non-system schema.
+    pub schema: Option<String>,
+    /// Keep what is normally noise for a schema overview: system schemas,
+    /// extension-owned objects and leaf partitions.
+    pub internal: bool,
+    /// Include view bodies and routine sources.
+    pub definitions: bool,
+    /// Include COMMENT ON texts.
+    pub comments: bool,
+}
+
+impl SchemaOptions {
+    /// Namespace predicate for a `pg_namespace` alias. Timescale keeps its
+    /// chunks in `_timescaledb_*`, which dwarfs the user schema, so it is
+    /// filtered out next to the `pg_*` ones.
+    fn nsp(&self, alias: &str) -> String {
+        match (&self.schema, self.internal) {
+            (Some(s), _) => format!("{alias}.nspname = {}", quote_literal(s)),
+            (None, true) => "true".to_string(),
+            (None, false) => format!(
+                "{alias}.nspname <> 'information_schema' \
+                 AND {alias}.nspname NOT LIKE 'pg\\_%' \
+                 AND {alias}.nspname NOT LIKE '\\_timescaledb\\_%'"
+            ),
+        }
+    }
+
+    /// Drops objects an extension owns (`pg_depend.deptype = 'e'`). On a
+    /// postgis/timescale database this is the difference between a few dozen
+    /// user objects and thousands of catalog rows. `class` is a caller-side
+    /// constant ('pg_class' / 'pg_type' / 'pg_proc'), never user input.
+    fn no_ext(&self, class: &str, oid: &str) -> String {
+        if self.internal {
+            return "true".to_string();
+        }
+        format!(
+            "NOT EXISTS (SELECT 1 FROM pg_depend dep \
+             WHERE dep.classid = '{class}'::regclass AND dep.objid = {oid} \
+               AND dep.deptype = 'e')"
+        )
+    }
+
+    /// Selects `expr` only when the caller asked for comments/definitions —
+    /// keeps the result-set shape (and thus the column indexes) constant.
+    fn opt_expr(&self, on: bool, expr: &str) -> String {
+        if on {
+            expr.to_string()
+        } else {
+            "NULL::text".to_string()
+        }
+    }
+
+    /// Shared WHERE body for every relation-scoped query: relkind, namespace,
+    /// extension and privilege filters. Visibility is left to Postgres itself
+    /// (`has_*_privilege`) instead of hand-rolled ACL checks.
+    fn rel_filter(&self) -> String {
+        let mut parts = vec![
+            "c.relkind IN ('r','p','v','m','f')".to_string(),
+            self.nsp("n"),
+            self.no_ext("pg_class", "c.oid"),
+            "has_schema_privilege(n.oid, 'USAGE')".to_string(),
+            "has_table_privilege(c.oid, 'SELECT, INSERT, UPDATE, DELETE, \
+             TRUNCATE, REFERENCES, TRIGGER')"
+                .to_string(),
+        ];
+        if !self.internal {
+            // Leaf partitions repeat the parent's columns/indexes verbatim;
+            // the parent reports how many of them there are.
+            parts.push("NOT c.relispartition".to_string());
+        }
+        parts.join("\n           AND ")
+    }
+}
+
+/// Number of result sets [`schema_dump_sql`] produces, in this order:
+/// 0 relations, 1 columns, 2 constraints, 3 indexes, 4 triggers, 5 enum
+/// labels, 6 routines.
+pub const SCHEMA_DUMP_PARTS: usize = 7;
+
+/** Whole-database schema as one simple-query batch: a single round-trip and a
+ *  single catalog snapshot instead of the per-table walk (tables → columns →
+ *  indexes → ddl) an agent would otherwise do. The cost is therefore constant
+ *  in the number of tables, which is the entire point of the command.
+ *
+ *  Column layout per result set (all values arrive as text):
+ *  - relations: nspname, relname, relkind, partkeydef, partition parent,
+ *    partition count, rowsecurity, comment, viewdef
+ *  - columns: nspname, relname, attname, type, notnull, default, identity,
+ *    generated, comment
+ *  - constraints: nspname, relname, conname, contype, definition
+ *  - indexes: nspname, relname, index name, unique, definition
+ *  - triggers: nspname, relname, tgname, timing, events, function, enabled
+ *  - enums: nspname, typname, label, comment (one row per label, sorted)
+ *  - routines: nspname, proname, prokind, arguments, result, language,
+ *    volatility, definition, comment
+ */
+pub fn schema_dump_sql(o: &SchemaOptions) -> String {
+    let rel = o.rel_filter();
+
+    let relations = format!(
+        "SELECT n.nspname, c.relname, c.relkind::text,
+                pg_get_partkeydef(c.oid),
+                CASE WHEN c.relispartition THEN (
+                  SELECT pn.nspname || '.' || pc.relname
+                    FROM pg_inherits i
+                    JOIN pg_class pc ON pc.oid = i.inhparent
+                    JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+                   WHERE i.inhrelid = c.oid LIMIT 1) END,
+                CASE WHEN c.relkind = 'p' THEN (
+                  SELECT count(*)::text FROM pg_inherits i WHERE i.inhparent = c.oid) END,
+                c.relrowsecurity::text,
+                {comment},
+                {viewdef}
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE {rel}
+          ORDER BY n.nspname,
+                   CASE c.relkind WHEN 'f' THEN 1 WHEN 'v' THEN 2 WHEN 'm' THEN 3 ELSE 0 END,
+                   c.relname",
+        comment = o.opt_expr(o.comments, "obj_description(c.oid, 'pg_class')"),
+        viewdef = o.opt_expr(
+            o.definitions,
+            "CASE WHEN c.relkind IN ('v','m') THEN pg_get_viewdef(c.oid, true) END"
+        ),
+    );
+
+    let columns = format!(
+        "SELECT n.nspname, c.relname, a.attname,
+                format_type(a.atttypid, a.atttypmod),
+                a.attnotnull::text,
+                pg_get_expr(d.adbin, d.adrelid),
+                a.attidentity::text,
+                a.attgenerated::text,
+                {comment}
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE a.attnum > 0 AND NOT a.attisdropped
+            AND {rel}
+          ORDER BY n.nspname, c.relname, a.attnum",
+        comment = o.opt_expr(o.comments, "col_description(a.attrelid, a.attnum)"),
+    );
+
+    // NOT NULL ('n', PG18+) is already rendered from pg_attribute.attnotnull.
+    let constraints = format!(
+        "SELECT n.nspname, c.relname, con.conname, con.contype::text,
+                pg_get_constraintdef(con.oid, true)
+           FROM pg_constraint con
+           JOIN pg_class c ON c.oid = con.conrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE con.contype IN ('p','u','f','c','x')
+            AND {rel}
+          ORDER BY n.nspname, c.relname,
+                   CASE con.contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END,
+                   con.conname"
+    );
+
+    // Constraint-backed indexes are skipped: they are printed as constraints.
+    let indexes = format!(
+        "SELECT n.nspname, c.relname, ic.relname, i.indisunique::text,
+                pg_get_indexdef(i.indexrelid, 0, true)
+           FROM pg_index i
+           JOIN pg_class c ON c.oid = i.indrelid
+           JOIN pg_class ic ON ic.oid = i.indexrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid)
+            AND {rel}
+          ORDER BY n.nspname, c.relname, ic.relname"
+    );
+
+    let triggers = format!(
+        "SELECT n.nspname, c.relname, t.tgname,
+                CASE WHEN (t.tgtype & 2) > 0 THEN 'BEFORE'
+                     WHEN (t.tgtype & 64) > 0 THEN 'INSTEAD OF'
+                     ELSE 'AFTER' END,
+                concat_ws(' OR ',
+                  CASE WHEN (t.tgtype & 4) > 0 THEN 'INSERT' END,
+                  CASE WHEN (t.tgtype & 8) > 0 THEN 'DELETE' END,
+                  CASE WHEN (t.tgtype & 16) > 0 THEN 'UPDATE' END,
+                  CASE WHEN (t.tgtype & 32) > 0 THEN 'TRUNCATE' END),
+                tn.nspname || '.' || tp.proname,
+                (t.tgenabled <> 'D')::text
+           FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_proc tp ON tp.oid = t.tgfoid
+           JOIN pg_namespace tn ON tn.oid = tp.pronamespace
+          WHERE NOT t.tgisinternal
+            AND {rel}
+          ORDER BY n.nspname, c.relname, t.tgname"
+    );
+
+    let enums = format!(
+        "SELECT n.nspname, t.typname, e.enumlabel, {comment}
+           FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+           JOIN pg_enum e ON e.enumtypid = t.oid
+          WHERE t.typtype = 'e'
+            AND {nsp}
+            AND {no_ext}
+            AND has_schema_privilege(n.oid, 'USAGE')
+            AND has_type_privilege(t.oid, 'USAGE')
+          ORDER BY n.nspname, t.typname, e.enumsortorder",
+        comment = o.opt_expr(o.comments, "obj_description(t.oid, 'pg_type')"),
+        nsp = o.nsp("n"),
+        no_ext = o.no_ext("pg_type", "t.oid"),
+    );
+
+    // prokind 'a'/'w' (aggregates, window functions) are left out on purpose —
+    // pg_get_functiondef errors on them and they are rarely user-authored.
+    let routines = format!(
+        "SELECT n.nspname, p.proname, p.prokind::text,
+                pg_get_function_arguments(p.oid),
+                pg_get_function_result(p.oid),
+                l.lanname,
+                CASE p.provolatile WHEN 'i' THEN 'immutable' WHEN 's' THEN 'stable'
+                     ELSE 'volatile' END,
+                {definition},
+                {comment}
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+           JOIN pg_language l ON l.oid = p.prolang
+          WHERE p.prokind IN ('f','p')
+            AND {nsp}
+            AND {no_ext}
+            AND has_schema_privilege(n.oid, 'USAGE')
+            AND has_function_privilege(p.oid, 'EXECUTE')
+          ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)",
+        definition = o.opt_expr(o.definitions, "pg_get_functiondef(p.oid)"),
+        comment = o.opt_expr(o.comments, "obj_description(p.oid, 'pg_proc')"),
+        nsp = o.nsp("n"),
+        no_ext = o.no_ext("pg_proc", "p.oid"),
+    );
+
+    [
+        relations,
+        columns,
+        constraints,
+        indexes,
+        triggers,
+        enums,
+        routines,
+    ]
+    .join(";\n")
+}
+
 /** Postgres has no SHOW CREATE TABLE — assemble the DDL from the catalogs:
  *  columns (types/defaults/identity), constraints, secondary indexes,
  *  partition key and comments. Views return their stored definition. */
