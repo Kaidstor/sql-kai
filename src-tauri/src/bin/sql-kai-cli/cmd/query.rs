@@ -31,6 +31,9 @@ pub struct QueryArgs {
     /// Разрешить запись (по умолчанию сессия read-only)
     #[arg(long)]
     pub(crate) write: bool,
+    /// Подтвердить запись в production-профиль (только вместе с --write)
+    #[arg(long, requires = "write")]
+    pub(crate) prod_write: bool,
     /// Env-переменная с паролем БД (обход vault)
     #[arg(long, value_name = "VAR")]
     pub(crate) password_env: Option<String>,
@@ -192,6 +195,13 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
 
 pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     let sql = input::collect_sql(&a.commands, &a.files)?;
+    // Прод-барьер — до выбора пути: подтверждение спрашивается один раз и до
+    // того, как поднимутся брокер/holder/туннель. Дальше и брокерный, и
+    // автономный путь видят уже выданное разрешение.
+    if a.write {
+        let profile = session::resolve_profile(&a.alias)?;
+        session::authorize_prod_write(&profile, a.prod_write)?;
+    }
     // Живой GUI (или holder) обслуживает запрос своей cli-сессией; кастомные
     // источники пароля (--password-env/--from-sec) — всегда автономно.
     // --no-mux тоже: сервер сессий держит mux-туннели, а флаг просит свежий

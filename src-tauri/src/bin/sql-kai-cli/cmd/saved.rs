@@ -33,6 +33,9 @@ pub enum SavedCmd {
         /// Разрешить запись (по умолчанию сессия read-only)
         #[arg(long)]
         write: bool,
+        /// Подтвердить запись в production-профиль (только вместе с --write)
+        #[arg(long, requires = "write")]
+        prod_write: bool,
         #[arg(long, value_name = "VAR")]
         password_env: Option<String>,
         /// Взять пароль БД из sec (ключ <имя>/DB_PASSWORD)
@@ -89,6 +92,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
             fmt,
             max_rows,
             write,
+            prod_write,
             password_env,
             from_sec,
             sec_key,
@@ -115,6 +119,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 fmt,
                 max_rows,
                 write,
+                prod_write,
                 password_env,
                 from_sec,
                 sec_key,

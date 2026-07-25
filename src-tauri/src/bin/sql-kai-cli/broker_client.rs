@@ -228,6 +228,15 @@ impl BrokerClient {
         write: bool,
         with_types: bool,
     ) -> Result<BrokerQuery, BrokerError> {
+        // Сессию держит сервер, но политику прода решает клиент: тут сходятся
+        // оба его потребителя — `sql-kai q` и MCP-tool query. Отказ отдаём как
+        // Query — это финальный ответ, автономный путь его не переигрывает.
+        if write {
+            session::guard_prod_write_by_id(profile_id).map_err(|e| BrokerError::Query {
+                message: e.to_string(),
+                sqlstate: None,
+            })?;
+        }
         let v = self
             .request(
                 "query",
