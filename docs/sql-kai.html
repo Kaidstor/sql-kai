@@ -126,7 +126,7 @@ sql-kai init --skip-if-configured  # для установщиков: молча
 <tr><td><code>sql-kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
 <tr><td><code>sql-kai schema &lt;alias&gt;</code></td><td>Вся схема базы одним дампом (константное число каталожных запросов вместо обхода по таблицам): таблицы/партиционированные/foreign, вьюхи и матвьюхи с колонками, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. По умолчанию без системных схем, объектов расширений (postgis/timescale) и листовых партиций. Флаги: <code>--schema &lt;name&gt;</code>, <code>--internal</code>, <code>--definitions</code> (тела вьюх/функций), <code>--comments</code>, <code>--json</code></td></tr>
 <tr><td><code>sql-kai logs &lt;alias&gt; [-n 200] [-f]</code></td><td>Журнал postgres-сервера профиля: ssh на его хост → <code>docker logs</code> контейнера. Флаги <code>--since 10m</code>, <code>--until</code>, <code>--timestamps</code>, <code>--container</code>; строки контейнера идут в stdout (можно <code>| grep</code>)</td></tr>
-<tr><td><code>sql-kai fork &lt;alias&gt; [новое-имя]</code></td><td>Копия базы профиля в локальном docker (<code>pg_dump</code> из read-only-сессии → <code>postgres:&lt;мажор источника&gt;</code> на 127.0.0.1) плюс профиль на неё: песочница под миграции вместо экспериментов на проде. По умолчанию только схема, <code>--data</code> — с данными; <code>--image</code>, <code>--port</code>, <code>--replace</code>, <code>--yes</code>, <code>--dry-run</code>. Форк не наследует метку <code>production</code>; снос — <code>docker rm -f</code></td></tr>
+<tr><td><code>sql-kai fork &lt;alias&gt; [новое-имя]</code></td><td>Копия базы профиля в локальном docker (<code>pg_dump</code> из read-only-сессии → <code>postgres:&lt;мажор источника&gt;</code> на 127.0.0.1) плюс профиль на неё: песочница под миграции вместо экспериментов на проде. По умолчанию только схема, <code>--data</code> — с данными (с production-профиля требует <code>--prod-data</code> или подтверждения именем); <code>--image</code>, <code>--port</code>, <code>--replace</code>, <code>--yes</code>, <code>--dry-run</code>. Форк не наследует метку <code>production</code>; снос — <code>docker rm -f</code></td></tr>
 <tr><td><code>sql-kai mcp [&lt;alias&gt;]</code></td><td>MCP-сервер (stdio) для AI-агентов — см. «MCP» ниже. С алиасом закреплён за одной базой, без алиаса обслуживает все профили</td></tr>
 <tr><td><code>sql-kai mcp install [клиент]</code> / <code>sql-kai mcp status</code></td><td>Прописать сервер в конфиг MCP-клиента (claude-code, claude-desktop, codex, cursor, vscode, windsurf, gemini) — слияние без затирания чужих серверов, <code>.bak</code>, <code>--dry-run</code>, <code>--force</code>, <code>--profile</code>. Без аргумента-клиента печатается только таблица клиентов и путей. <code>status</code> — где сервер уже прописан</td></tr>
 <tr><td><code>sql-kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
@@ -168,6 +168,9 @@ sql-kai init --skip-if-configured  # для установщиков: молча
 её не выставит, а <code>"write": true</code> в аргументах tool'а сам по себе прод не открывает.
 Барьер общий для всех путей записи — <code>q</code>, <code>saved run</code>, <code>rotate</code>,
 MCP-tool <code>query</code> и <code>exec</code> на ssh-хост, к которому привязан prod-профиль.
+Сессии живут в сервере сессий (GUI или holder), и он держит свою проверку: запрос без
+пройденного барьера в prod-профиль не пишет, даже если пришёл в сокет мимо sql-kai —
+например от старой версии CLI. Каждая прод-запись попадает в журнал брокера.
 Чтение из прод-профилей ничего не спрашивает.</p>
 
 <h3>Транзакции</h3>
@@ -261,8 +264,15 @@ rebrandy-сервиса (postgres в docker-compose на хосте):</p>
 <p><code>sql-kai exec &lt;ssh-alias&gt;</code> — прямой режим без профиля и vault, как у старого
 prod-db: ssh на хост → найти контейнер → <code>docker exec psql</code>. Пароль не нужен
 (psql внутри контейнера ходит по trust/peer). Вывод — сырой текст psql
-(<code>-t</code>, <code>--csv</code> прокидываются в psql). Тот же read-only guard: без
-<code>--write</code> в начало SQL добавляется <code>SET default_transaction_read_only = on</code>.</p>
+(<code>-t</code>, <code>--csv</code> прокидываются в psql). Тот же read-only guard, но границей
+служит транзакция: без <code>--write</code> батч уходит в psql с <code>--single-transaction</code>
+и первым же <code>SET TRANSACTION READ ONLY</code> — внутри такого блока Postgres не даёт ни
+писать, ни снять с себя read-only. Выйти из него тоже нельзя: и транзакционные команды
+(<code>COMMIT</code>, <code>ROLLBACK</code>, <code>DISCARD</code>, <code>SET TRANSACTION</code>),
+и мета-команды psql, уводящие из транзакции или тащащие чужой SQL (<code>\c</code>,
+<code>\i</code>, <code>\gexec</code>, <code>\o</code>, <code>\copy</code>, <code>\!</code>),
+на чтении отвергаются; describe и переключатели вывода (<code>\d…</code>, <code>\l</code>,
+<code>\x</code>, <code>\timing</code>) проходят.</p>
 <p>Когда нужен: до базы не достучаться туннелем (порт не публикуется и IP контейнера
 недоступен), пароля нет в env контейнера, или профиль заводить незачем.
 <code>--dry-run</code> печатает команду, не заходя на хост.</p>
@@ -318,9 +328,12 @@ docker rm -f sql-kai-fork-vuln-fork          # снести форк</code></pre
 его не снесут: <code>docker rm -f</code>. Копия без данных проверяет синтаксис и совместимость
 схемы; чтобы оценить время рерайта и увидеть реальные планы, нужен <code>--data</code>.</div>
 <div class="note"><strong>Где оказываются данные.</strong> Форк всегда локальный — прод
-участвует только как источник дампа, на удалённой стороне ничего не создаётся (там
-выполняется единственная операция, <code>pg_dump</code> в read-only-сессии). Обратная сторона:
-с <code>--data</code> боевые данные переезжают на вашу машину. Дамп пишется в
+участвует только как источник дампа, на удалённой стороне ничего не создаётся (единственная
+операция над источником — <code>pg_dump</code>: SELECT-ы и ACCESS SHARE-локи). Обратная сторона:
+с <code>--data</code> боевые данные переезжают на вашу машину, поэтому с профиля, помеченного
+<strong>production</strong>, такой форк требует отдельного подтверждения — имя профиля в
+терминале, флаг <code>--prod-data</code> или <code>SQL_KAI_ALLOW_PROD_DUMP=&lt;профиль&gt;</code>;
+<code>--yes</code> его не снимает. Дамп пишется в
 <code>$TMPDIR</code> файлом с правами 0600 и удаляется после заливки — но сознательно
 остаётся, если <code>psql</code> дамп не залил (иначе нечего разбирать), и путь печатается.
 Сама копия лежит в docker-томе без шифрования и живёт до <code>docker rm -f</code>. Порт
@@ -540,6 +553,7 @@ env-переменной, vault не трогается вовсе.</p>
 <tr><td><code>SQL_KAI_SSH_MUX_TTL</code></td><td>Сколько секунд ssh-мастер живёт после простоя (по умолчанию 300)</td></tr>
 <tr><td><code>SQL_KAI_SEC_BIN</code></td><td>Путь к бинарю <code>sec</code> (по умолчанию — из PATH)</td></tr>
 <tr><td><code>SQL_KAI_ALLOW_PROD_WRITE</code></td><td>Разрешает запись в production-профили без интерактивного подтверждения: имя/id профиля (список через запятую) или <code>1</code> — все prod-профили. Единственный способ разрешить запись в прод из MCP/CI</td></tr>
+<tr><td><code>SQL_KAI_ALLOW_PROD_DUMP</code></td><td>То же для <code>fork --data</code> с production-профиля — выгрузки боевых данных на эту машину. Значения разбираются так же</td></tr>
 <tr><td><code>SQL_KAI_CONFIG_DIR</code></td><td>Переопределяет конфиг-директорию (по умолчанию <code>~/Library/Application&nbsp;Support/sql-kai</code>) — изолированные окружения и тесты</td></tr>
 </table>
 
