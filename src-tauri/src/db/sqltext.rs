@@ -457,13 +457,59 @@ pub fn escapes_read_only_tx(sql: &str) -> bool {
 }
 
 /// Identifier-ish words of a statement, uppercased — keyword sniffing past the
-/// first two words (`SET SESSION CHARACTERISTICS AS TRANSACTION …`).
+/// first two words (`SET SESSION CHARACTERISTICS AS TRANSACTION …`). Text
+/// counts: this reads words out of comments and string literals too, which is
+/// what finds the GUC name in `set_config('transaction_read_only', …)`.
+///
+/// Only sound where a word that isn't really a keyword can *refuse* more; where
+/// one would *permit* (`COPY … TO '/tmp/stdout'` reading as `TO STDOUT`), the
+/// gate must ask [`code_tokens`] instead.
 fn words_of(stmt: &str) -> Vec<String> {
     strip_leading_noise(stmt)
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())
         .map(|w| w.to_ascii_uppercase())
         .collect()
+}
+
+/// Words of a statement that are *code*, uppercased, each with the parenthesis
+/// depth it sits at. Comments, string literals, quoted identifiers and
+/// dollar-quoted bodies are stepped over via [`skip_noise`] and contribute
+/// nothing, so what comes back is what the server's parser would see as
+/// keywords and identifiers.
+///
+/// The depth is what tells COPY's own `TO`/`FROM` (depth 0) from one inside its
+/// parenthesised query or column list.
+fn code_tokens(stmt: &str) -> Vec<(String, u32)> {
+    let b = stmt.as_bytes();
+    let mut out = Vec::new();
+    let mut depth: u32 = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if let Some((next, _)) = skip_noise(b, i) {
+            i = next.max(i + 1);
+            continue;
+        }
+        match b[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            c if c.is_ascii_alphanumeric() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.push((stmt[start..i].to_ascii_uppercase(), depth));
+            }
+            _ => i += 1,
+        }
+    }
+    out
 }
 
 /// True when the statement names one of the read-only GUCs. Both spellings are
@@ -496,18 +542,29 @@ fn calls_set_config(stmt: &str) -> bool {
 /// `COPY … TO STDOUT` / `FROM STDIN` stream through the client and stay allowed.
 pub fn reaches_server_side_io(sql: &str) -> bool {
     split_statements(sql).iter().any(|stmt| {
-        let words = words_of(stmt);
         // Large objects export straight to a server path, under any head keyword.
-        if words.iter().any(|w| w == "LO_EXPORT" || w == "LO_IMPORT") {
+        if words_of(stmt).iter().any(|w| w == "LO_EXPORT" || w == "LO_IMPORT") {
             return true;
         }
         if head_keywords(stmt).0 != "COPY" {
             return false;
         }
-        // PROGRAM is a shell; anything that is neither PROGRAM nor a std stream
-        // is a server-side path (`COPY t TO '/tmp/x'`).
-        words.iter().any(|w| w == "PROGRAM")
-            || !words.iter().any(|w| w == "STDOUT" || w == "STDIN")
+        let tokens = code_tokens(stmt);
+        // PROGRAM is a shell.
+        if tokens.iter().any(|(w, _)| w == "PROGRAM") {
+            return true;
+        }
+        // Everything else hangs on COPY's destination, which is the token right
+        // after its own `TO`/`FROM` — and only the bare keywords STDOUT/STDIN
+        // stream through the client. Asking [`code_tokens`] rather than
+        // [`words_of`] is the whole point: `COPY (SELECT 1) TO '/tmp/stdout'`
+        // has the word STDOUT in it and writes a file on the server. A COPY
+        // with no destination we can name isn't one to vouch for either.
+        let dest = tokens
+            .iter()
+            .position(|(w, d)| *d == 0 && (w == "TO" || w == "FROM"))
+            .and_then(|k| tokens.get(k + 1));
+        !matches!(dest, Some((w, 0)) if w == "STDOUT" || w == "STDIN")
     })
 }
 
@@ -515,18 +572,22 @@ pub fn reaches_server_side_io(sql: &str) -> bool {
 /// ends the current transaction but immediately starts a new one with the same
 /// characteristics — including read-write mode, which is why the read-only gate
 /// must not treat it as a plain close. `AND NO CHAIN` is a plain close.
+///
+/// Code tokens only, because this is the one gate word that *permits*:
+/// [`escapes_read_only_tx`] lets a chaining COMMIT through, so reading `COMMIT
+/// /* AND CHAIN */` as one would leave the read-only block open for whatever
+/// the batch runs next — the server sees a plain COMMIT there.
 fn chains_new_tx(stmt: &str) -> bool {
-    let words: Vec<String> = strip_leading_noise(stmt)
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_ascii_uppercase())
-        .collect();
+    let words: Vec<String> = code_tokens(stmt).into_iter().map(|(w, _)| w).collect();
     words.windows(2).any(|w| w[0] == "AND" && w[1] == "CHAIN")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{escapes_read_only_tx, is_tx_control_only, psql_meta_commands, split_statements};
+    use super::{
+        escapes_read_only_tx, is_tx_control_only, psql_meta_commands, reaches_server_side_io,
+        split_statements,
+    };
 
     #[test]
     fn read_only_tx_escape_gate() {
@@ -584,6 +645,38 @@ mod tests {
         assert!(escapes_read_only_tx("/* a /* b */ x */ COMMIT"));
         assert!(escapes_read_only_tx("/* /* */ */ SET TRANSACTION READ WRITE"));
         assert!(!escapes_read_only_tx("/* a /* COMMIT */ b */ SELECT 1"));
+    }
+
+    #[test]
+    fn keywords_only_count_where_they_are_code() {
+        // `AND CHAIN` in a comment is not `AND CHAIN`: Postgres runs a plain
+        // COMMIT, the read-only block ends and the INSERT lands outside it.
+        assert!(escapes_read_only_tx(
+            "COMMIT /* AND CHAIN */; INSERT INTO t VALUES (1)"
+        ));
+        assert!(escapes_read_only_tx("COMMIT -- AND CHAIN\n"));
+        assert!(escapes_read_only_tx("ROLLBACK /* AND CHAIN */"));
+        // …while a comment *between* the two words leaves them adjacent as code
+        assert!(!escapes_read_only_tx("COMMIT AND /* now */ CHAIN"));
+        // the mirror side: a comment must not make a plain COMMIT unclosable
+        assert!(is_tx_control_only("COMMIT /* AND CHAIN */"));
+
+        // A path that merely reads like a stream keyword still writes a file on
+        // the server, under whatever it takes to make the word appear.
+        assert!(reaches_server_side_io("COPY (SELECT 1) TO '/tmp/stdout'"));
+        assert!(reaches_server_side_io("COPY t FROM '/tmp/stdin'"));
+        assert!(reaches_server_side_io("COPY t TO '/tmp/x' -- STDOUT\n"));
+        assert!(reaches_server_side_io("COPY (SELECT 'stdout') TO '/tmp/x'"));
+        assert!(reaches_server_side_io("COPY t TO PROGRAM 'sh -c id'"));
+        assert!(reaches_server_side_io("SELECT lo_export(1, '/tmp/x')"));
+        // streaming through the client stays allowed, parens and all
+        assert!(!reaches_server_side_io("COPY t TO STDOUT"));
+        assert!(!reaches_server_side_io("COPY t (a, b) FROM STDIN"));
+        assert!(!reaches_server_side_io("COPY \"my table\" TO stdout"));
+        assert!(!reaches_server_side_io(
+            "COPY (SELECT * FROM t WHERE s = 'x') TO STDOUT (FORMAT csv)"
+        ));
+        assert!(!reaches_server_side_io("SELECT 1"));
     }
 
     #[test]
