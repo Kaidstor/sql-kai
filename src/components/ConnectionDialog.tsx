@@ -177,6 +177,9 @@ function sslConfig(form: FormState): SslConfig | null {
 function toProfile(form: FormState, existing?: Profile): Profile {
   return {
     id: existing?.id ?? "",
+    // не поле формы, а метка `sql-kai fork`: без неё CLI перестал бы узнавать
+    // собственный форк и отказался бы его пересоздавать
+    forkContainer: existing?.forkContainer ?? null,
     name: form.name.trim() || `${form.user}@${form.host}/${form.database}`,
     group: form.group.trim() || null,
     color: form.color || null,

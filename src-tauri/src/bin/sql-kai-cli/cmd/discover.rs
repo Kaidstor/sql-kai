@@ -170,6 +170,8 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         color: existing.as_ref().and_then(|e| e.color.clone()),
         production: existing.as_ref().map(|e| e.production).unwrap_or(false),
         ssl: existing.as_ref().and_then(|e| e.ssl.clone()),
+        // не форк: профиль смотрит на чужой контейнер по ssh
+        fork_container: None,
         has_password: existing.as_ref().map(|e| e.has_password).unwrap_or(false),
         has_ssh_passphrase: existing
             .as_ref()

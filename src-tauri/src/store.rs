@@ -90,6 +90,11 @@ pub struct Profile {
     /// [`SslConfig`]. None — plaintext.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssl: Option<SslConfig>,
+    /// Docker container this profile is the local fork of (`sql-kai fork`).
+    /// Set — re-forking under the same name may overwrite this profile; unset —
+    /// it is someone's own connection and the name is taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_container: Option<String>,
     /// Whether a DB password is stored in the vault for this profile. Cached
     /// here for offline display; the vault is the source of truth.
     #[serde(default)]

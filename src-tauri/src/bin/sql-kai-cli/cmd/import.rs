@@ -129,6 +129,7 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
             color: imp.color.filter(|c| !c.trim().is_empty()),
             production: imp.production,
             ssl: None,
+            fork_container: None,
             has_password: false,
             has_ssh_passphrase: false,
             last_connected: None,

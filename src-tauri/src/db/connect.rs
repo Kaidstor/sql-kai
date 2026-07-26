@@ -197,6 +197,37 @@ fn build_tls_connector(ssl: &SslConfig) -> Result<native_tls::TlsConnector, AppE
         .map_err(|e| AppError::Msg(format!("could not set up TLS: {e}")))
 }
 
+/// The profile's TLS settings as libpq environment variables, for the external
+/// clients that reach the same database around [`build_tls_connector`] —
+/// `pg_dump` on the fork path above all. Empty when TLS is off.
+///
+/// Same semantics as the connector: `reject_unauthorized` means the chain *and*
+/// the hostname are verified (libpq's `verify-full`), and off means encrypt-only
+/// (`require`). Gotcha: libpq's default trust store is `~/.postgresql/root.crt`,
+/// not the system one native-tls uses, so verifying without a profile CA needs
+/// `sslrootcert=system` — understood by libpq 16+, and an error (never a silent
+/// downgrade) on older ones.
+pub fn libpq_ssl_env(ssl: &SslConfig) -> Vec<(&'static str, String)> {
+    if !ssl.enabled {
+        return Vec::new();
+    }
+    let mut env = Vec::new();
+    if ssl.reject_unauthorized {
+        env.push(("PGSSLMODE", "verify-full".to_string()));
+        env.push((
+            "PGSSLROOTCERT",
+            ssl_path(&ssl.ca_cert).unwrap_or_else(|| "system".to_string()),
+        ));
+    } else {
+        env.push(("PGSSLMODE", "require".to_string()));
+    }
+    if let (Some(cert), Some(key)) = (ssl_path(&ssl.client_cert), ssl_path(&ssl.client_key)) {
+        env.push(("PGSSLCERT", cert));
+        env.push(("PGSSLKEY", key));
+    }
+    env
+}
+
 /// Non-empty trimmed path from an [`SslConfig`] field, `~/` expanded.
 fn ssl_path(v: &Option<String>) -> Option<String> {
     let p = v.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
@@ -285,4 +316,56 @@ async fn build_session(
         server_version,
         tunnel_port,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::libpq_ssl_env;
+    use crate::store::SslConfig;
+
+    fn ssl(enabled: bool, verify: bool) -> SslConfig {
+        SslConfig {
+            enabled,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            reject_unauthorized: verify,
+        }
+    }
+
+    /// Внешний клиент (`pg_dump` на пути fork) должен получить ту же защиту, что
+    /// и основное подключение: verify-full с CA и клиентским сертификатом
+    /// профиля. Один `PGSSLMODE=require` шифровал канал, но сертификат сервера
+    /// не проверял никто.
+    #[test]
+    fn ssl_env_mirrors_the_connector() {
+        assert!(libpq_ssl_env(&ssl(false, true)).is_empty());
+        assert_eq!(
+            libpq_ssl_env(&ssl(true, false)),
+            [("PGSSLMODE", "require".to_string())]
+        );
+        // проверка включена, своего CA нет — системное хранилище, как у native-tls
+        assert_eq!(
+            libpq_ssl_env(&ssl(true, true)),
+            [
+                ("PGSSLMODE", "verify-full".to_string()),
+                ("PGSSLROOTCERT", "system".to_string()),
+            ]
+        );
+        let mtls = SslConfig {
+            ca_cert: Some("/ca.pem".into()),
+            client_cert: Some("/cert.pem".into()),
+            client_key: Some("/key.pem".into()),
+            ..ssl(true, true)
+        };
+        assert_eq!(
+            libpq_ssl_env(&mtls),
+            [
+                ("PGSSLMODE", "verify-full".to_string()),
+                ("PGSSLROOTCERT", "/ca.pem".to_string()),
+                ("PGSSLCERT", "/cert.pem".to_string()),
+                ("PGSSLKEY", "/key.pem".to_string()),
+            ]
+        );
+    }
 }

@@ -51,6 +51,10 @@ export interface Profile {
   color?: string | null;
   /** Production database: the UI asks before running data-modifying SQL. */
   production?: boolean;
+  /** Docker container this profile is the local fork of (`sql-kai fork`);
+   *  absent for hand-made profiles. Round-tripped so that editing a fork here
+   *  doesn't turn it into a stranger the CLI refuses to refresh. */
+  forkContainer?: string | null;
   hasPassword?: boolean;
   hasSshPassphrase?: boolean;
   /** Last successful connection per client, attached by the backend from

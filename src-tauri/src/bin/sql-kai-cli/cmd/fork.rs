@@ -209,6 +209,26 @@ fn image_for(server_version: &str) -> Result<String, AppError> {
     }
 }
 
+/// Профиль, занявший имя форка, — действительно форк этого контейнера, а не
+/// чужое подключение, которое пересоздание затрёт (тот же id, но новые порт,
+/// пароль, база и снятый `production`). Признака «127.0.0.1 и без ssh» для
+/// этого мало: под него подходит любой обычный локальный профиль, так что
+/// `fork prod --name local-dev` забирал себе рабочее подключение к локальной
+/// базе.
+///
+/// Метку `fork_container` ставит сам fork; профили, заведённые до неё (или
+/// потерявшие её при правке в GUI), опознаём по контейнеру — он существует и
+/// публикует порт профиля.
+fn is_fork_of(p: &Profile, cname: &str, container_exists: bool) -> Result<bool, AppError> {
+    if p.fork_container.as_deref() == Some(cname) {
+        return Ok(true);
+    }
+    Ok(p.ssh.is_none()
+        && p.host == "127.0.0.1"
+        && container_exists
+        && container_publishes_port(cname, p.port)?)
+}
+
 /// Имя контейнера: префикс + имя профиля, приведённое к алфавиту docker
 /// ([a-zA-Z0-9_.-]). Префикс заодно даёт `docker ps | grep sql-kai-fork`.
 fn container_name(fork_name: &str) -> String {
@@ -394,8 +414,16 @@ fn dump_local(
     if schema_only {
         cmd.arg("--schema-only");
     }
+    // Сертификат проверяется на настоящее имя сервера, а TCP идёт в туннель на
+    // 127.0.0.1 — libpq делит это на host (имя, SNI и проверка) и hostaddr
+    // (куда стучаться), ровно как основное подключение.
+    let verifies = profile
+        .ssl
+        .as_ref()
+        .is_some_and(|s| s.enabled && s.reject_unauthorized);
+    let via_forward = verifies && endpoint.0 != profile.host;
     cmd.arg("-h")
-        .arg(endpoint.0)
+        .arg(if via_forward { profile.host.as_str() } else { endpoint.0 })
         .arg("-p")
         .arg(endpoint.1.to_string())
         .arg("-U")
@@ -403,11 +431,20 @@ fn dump_local(
         .arg("-d")
         .arg(&profile.database)
         .env("PGCONNECT_TIMEOUT", "10");
+    if via_forward {
+        cmd.env("PGHOSTADDR", endpoint.0);
+    }
     if let Some(pw) = password {
         cmd.env("PGPASSWORD", pw);
     }
-    if profile.ssl.as_ref().is_some_and(|s| s.enabled) {
-        cmd.env("PGSSLMODE", "require");
+    // Здесь стоял голый `PGSSLMODE=require`: канал шифровался, но сертификат
+    // сервера не проверял никто (MITM на этой сессии видит пароль и весь дамп),
+    // а профиль с mTLS просто не мог подключиться. Настройки берём те же, что и
+    // у основного подключения.
+    if let Some(ssl) = &profile.ssl {
+        for (k, v) in sql_kai_lib::db::libpq_ssl_env(ssl) {
+            cmd.env(k, v);
+        }
     }
     vault::scrub_master_password_env(&mut cmd);
     let file = open_dump_file(out)?;
@@ -520,15 +557,17 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
             "имя форка совпадает с именем источника ('{fork_name}') — форк затёр бы профиль-источник"
         )));
     }
+    let cname = container_name(&fork_name);
+    let existing_container = container_state(&cname)?;
     // Повторный fork обновляет свой профиль, но чужой (не форк) затирать нельзя:
-    // у него другой host/ssh, и пользователь потерял бы рабочее подключение.
+    // пользователь потерял бы рабочее подключение.
     let existing_profile = store::load_profiles()?
         .into_iter()
         .find(|p| p.name.eq_ignore_ascii_case(&fork_name));
     if let Some(e) = &existing_profile {
-        if e.ssh.is_some() || e.host != "127.0.0.1" {
+        if !is_fork_of(e, &cname, existing_container.is_some())? {
             return Err(AppError::Msg(format!(
-                "профиль '{}' уже есть и указывает не на локальный форк ({}:{}) — \
+                "профиль '{}' ({}:{}) уже есть и это не форк контейнера {cname} — \
                  выбери другое имя (--name)",
                 e.name, e.host, e.port
             )));
@@ -538,8 +577,6 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         Some(i) => i.clone(),
         None => image_for(&connected.server_version)?,
     };
-    let cname = container_name(&fork_name);
-    let existing_container = container_state(&cname)?;
     if existing_container.is_some() && !a.replace {
         return Err(AppError::Msg(format!(
             "контейнер {cname} уже существует — снеси его (`docker rm -f {cname}`) \
@@ -764,6 +801,7 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
         color: existing.and_then(|e| e.color.clone()),
         production: false,
         ssl: None,
+        fork_container: Some(cname.clone()),
         has_password: existing.map(|e| e.has_password).unwrap_or(false),
         has_ssh_passphrase: false,
         last_connected: None,

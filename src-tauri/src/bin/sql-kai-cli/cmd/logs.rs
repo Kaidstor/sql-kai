@@ -290,6 +290,7 @@ mod tests {
             color: None,
             production: false,
             ssl: None,
+            fork_container: None,
             has_password: false,
             has_ssh_passphrase: false,
             last_connected: None,

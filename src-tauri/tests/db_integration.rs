@@ -19,6 +19,7 @@ fn test_profile() -> Profile {
         color: None,
         production: false,
         ssl: None, // plaintext (and 127.0.0.1 is loopback anyway)
+        fork_container: None,
         has_password: false,
         has_ssh_passphrase: false,
         last_connected: None,

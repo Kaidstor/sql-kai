@@ -14,7 +14,7 @@ pub use catalog::{
     relations_sql, rls_sql, schema_dump_sql, table_ddl, triggers_sql, SchemaOptions, ENUMS_SQL,
     SCHEMA_DUMP_PARTS, TABLES_COUNTS_SQL, TABLES_SQL,
 };
-pub use connect::{connect, ConnectOptions, Connected, Session};
+pub use connect::{connect, libpq_ssl_env, ConnectOptions, Connected, Session};
 pub use exec::{
     cell, cell_bool, execute, execute_read_only, query_rows, query_scalar, statement_column_types,
     ExecResult, QueryExecutor, StatementResult,
