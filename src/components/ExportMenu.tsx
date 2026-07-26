@@ -63,6 +63,7 @@ export function ExportMenu({
   profileId,
   sessionId,
   sql,
+  parameters,
   statementIndex = 0,
   autoBegin = false,
   isolatedTabId,
@@ -78,6 +79,8 @@ export function ExportMenu({
   sessionId: string | null;
   /** SQL of the FULL result (no view limit); null = nothing to export. */
   sql: string | null;
+  /** `$1..$N` values `sql` ran with — the export re-runs the same text. */
+  parameters?: string[];
   /** Which statement of `sql` the result belongs to (multi-statement runs). */
   statementIndex?: number;
   /** Manual-commit tab: the export re-run wraps writes in BEGIN like Run. */
@@ -139,6 +142,7 @@ export function ExportMenu({
         profileId,
         sessionId,
         sql,
+        parameters,
         statementIndex,
         autoBegin,
         format,

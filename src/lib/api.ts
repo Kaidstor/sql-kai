@@ -123,7 +123,35 @@ export const api = {
     sql: string,
     maxRows: number,
     autoBegin = false,
-  ) => invoke<ExecResult>("execute_sql", { sessionId, sql, maxRows, autoBegin }),
+    parameters?: string[],
+  ) =>
+    invoke<ExecResult>("execute_sql", {
+      sessionId,
+      sql,
+      maxRows,
+      autoBegin,
+      parameters,
+    }),
+
+  /** How many `$N` values the SQL expects. Asked of the backend scanner, not
+   *  guessed with a regex: `$1` inside a string or comment is not one. */
+  sqlPlaceholderCount: (sql: string) =>
+    invoke<number>("sql_placeholder_count", { sql }),
+
+  /** Last run's values, for prefilling the params dialog; empty when the
+   *  vault is locked. */
+  queryParameters: (profileId: string, sql: string) =>
+    invoke<string[]>("query_parameters", { profileId, sql }),
+
+  rememberQueryParameters: (
+    profileId: string,
+    sql: string,
+    parameters: string[],
+  ) =>
+    invoke<void>("remember_query_parameters", { profileId, sql, parameters }),
+
+  forgetQueryParameters: (profileId: string, sql: string) =>
+    invoke<void>("forget_query_parameters", { profileId, sql }),
 
   /** Full-result export: re-runs `sql` with no row limit and streams the
    *  rows of statement `statementIndex` into `path`. `autoBegin` mirrors
@@ -135,6 +163,7 @@ export const api = {
     format: ExportFormat,
     path: string,
     autoBegin = false,
+    parameters?: string[],
   ) =>
     invoke<ExportResult>("export_sql", {
       sessionId,
@@ -143,6 +172,7 @@ export const api = {
       format,
       path,
       autoBegin,
+      parameters,
     }),
 
   openIsolatedSession: (profileId: string) =>

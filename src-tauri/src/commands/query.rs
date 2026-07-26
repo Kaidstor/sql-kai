@@ -17,8 +17,15 @@ pub async fn execute_sql(
     sql: String,
     max_rows: Option<usize>,
     auto_begin: Option<bool>,
+    parameters: Option<Vec<String>>,
 ) -> Result<ExecResult, AppError> {
     let (client, tx) = client_and_tx(&state, &session_id)?;
+    // Сессия выполняет батчи simple-query, где bind-параметров нет вовсе —
+    // значения уходят литералами.
+    let sql = match parameters.as_deref() {
+        Some(params) if !params.is_empty() => db::bind_parameters(&sql, params)?,
+        _ => sql,
+    };
     let executor = db::QueryExecutor::new(&client, &tx);
     // Manual-commit mode: hold a transaction open across runs by opening one
     // when the connection is idle, so the user never has to type BEGIN.
@@ -46,6 +53,8 @@ pub async fn execute_sql(
 /// `.part` file that replaces `path` only on success, so a failed export
 /// neither leaves a half-written dump nor destroys a pre-existing file it
 /// never wrote (XLSX only touches the disk in its final save).
+// Аргументы — форма IPC-вызова из фронтенда, а не сигнатура для рук.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn export_sql(
     state: State<'_, AppState>,
@@ -55,8 +64,13 @@ pub async fn export_sql(
     format: String,
     path: String,
     auto_begin: Option<bool>,
+    parameters: Option<Vec<String>>,
 ) -> Result<db::ExportResult, AppError> {
     let format = db::ExportFormat::parse(&format)?;
+    let sql = match parameters.as_deref() {
+        Some(params) if !params.is_empty() => db::bind_parameters(&sql, params)?,
+        _ => sql,
+    };
     let (client, tx) = client_and_tx(&state, &session_id)?;
     let executor = db::QueryExecutor::new(&client, &tx);
     let before = executor.status();

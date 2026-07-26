@@ -1035,7 +1035,7 @@ fn sql_argument(args: &Value) -> Result<SqlArgs, String> {
     let statements = db::split_statements(&sql);
     match statements.len() {
         1 => Ok(SqlArgs {
-            run: bind_parameters(&sql, &params)?,
+            run: db::bind_parameters(&sql, &params).map_err(|e| e.to_string())?,
             history: sql,
         }),
         0 => Err("no SQL statement to run".to_string()),
@@ -1043,131 +1043,6 @@ fn sql_argument(args: &Value) -> Result<SqlArgs, String> {
             "`parameters` are supported for a single statement only, got {n} — send them one call at a time"
         )),
     }
-}
-
-/// Подставляет `params` в плейсхолдеры `$1..$N`.
-///
-/// Сервер сессий принимает только текст SQL, bind-параметров протокола в нём
-/// нет — поэтому значения экранируются `quote_literal` и вставляются как
-/// литералы. Сканер повторяет разбор `db::split_statements`: внутри строк,
-/// dollar-quoted блоков и комментариев `$1` остаётся текстом, а не
-/// плейсхолдером.
-fn bind_parameters(sql: &str, params: &[String]) -> Result<String, String> {
-    let b = sql.as_bytes();
-    let mut out = String::with_capacity(sql.len() + params.len() * 8);
-    let mut used = vec![false; params.len()];
-    let mut seg = 0; // начало ещё не скопированного куска
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                while i < b.len() && b[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                let mut depth = 1;
-                i += 2;
-                while i < b.len() && depth > 0 {
-                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
-                        depth += 1;
-                        i += 2;
-                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'\'' => {
-                // E'…' также понимает обратные слэши
-                let estring = i > 0
-                    && (b[i - 1] == b'e' || b[i - 1] == b'E')
-                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
-                i += 1;
-                while i < b.len() {
-                    if estring && b[i] == b'\\' {
-                        i += 2;
-                    } else if b[i] == b'\'' {
-                        if b.get(i + 1) == Some(&b'\'') {
-                            i += 2; // '' — экранированная кавычка
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'"' => {
-                i += 1;
-                while i < b.len() {
-                    if b[i] == b'"' {
-                        if b.get(i + 1) == Some(&b'"') {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'$' => {
-                // $tag$ … $tag$ — тело копируем как есть; $N — плейсхолдер
-                let mut j = i + 1;
-                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
-                    j += 1;
-                }
-                let is_tag =
-                    j < b.len() && b[j] == b'$' && (j == i + 1 || !b[i + 1].is_ascii_digit());
-                if is_tag {
-                    let tag = &b[i..=j];
-                    i = j + 1;
-                    while i + tag.len() <= b.len() && &b[i..i + tag.len()] != tag {
-                        i += 1;
-                    }
-                    i = (i + tag.len()).min(b.len());
-                } else if b.get(i + 1).is_some_and(u8::is_ascii_digit) {
-                    let mut j = i + 1;
-                    while j < b.len() && b[j].is_ascii_digit() {
-                        j += 1;
-                    }
-                    let n: usize = sql[i + 1..j]
-                        .parse()
-                        .map_err(|_| format!("placeholder ${} is out of range", &sql[i + 1..j]))?;
-                    if n == 0 {
-                        return Err("placeholder $0 is invalid: parameters start at $1".to_string());
-                    }
-                    let value = params.get(n - 1).ok_or_else(|| {
-                        format!(
-                            "SQL references ${n}, but only {} parameter(s) were supplied",
-                            params.len()
-                        )
-                    })?;
-                    out.push_str(&sql[seg..i]);
-                    out.push_str(&db::quote_literal(value));
-                    used[n - 1] = true;
-                    i = j;
-                    seg = i;
-                } else {
-                    i += 1;
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    if let Some(k) = used.iter().position(|u| !u) {
-        return Err(format!(
-            "parameter ${} is never referenced in the SQL",
-            k + 1
-        ));
-    }
-    out.push_str(&sql[seg..]);
-    Ok(out)
 }
 
 /// Результат SQL из сервера сессий: текст (совместимость) плюс разобранный
@@ -1423,12 +1298,6 @@ fn rows_structured(key: &str, exec: &ExecResult, fields: &[&str], extra: Option<
 mod tests {
     use super::*;
 
-    #[test]
-    fn binds_and_escapes_parameters() {
-        let sql = "SELECT * FROM t WHERE name = $1 AND age > $2";
-        let out = bind_parameters(sql, &["O'Brien".into(), "18".into()]).unwrap();
-        assert_eq!(out, "SELECT * FROM t WHERE name = 'O''Brien' AND age > '18'");
-    }
 
     /// `file` — не способ прочитать произвольный файл: путь называет модель, а
     /// не-SQL вернулся бы ей фрагментами в тексте синтаксической ошибки. Плюс
@@ -1455,33 +1324,9 @@ mod tests {
     /// Значение с обратным слэшем уходит в E'…': при
     /// `standard_conforming_strings = off` обычный литерал прочитал бы `\` как
     /// escape, и значение поехало бы (а `'…\'` — сломало бы запрос).
-    #[test]
-    fn binds_backslash_as_an_escape_string() {
-        let out = bind_parameters("SELECT $1", &["C:\\tmp\\x".into()]).unwrap();
-        assert_eq!(out, "SELECT E'C:\\\\tmp\\\\x'");
-        let out = bind_parameters("SELECT $1", &["ends with \\".into()]).unwrap();
-        assert_eq!(out, "SELECT E'ends with \\\\'");
-    }
 
-    #[test]
-    fn leaves_placeholders_inside_literals_and_comments() {
-        let sql = "SELECT '$1', \"$1\", $1 -- $1\n/* $1 */";
-        let out = bind_parameters(sql, &["v".into()]).unwrap();
-        assert_eq!(out, "SELECT '$1', \"$1\", 'v' -- $1\n/* $1 */");
-    }
 
-    #[test]
-    fn leaves_dollar_quoted_bodies_alone() {
-        let sql = "DO $do$ BEGIN RAISE NOTICE '$1'; END $do$";
-        assert_eq!(bind_parameters(sql, &[]).unwrap(), sql);
-    }
 
-    #[test]
-    fn rejects_missing_and_unused_parameters() {
-        assert!(bind_parameters("SELECT $2", &["a".into()]).is_err());
-        assert!(bind_parameters("SELECT $1", &["a".into(), "b".into()]).is_err());
-        assert!(bind_parameters("SELECT $0", &["a".into()]).is_err());
-    }
 
     #[test]
     fn parameters_require_a_single_statement() {

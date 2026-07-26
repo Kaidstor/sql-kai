@@ -488,6 +488,65 @@ pub fn record_history(mut entry: HistoryEntry) -> Result<Vec<HistoryEntry>, AppE
     Ok(all)
 }
 
+const QUERY_PARAMS_CAP: usize = 50;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RememberedParams {
+    sql: String,
+    params: Vec<String>,
+}
+
+/// Значения живут в vault, а не в `history.json`: параметр — ровно то место,
+/// куда попадает секрет, и в историю запрос пишется с `$1` именно поэтому.
+fn query_params_key(profile_id: &str) -> String {
+    format!("qparams#{profile_id}")
+}
+
+fn remembered_list(profile_id: &str) -> Vec<RememberedParams> {
+    vault::get_secret(&query_params_key(profile_id))
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Пусто, когда значений не запоминали или vault заперт.
+pub fn remembered_params(profile_id: &str, sql: &str) -> Vec<String> {
+    remembered_list(profile_id)
+        .into_iter()
+        .find(|r| r.sql == sql)
+        .map(|r| r.params)
+        .unwrap_or_default()
+}
+
+/// Заперт vault — тихо ничего не делаем: запуск запроса не должен падать
+/// из-за того, что подсказку на следующий раз сохранить некуда.
+pub fn remember_params(profile_id: &str, sql: &str, params: &[String]) -> Result<(), AppError> {
+    if !vault::is_unlocked() {
+        return Ok(());
+    }
+    let mut all = remembered_list(profile_id);
+    all.retain(|r| r.sql != sql);
+    all.insert(
+        0,
+        RememberedParams {
+            sql: sql.to_string(),
+            params: params.to_vec(),
+        },
+    );
+    all.truncate(QUERY_PARAMS_CAP);
+    let raw = serde_json::to_string(&all).unwrap();
+    vault::set_secret(&query_params_key(profile_id), &raw)
+}
+
+pub fn forget_params(profile_id: &str, sql: &str) -> Result<(), AppError> {
+    if !vault::is_unlocked() {
+        return Ok(());
+    }
+    let mut all = remembered_list(profile_id);
+    all.retain(|r| r.sql != sql);
+    let raw = serde_json::to_string(&all).unwrap();
+    vault::set_secret(&query_params_key(profile_id), &raw)
+}
+
 /// Masks single-quoted literals that follow a credential keyword so history
 /// never stores a plaintext password: `... PASSWORD 'hunter2'` → `... PASSWORD
 /// '***'`. Covers `PASSWORD` and `IDENTIFIED BY` with their single-quoted

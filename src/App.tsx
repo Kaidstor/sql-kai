@@ -5,6 +5,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { ActivityTab } from "./components/ActivityTab";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ParamsDialog } from "./components/ParamsDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { Launcher } from "./components/Launcher";
 import { LogViewer } from "./components/LogViewer";
@@ -503,6 +504,7 @@ function App() {
       {/* последним: confirm вызывается и поверх других оверлеев (палитра),
           а стекинг одинаковых z-50 решает порядок в DOM */}
       <ConfirmDialog />
+      <ParamsDialog />
     </div>
     </VaultGate>
   );

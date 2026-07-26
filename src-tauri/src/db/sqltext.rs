@@ -1,3 +1,5 @@
+use crate::error::AppError;
+
 /// Connection-level transaction state. Tracked heuristically from the SQL we
 /// run: tokio-postgres discards the protocol's ReadyForQuery status byte, so we
 /// can't read it authoritatively. Advisory — drives the status-bar badge.
@@ -122,6 +124,91 @@ fn skip_noise(b: &[u8], i: usize) -> Option<(usize, bool)> {
         }
         _ => None,
     }
+}
+
+/// Highest `$N` used as a placeholder, 0 when there is none. `$1` inside a
+/// string, a quoted identifier, a dollar-quoted body or a comment is text.
+pub fn max_placeholder(sql: &str) -> usize {
+    let b = sql.as_bytes();
+    let (mut max, mut i) = (0, 0);
+    while i < b.len() {
+        if let Some((next, _)) = skip_noise(b, i) {
+            i = next;
+            continue;
+        }
+        match placeholder_at(sql, i) {
+            Some((n, next)) => {
+                max = max.max(n);
+                i = next;
+            }
+            None => i += 1,
+        }
+    }
+    max
+}
+
+/// `$N` at `i` as (number, offset past it). Callers must have ruled out
+/// strings and comments first — this only looks at the bytes.
+fn placeholder_at(sql: &str, i: usize) -> Option<(usize, usize)> {
+    let b = sql.as_bytes();
+    if b[i] != b'$' {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == i + 1 {
+        return None;
+    }
+    Some((sql[i + 1..j].parse().ok()?, j))
+}
+
+/// Substitutes `params` into `$1..$N`.
+///
+/// Neither the GUI nor the session server can send protocol-level bind
+/// parameters — both take SQL as text — so values are escaped with
+/// [`quote_literal`](super::quote_literal) and spliced in as literals.
+pub fn bind_parameters(sql: &str, params: &[String]) -> Result<String, AppError> {
+    let b = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len() + params.len() * 8);
+    let mut used = vec![false; params.len()];
+    let mut seg = 0;
+    let mut i = 0;
+    while i < b.len() {
+        if let Some((next, _)) = skip_noise(b, i) {
+            i = next;
+            continue;
+        }
+        let Some((n, next)) = placeholder_at(sql, i) else {
+            i += 1;
+            continue;
+        };
+        if n == 0 {
+            return Err(AppError::Msg(
+                "placeholder $0 is invalid: parameters start at $1".into(),
+            ));
+        }
+        let value = params.get(n - 1).ok_or_else(|| {
+            AppError::Msg(format!(
+                "SQL references ${n}, but only {} parameter(s) were supplied",
+                params.len()
+            ))
+        })?;
+        out.push_str(&sql[seg..i]);
+        out.push_str(&super::quote_literal(value));
+        used[n - 1] = true;
+        i = next;
+        seg = i;
+    }
+    if let Some(k) = used.iter().position(|u| !u) {
+        return Err(AppError::Msg(format!(
+            "parameter ${} is never referenced in the SQL",
+            k + 1
+        )));
+    }
+    out.push_str(&sql[seg..]);
+    Ok(out)
 }
 
 /// psql meta-commands (`\c`, `\i`, `\!`, …) found where the backslash is code
@@ -514,6 +601,47 @@ mod tests {
         // reading the knob is harmless and must keep working
         assert!(!escapes_read_only_tx("SELECT current_setting('transaction_read_only')"));
         assert!(!escapes_read_only_tx("SELECT set_config('search_path', 'app', false)"));
+    }
+
+    #[test]
+    fn binds_and_escapes_parameters() {
+        use super::bind_parameters;
+        let sql = "SELECT * FROM t WHERE name = $1 AND age > $2";
+        let out = bind_parameters(sql, &["O'Brien".into(), "18".into()]).unwrap();
+        assert_eq!(out, "SELECT * FROM t WHERE name = 'O''Brien' AND age > '18'");
+        // Значение с обратным слэшем уходит в E'…': при
+        // standard_conforming_strings = off обычный литерал прочитал бы `\` как
+        // escape, и значение поехало бы (а `'…\'` — сломало бы запрос).
+        let out = bind_parameters("SELECT $1", &["C:\\tmp\\x".into()]).unwrap();
+        assert_eq!(out, "SELECT E'C:\\\\tmp\\\\x'");
+        let out = bind_parameters("SELECT $1", &["ends with \\".into()]).unwrap();
+        assert_eq!(out, "SELECT E'ends with \\\\'");
+    }
+
+    #[test]
+    fn placeholders_are_only_counted_where_they_are_code() {
+        use super::{bind_parameters, max_placeholder};
+        let sql = "SELECT '$1', \"$1\", $1 -- $9\n/* $8 */";
+        assert_eq!(max_placeholder(sql), 1);
+        let out = bind_parameters(sql, &["v".into()]).unwrap();
+        assert_eq!(out, "SELECT '$1', \"$1\", 'v' -- $9\n/* $8 */");
+        // тело dollar-quoted блока — текст целиком
+        let body = "DO $do$ BEGIN RAISE NOTICE '$1'; END $do$";
+        assert_eq!(max_placeholder(body), 0);
+        assert_eq!(bind_parameters(body, &[]).unwrap(), body);
+        // счёт — по максимальному номеру, а не по числу вхождений
+        assert_eq!(max_placeholder("SELECT $2, $2, $1"), 2);
+        assert_eq!(max_placeholder("SELECT 1"), 0);
+        // CR закрывает комментарий и здесь: $1 за ним — код
+        assert_eq!(max_placeholder("-- x\r SELECT $1"), 1);
+    }
+
+    #[test]
+    fn rejects_missing_and_unused_parameters() {
+        use super::bind_parameters;
+        assert!(bind_parameters("SELECT $2", &["a".into()]).is_err());
+        assert!(bind_parameters("SELECT $1", &["a".into(), "b".into()]).is_err());
+        assert!(bind_parameters("SELECT $0", &["a".into()]).is_err());
     }
 
     #[test]

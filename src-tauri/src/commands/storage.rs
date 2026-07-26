@@ -58,6 +58,30 @@ pub fn clear_history() -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub fn sql_placeholder_count(sql: String) -> usize {
+    crate::db::max_placeholder(&sql)
+}
+
+#[tauri::command]
+pub fn query_parameters(profile_id: String, sql: String) -> Vec<String> {
+    store::remembered_params(&profile_id, &sql)
+}
+
+#[tauri::command]
+pub fn remember_query_parameters(
+    profile_id: String,
+    sql: String,
+    parameters: Vec<String>,
+) -> Result<(), AppError> {
+    store::remember_params(&profile_id, &sql, &parameters)
+}
+
+#[tauri::command]
+pub fn forget_query_parameters(profile_id: String, sql: String) -> Result<(), AppError> {
+    store::forget_params(&profile_id, &sql)
+}
+
+#[tauri::command]
 pub fn import_history(entries: Vec<HistoryEntry>) -> Result<Vec<HistoryEntry>, AppError> {
     store::import_history(entries)
 }

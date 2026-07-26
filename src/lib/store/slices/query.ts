@@ -13,7 +13,7 @@ import type {
 } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
 import { without } from "../helpers";
-import type { QueryTabState, Tab } from "../types";
+import type { ParamsPrompt, QueryTabState, Tab } from "../types";
 
 export interface QuerySlice {
   /** Session ids with a file export in flight. A Run on the same connection
@@ -35,18 +35,33 @@ export interface QuerySlice {
     path: string;
     /** Query tab owning `sessionId` when it is the tab's isolated session. */
     isolatedTabId?: string;
+    /** `$1..$N` values the exported query ran with (see resultParams). */
+    parameters?: string[];
   }) => Promise<void>;
   /** Runs the tab's SQL, or `sqlOverride` (an editor selection) when given.
    *  The override is executed and recorded to history, but not persisted as
    *  the tab's SQL. */
-  runQuery: (tabId: string, sqlOverride?: string) => Promise<void>;
+  runQuery: (
+    tabId: string,
+    sqlOverride?: string,
+    parameters?: string[],
+  ) => Promise<void>;
   /** EXPLAIN (FORMAT JSON) the tab's statement (or the editor selection);
    *  analyze also executes it. */
   runExplain: (
     tabId: string,
     analyze: boolean,
     sqlOverride?: string,
+    parameters?: string[],
   ) => Promise<void>;
+  /** Open parameters dialog, or null: a query naming `$1..$N` opens it
+   *  instead of running. */
+  paramsPrompt: ParamsPrompt | null;
+  closeParamsPrompt: () => void;
+  /** Remembers the values (in the vault) and runs what the prompt was for. */
+  submitParamsPrompt: (values: string[]) => Promise<void>;
+  /** Drops the remembered values for this query and empties the fields. */
+  forgetParamsPrompt: () => Promise<void>;
   /** Back from the plan view to the last results. */
   clearExplain: (tabId: string) => void;
   cancelQuery: (tabId: string) => Promise<void>;
@@ -65,6 +80,30 @@ export interface QuerySlice {
 
 export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySlice {
   const { tabOf, patchTab } = ctx;
+
+  /** Prompt to open before running `sql`, or undefined when it needs no
+   *  values. */
+  const paramsPromptFor = async (
+    tabId: string,
+    profileId: string,
+    sql: string,
+    action: ParamsPrompt["action"],
+  ): Promise<ParamsPrompt | undefined> => {
+    const count = await api.sqlPlaceholderCount(sql).catch(() => 0);
+    if (count === 0) return undefined;
+    const remembered = await api
+      .queryParameters(profileId, sql)
+      .catch(() => [] as string[]);
+    return {
+      tabId,
+      profileId,
+      sql,
+      count,
+      values: Array.from({ length: count }, (_, i) => remembered[i] ?? ""),
+      remembered: remembered.length > 0,
+      action,
+    };
+  };
 
   /** The connection a query tab runs on: its own isolated session when
    *  isolated & open, otherwise the profile's shared session. */
@@ -227,6 +266,43 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
 
   return {
     exporting: {},
+    paramsPrompt: null,
+
+    closeParamsPrompt: () => set({ paramsPrompt: null }),
+
+    submitParamsPrompt: async (values) => {
+      const prompt = get().paramsPrompt;
+      if (!prompt) return;
+      set({ paramsPrompt: null });
+      api
+        .rememberQueryParameters(prompt.profileId, prompt.sql, values)
+        .catch(() => {});
+      if (prompt.action.kind === "explain") {
+        await get().runExplain(
+          prompt.tabId,
+          prompt.action.analyze,
+          prompt.sql,
+          values,
+        );
+      } else {
+        await get().runQuery(prompt.tabId, prompt.sql, values);
+      }
+    },
+
+    forgetParamsPrompt: async () => {
+      const prompt = get().paramsPrompt;
+      if (!prompt) return;
+      await api
+        .forgetQueryParameters(prompt.profileId, prompt.sql)
+        .catch(() => {});
+      set({
+        paramsPrompt: {
+          ...prompt,
+          values: prompt.values.map(() => ""),
+          remembered: false,
+        },
+      });
+    },
 
     exportSqlToFile: async ({
       profileId,
@@ -237,6 +313,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       format,
       path,
       isolatedTabId,
+      parameters,
     }) => {
       /** Live SessionInfo for the tx-badge refresh — whichever map owns it
        *  (null once a lost isolated session has been dropped). */
@@ -254,6 +331,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           format,
           path,
           autoBegin,
+          parameters,
         );
         get().showToast(
           out.truncated
@@ -280,11 +358,21 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       }
     },
 
-    runQuery: async (tabId, sqlOverride) => {
+    runQuery: async (tabId, sqlOverride, parameters) => {
       const tab = tabOf(tabId, "query");
       if (!tab || tab.state.running) return;
       const sql = (sqlOverride ?? tab.state.sql).trim();
       if (!sql) return;
+      // Без этой развилки submitParamsPrompt открывал бы окно заново.
+      if (!parameters) {
+        const prompt = await paramsPromptFor(tab.id, tab.profileId, sql, {
+          kind: "run",
+        });
+        if (prompt) {
+          set({ paramsPrompt: prompt });
+          return;
+        }
+      }
       // No prod-confirm on run (deliberate): the dialog was reflex-Enter'd
       // anyway — the safety story is Ctrl+C cancel + the PROD chrome tints.
       const isolated = Boolean(tab.state.isolated);
@@ -326,12 +414,14 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           sql,
           tab.state.maxRows,
           autoBegin,
+          parameters,
         );
         pushHistory(true);
         notifyDone(tab.profileId, started, true, sql);
         patchTab<QueryTabState>(tabId, {
           result,
           resultSql: sql,
+          resultParams: parameters,
           explain: undefined,
           running: false,
         });
@@ -352,11 +442,21 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       void refreshTxStatus(session);
     },
 
-    runExplain: async (tabId, analyze, sqlOverride) => {
+    runExplain: async (tabId, analyze, sqlOverride, parameters) => {
       const tab = tabOf(tabId, "query");
       if (!tab || tab.state.running) return;
       const sql = (sqlOverride ?? tab.state.sql).trim().replace(/;\s*$/, "");
       if (!sql) return;
+      if (!parameters) {
+        const prompt = await paramsPromptFor(tab.id, tab.profileId, sql, {
+          kind: "explain",
+          analyze,
+        });
+        if (prompt) {
+          set({ paramsPrompt: prompt });
+          return;
+        }
+      }
       if (countStatements(sql) > 1) {
         get().showToast("Explain needs a single statement", "info");
         return;
@@ -369,7 +469,13 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       const autoBegin = analyze && isolated && tab.state.commitMode === "manual";
       const started = Date.now();
       try {
-        const exec = await api.executeSql(session.sessionId, explainSql, 10, autoBegin);
+        const exec = await api.executeSql(
+          session.sessionId,
+          explainSql,
+          10,
+          autoBegin,
+          parameters,
+        );
         const raw = exec.results[0]?.rows[0]?.[0];
         const parsed: unknown = raw ? JSON.parse(raw) : null;
         const root = Array.isArray(parsed)

@@ -31,6 +31,8 @@ export interface QueryTabState {
   /** The SQL that produced `result` (may be an editor selection, not `sql`) —
    *  the full export re-runs exactly this text. */
   resultSql?: string;
+  /** `$1..$N` values `resultSql` ran with — the export re-runs that text. */
+  resultParams?: string[];
   /** Parsed EXPLAIN output; shown instead of results until dismissed. */
   explain?: ExplainResult;
   error?: string;
@@ -53,6 +55,19 @@ export interface QueryTabState {
   /** "manual" holds a transaction open across runs (BEGIN auto-inserted) with
    *  explicit Commit/Rollback; implies isolation. Default "auto". */
   commitMode?: "auto" | "manual";
+}
+
+/** Open parameters dialog. Held as data, not a callback, so the store stays
+ *  serializable — `action` says what to do once the values are in. */
+export interface ParamsPrompt {
+  tabId: string;
+  profileId: string;
+  /** Exactly the text that will run — remembered values are keyed by it. */
+  sql: string;
+  count: number;
+  values: string[];
+  remembered: boolean;
+  action: { kind: "run" } | { kind: "explain"; analyze: boolean };
 }
 
 /** Pending INSERT row; values are aligned with result.columns; undefined =

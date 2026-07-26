@@ -86,6 +86,7 @@ function ResultBlock({
   autoBegin,
   isolatedTabId,
   resultSql,
+  resultParams,
 }: {
   result: StatementResult;
   /** Index of this statement within the run — targets the full export. */
@@ -100,6 +101,8 @@ function ResultBlock({
   isolatedTabId?: string;
   /** SQL that produced the run (see QueryTabState.resultSql). */
   resultSql: string | null;
+  /** `$1..$N` it ran with — the export re-runs the same text. */
+  resultParams?: string[];
 }) {
   const [sorts, setSorts] = useState<SortSpec[]>([]);
   const [filter, setFilter] = useState("");
@@ -194,6 +197,7 @@ function ResultBlock({
           profileId={profileId}
           sessionId={sessionId}
           sql={resultSql}
+          parameters={resultParams}
           statementIndex={index}
           autoBegin={autoBegin}
           isolatedTabId={isolatedTabId}
@@ -766,6 +770,7 @@ export function QueryTab({ tab }: { tab: Tab }) {
                 autoBegin={Boolean(state.isolated) && commitMode === "manual"}
                 isolatedTabId={state.isolated ? tab.id : undefined}
                 resultSql={state.resultSql ?? null}
+                resultParams={state.resultParams}
               />
             ))}
           {!state.error && !state.explain && !state.result && !state.running && (
