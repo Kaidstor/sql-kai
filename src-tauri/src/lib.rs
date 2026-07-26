@@ -49,7 +49,7 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
         .quit()
         .build()?;
     let new_query_tab = MenuItemBuilder::with_id("new-query-tab", "New Query Tab")
-        .accelerator("CmdOrCtrl+N")
+        .accelerator("CmdOrCtrl+T")
         .build(handle)?;
     let close_tab = MenuItemBuilder::with_id("close-tab", "Close Tab")
         .accelerator("CmdOrCtrl+W")

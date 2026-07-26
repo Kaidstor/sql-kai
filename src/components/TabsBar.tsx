@@ -204,7 +204,7 @@ export function TabsBar() {
       {activeProfileId && sessions[activeProfileId] && (
         <button
           className="px-2 text-zinc-500 hover:text-zinc-200"
-          title="New SQL tab ⌘N"
+          title="New SQL tab ⌘T"
           onClick={() => openQueryTab(activeProfileId)}
         >
           <Plus size={14} />

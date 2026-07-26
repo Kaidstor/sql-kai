@@ -45,7 +45,7 @@ export interface TabsSlice {
   closeActiveTab: () => void;
   /** ⌘⇧T: restores the most recently closed tab. */
   reopenClosedTab: () => void;
-  /** ⌘N: new query tab on the active connection (or the ⌘⌥O palette). */
+  /** ⌘T: new query tab on the active connection (or the ⌘⌥O palette). */
   newQueryTab: () => void;
   setActiveTab: (tabId: string) => void;
   /** Ctrl+Tab / ⌘⇧] step through the active connection's tabs (wraps around). */

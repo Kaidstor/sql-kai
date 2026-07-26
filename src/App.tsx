@@ -123,7 +123,7 @@ function App() {
     return () => void unlisten.then((f) => f());
   }, []);
 
-  // Прогрев ленивых чанков (см. lazy выше): к моменту первого ⌘N или ⌘J
+  // Прогрев ленивых чанков (см. lazy выше): к моменту первого ⌘T или ⌘J
   // import() уже разрешён — вкладка/панель открывается без пустого кадра.
   useEffect(() => {
     const t = setTimeout(() => {
@@ -149,7 +149,7 @@ function App() {
   // App-wide hotkeys — a declarative table, first match wins. Grid/editor
   // hotkeys stay local to their components.
   useEffect(() => {
-    // On mac ⌘W/⌘⇧W/⌘⇧T/⌘N arrive as native menu events (see lib.rs) — the menu
+    // On mac ⌘W/⌘⇧W/⌘⇧T/⌘T arrive as native menu events (see lib.rs) — the menu
     // accelerator consumes the keypress before the webview sees it; the
     // trailing Ctrl+… bindings are the JS fallback for other platforms.
     const hotkeys: Hotkey[] = [
@@ -211,8 +211,8 @@ function App() {
       },
       {
         // Symbols palette (tables / columns / functions) — needs a live session.
-        combo: "⌘T",
-        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "t"),
+        combo: "⌘⇧O",
+        match: (e) => mod(e) && !e.altKey && e.shiftKey && isKey(e, "o"),
         run: (s) => {
           if (!s.activeProfileId || !s.sessions[s.activeProfileId]) return false;
           s.setPalette(s.palette === "symbols" ? null : "symbols");
@@ -315,9 +315,16 @@ function App() {
         run: (s) => s.reopenClosedTab(),
       },
       {
-        combo: "Ctrl+N (non-mac)",
+        combo: "Ctrl+T (non-mac)",
         match: (e) =>
-          !isMac && e.ctrlKey && !e.altKey && !e.shiftKey && isKey(e, "n"),
+          !isMac && e.ctrlKey && !e.altKey && !e.shiftKey && isKey(e, "t"),
+        run: (s) => s.newQueryTab(),
+      },
+      {
+        // Синоним ⌘T: у пункта меню акселератор только один, поэтому ⌘N
+        // живёт здесь.
+        combo: "⌘N",
+        match: (e) => mod(e) && !e.altKey && !e.shiftKey && isKey(e, "n"),
         run: (s) => s.newQueryTab(),
       },
     ];
@@ -334,7 +341,7 @@ function App() {
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
-  // Native menu items (mac): New Query Tab ⌘N, Close Tab ⌘W, Reopen ⌘⇧T,
+  // Native menu items (mac): New Query Tab ⌘T, Close Tab ⌘W, Reopen ⌘⇧T,
   // Close Connection ⌘⇧W.
   useEffect(() => {
     const unlisten = [
@@ -474,7 +481,7 @@ function App() {
                   <div className="h-full flex flex-col items-center justify-center gap-2 overflow-y-auto text-zinc-600">
                     <div className="text-[15px]">sql-kai</div>
                     <div className="text-[12px]">
-                      No open tabs — ⌘N starts a new query
+                      No open tabs — ⌘T starts a new query
                     </div>
                     <ShortcutSections className="mt-8 px-6" />
                   </div>
