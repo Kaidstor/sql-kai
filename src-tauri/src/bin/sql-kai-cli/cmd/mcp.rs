@@ -956,14 +956,36 @@ const SQL_FILE_CAP: u64 = 4 * 1024 * 1024;
 ///     пользователя: содержимое не-SQL уедет модели обратно фрагментами в
 ///     `syntax error at or near "…"`;
 ///   * обычный файл — fifo заблокировал бы весь stdio-цикл сервера навсегда,
-///     `/dev/zero` съел бы память (stat, а не open: открытие fifo само висит);
-///   * размер — плюс `take` при чтении, чтобы файл не подрос между stat и open.
+///     `/dev/zero` съел бы память;
+///   * размер — плюс `take` при чтении, чтобы файл не подрос после проверки.
+///
+/// Проверяем уже открытый дескриптор, а не путь: `stat` + последующий `open`
+/// смотрят на файл дважды, и между двумя взглядами он может стать другим.
+/// Открытие при этом не должно ни висеть на fifo (`O_NONBLOCK`), ни уходить по
+/// симлинку (`O_NOFOLLOW`) — иначе имя на `.sql` указывает куда угодно, и
+/// расширение перестаёт что-либо значить.
 fn read_sql_file(path: &str) -> Result<String, String> {
     let p = std::path::Path::new(path);
     if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
         return Err(format!("`file` must point to a .sql file, got '{path}'"));
     }
-    let meta = std::fs::metadata(p).map_err(|e| format!("cannot read file '{path}': {e}"))?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let f = opts.open(p).map_err(|e| match e.raw_os_error() {
+        #[cfg(unix)]
+        Some(libc::ELOOP) => {
+            format!("'{path}' is a symlink — pass the path of the .sql file itself")
+        }
+        _ => format!("cannot read file '{path}': {e}"),
+    })?;
+    let meta = f
+        .metadata()
+        .map_err(|e| format!("cannot read file '{path}': {e}"))?;
     if !meta.is_file() {
         return Err(format!("'{path}' is not a regular file"));
     }
@@ -973,7 +995,6 @@ fn read_sql_file(path: &str) -> Result<String, String> {
             meta.len()
         ));
     }
-    let f = std::fs::File::open(p).map_err(|e| format!("cannot read file '{path}': {e}"))?;
     let mut sql = String::new();
     f.take(SQL_FILE_CAP + 1)
         .read_to_string(&mut sql)
@@ -1318,6 +1339,14 @@ mod tests {
         std::fs::create_dir_all(&as_dir).unwrap();
         assert!(read_sql_file(as_dir.to_str().unwrap()).is_err());
         assert!(read_sql_file(dir.join("нет.sql").to_str().unwrap()).is_err());
+        // .sql на конце имени — ещё не .sql на том конце ссылки: по симлинку
+        // проверка расширения ничего не стоит, поэтому его не разыменовываем
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.sql");
+            std::os::unix::fs::symlink(&not_sql, &link).unwrap();
+            assert!(read_sql_file(link.to_str().unwrap()).is_err());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
