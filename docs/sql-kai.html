@@ -124,13 +124,13 @@ sql-kai init --skip-if-configured  # для установщиков: молча
 <tr><td><code>sql-kai discover &lt;ssh-alias&gt;</code></td><td>Найти postgres на хосте по ssh и создать/обновить профиль (+ пароль в vault)</td></tr>
 <tr><td><code>sql-kai import [--file f.json]</code></td><td>Массовый импорт профилей из JSON-массива (stdin/файл): пароли и ssh-passphrase → vault. Флаги <code>--dry-run</code>, <code>--replace</code> (перезаписать по имени)</td></tr>
 <tr><td><code>sql-kai exec &lt;ssh-alias&gt; -c "SQL"</code></td><td>Fallback без профиля: ssh → docker exec psql (наследник prod-db)</td></tr>
-<tr><td><code>sql-kai schema &lt;alias&gt;</code></td><td>Вся схема базы одним дампом (константное число каталожных запросов вместо обхода по таблицам): таблицы/партиционированные/foreign, вьюхи и матвьюхи с колонками, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. По умолчанию без системных схем, объектов расширений (postgis/timescale) и листовых партиций. Флаги: <code>--schema &lt;name&gt;</code>, <code>--internal</code>, <code>--definitions</code> (тела вьюх/функций), <code>--comments</code>, <code>--json</code></td></tr>
+<tr><td><code>sql-kai schema &lt;alias&gt;</code></td><td>Вся схема базы одним дампом (константное число каталожных запросов вместо обхода по таблицам): таблицы/партиционированные/foreign, вьюхи и матвьюхи с колонками, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. По умолчанию без системных схем, объектов расширений (postgis/timescale) и листовых партиций. Флаги: <code>--schema &lt;name&gt;</code>, <code>--table [schema.]name</code> (одна таблица целиком), <code>--internal</code>, <code>--definitions</code> (тела вьюх/функций), <code>--comments</code>, <code>--json</code></td></tr>
 <tr><td><code>sql-kai logs &lt;alias&gt; [-n 200] [-f]</code></td><td>Журнал postgres-сервера профиля: ssh на его хост → <code>docker logs</code> контейнера. Флаги <code>--since 10m</code>, <code>--until</code>, <code>--timestamps</code>, <code>--container</code>; строки контейнера идут в stdout (можно <code>| grep</code>)</td></tr>
 <tr><td><code>sql-kai fork &lt;alias&gt; [новое-имя]</code></td><td>Копия базы профиля в локальном docker (<code>pg_dump</code> из read-only-сессии → <code>postgres:&lt;мажор источника&gt;</code> на 127.0.0.1) плюс профиль на неё: песочница под миграции вместо экспериментов на проде. По умолчанию только схема, <code>--data</code> — с данными (с production-профиля требует <code>--prod-data</code> или подтверждения именем); <code>--image</code>, <code>--port</code>, <code>--replace</code>, <code>--yes</code>, <code>--dry-run</code>. Форк не наследует метку <code>production</code>; снос — <code>docker rm -f</code></td></tr>
 <tr><td><code>sql-kai mcp [&lt;alias&gt;]</code></td><td>MCP-сервер (stdio) для AI-агентов — см. «MCP» ниже. С алиасом закреплён за одной базой, без алиаса обслуживает все профили</td></tr>
 <tr><td><code>sql-kai mcp install [клиент]</code> / <code>sql-kai mcp status</code></td><td>Прописать сервер в конфиг MCP-клиента (claude-code, claude-desktop, codex, cursor, vscode, windsurf, gemini) — слияние без затирания чужих серверов, <code>.bak</code>, <code>--dry-run</code>, <code>--force</code>, <code>--profile</code>. Без аргумента-клиента печатается только таблица клиентов и путей. <code>status</code> — где сервер уже прописан</td></tr>
 <tr><td><code>sql-kai tables &lt;alias&gt; [--counts]</code></td><td>Список таблиц/вьюх; <code>--counts</code> — колонка <code>~rows</code> с примерным числом строк (<code>pg_class.reltuples</code>: <code>?</code> = таблица ещё не анализировалась, партиционированные — сумма партиций)</td></tr>
-<tr><td><code>sql-kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Интроспекция таблицы (схема по умолчанию — public)</td></tr>
+<tr><td><code>sql-kai columns|ddl|indexes &lt;alias&gt; [schema.]table</code></td><td>Точечная интроспекция таблицы (схема по умолчанию — public). Структуру целиком удобнее брать через <code>schema --table</code>; эти остаются ради <code>-t</code>/<code>--csv</code> в пайп, готового <code>CREATE TABLE</code> (<code>ddl</code>) и серверов старше PostgreSQL 12</td></tr>
 <tr><td><code>sql-kai history [-n 20] [&lt;alias&gt;]</code></td><td>История запросов (общая с GUI, history.json)</td></tr>
 <tr><td><code>sql-kai saved list [&lt;alias&gt;]</code> / <code>sql-kai saved run &lt;alias&gt; &lt;имя&gt;</code></td><td>Сохранённые запросы (общие с GUI; глобальные + скоуп группы профиля)</td></tr>
 <tr><td><code>sql-kai rotate &lt;alias&gt;</code></td><td>Ротация пароля роли Postgres через sec (см. «Интеграция с sec»)</td></tr>
@@ -235,6 +235,13 @@ sql-kai domainator -c "SELECT * FROM admins" --no-redact  # как есть</cod
 <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой
 таблице: вместо десятков round-trip — константное число каталожных запросов, отправленных
 одним батчем, то есть ещё и один согласованный снимок.</p>
+<p>Нужна одна таблица — <code>--table [schema.]name</code>: тот же батч с более узкими
+фильтрами (отдельного пути для «одной таблицы» в коде нет). Придёт она сама со всеми
+колонками, констрейнтами, индексами, триггерами и политиками плюс то, чем она
+пользуется: enum/domain-типы её колонок, функции её триггеров и её секвенции —
+остальные типы и функции схемы в вывод не лезут. Названную таблицу команда покажет
+любую, включая листовую партицию и таблицу расширения: раз спросили по имени, прятать
+её как шум было бы враньём о базе.</p>
 <pre><code>-- база: domainator   сервер: 16.4
 -- скрыто: системные схемы, объекты расширений, партиции (--internal); тела вьюх и функций (--definitions); комментарии (--comments)
 
@@ -257,6 +264,7 @@ enum public.domain_state = new | ok | failed
 <table>
 <tr><th>Флаг</th><th>Что делает</th></tr>
 <tr><td><code>--schema &lt;name&gt;</code></td><td>Только одна схема (можно и системную, например <code>pg_catalog</code>)</td></tr>
+<tr><td><code>--table [schema.]name</code></td><td>Только одна таблица или вьюха: её колонки, констрейнты, индексы, триггеры и политики плюс то, чем она пользуется — enum/domain-типы колонок, функции её триггеров и её секвенции. Тот же батч, что и полный дамп, просто с более узкими фильтрами. Названную таблицу покажет любую: и листовую партицию, и таблицу расширения. Без точки в имени ищется в любой схеме (либо в той, что задана <code>--schema</code>)</td></tr>
 <tr><td><code>--definitions</code></td><td>Тела вьюх и исходники функций</td></tr>
 <tr><td><code>--comments</code></td><td>Тексты <code>COMMENT ON</code>: таблиц, колонок, типов, функций</td></tr>
 <tr><td><code>--internal</code></td><td>Показать скрытое по умолчанию: системные схемы, объекты расширений (postgis, pg_trgm, timescaledb) и листовые партиции — у родителя вместо них стоит <code>(партиций: N)</code></td></tr>
@@ -378,15 +386,15 @@ stdout, диагностика в stderr). Запросы идут через т
 vault уже разблокирован, туннели подняты, сессия по умолчанию read-only.</p>
 <table>
 <tr><th>Режим</th><th>Что получает агент</th></tr>
-<tr><td><code>sql-kai mcp &lt;alias&gt;</code><br><span class="muted">закреплённый</span></td><td>Девять tools, все работают с одной базой — параметра <code>profile</code> нет вовсе, перепутать базы невозможно. Эту форму запускает панель агента в GUI</td></tr>
-<tr><td><code>sql-kai mcp</code><br><span class="muted">мультипрофильный</span></td><td>Плюс tool <code>profiles</code> (десятый) и параметр <code>profile</code> у остальных: одна запись в конфиге клиента обслуживает все базы. Пропущенный <code>profile</code> — ошибка со списком доступных (кроме случая, когда профиль ровно один); <code>selection</code> без него берёт базу, открытую в GUI последней</td></tr>
+<tr><td><code>sql-kai mcp &lt;alias&gt;</code><br><span class="muted">закреплённый</span></td><td>Семь tools, все работают с одной базой — параметра <code>profile</code> нет вовсе, перепутать базы невозможно. Эту форму запускает панель агента в GUI</td></tr>
+<tr><td><code>sql-kai mcp</code><br><span class="muted">мультипрофильный</span></td><td>Плюс tool <code>profiles</code> (восьмой) и параметр <code>profile</code> у остальных: одна запись в конфиге клиента обслуживает все базы. Пропущенный <code>profile</code> — ошибка со списком доступных (кроме случая, когда профиль ровно один); <code>selection</code> без него берёт базу, открытую в GUI последней</td></tr>
 </table>
 <table>
 <tr><th>Tool</th><th>Что делает</th></tr>
-<tr><td><code>schema</code></td><td><strong>Основной инструмент интроспекции:</strong> вся схема базы за один вызов — таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи с колонками, типами, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. Одно обращение к каталогу вместо обхода <code>tables</code> → <code>columns</code>/<code>ddl</code>/<code>indexes</code> по каждой таблице, и один консистентный снимок. Параметры: <code>schema</code>, <code>definitions</code>, <code>comments</code>, <code>internal</code></td></tr>
+<tr><td><code>schema</code></td><td><strong>Единственный инструмент интроспекции:</strong> вся схема базы за один вызов — таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи с колонками, типами, констрейнтами, индексами и триггерами, плюс enum-типы, функции и процедуры. Одно обращение к каталогу вместо обхода по каждой таблице, и один консистентный снимок. Нужна одна таблица — параметр <code>table</code>: она же со всем, что к ней относится. Параметры: <code>schema</code>, <code>table</code>, <code>definitions</code>, <code>comments</code>, <code>internal</code></td></tr>
 <tr><td><code>query</code></td><td>SQL; <code>parameters</code> для <code>$1..$N</code> (экранируются как литералы), <code>file</code> — выполнить .sql с диска, <code>maxRows</code>, <code>write</code>. Чувствительные колонки маскируются. Значения из <code>parameters</code> в историю запросов не попадают — там остаются плейсхолдеры <code>$1</code>, а сами значения помнит vault (см. «Параметры запроса»)</td></tr>
 <tr><td><code>profiles</code></td><td>Список баз (только в мультипрофильном режиме): имя, id, группа, база, хост, метка <code>production</code></td></tr>
-<tr><td><code>tables</code> / <code>columns</code> / <code>ddl</code> / <code>indexes</code></td><td>Точечная интроспекция, когда весь дамп не нужен</td></tr>
+<tr><td><code>tables</code> / <code>ddl</code></td><td>Список имён и готовый <code>CREATE TABLE</code> — единственное, чего нет в дампе. Отдельных <code>columns</code>/<code>indexes</code> в MCP нет: это подмножества <code>schema</code> с <code>table</code>, а лишний tool в списке — лишний способ выбрать не тот (в CLI подкоманды остались)</td></tr>
 <tr><td><code>open_table</code> / <code>open_query</code></td><td>Открыть таблицу или готовый (невыполненный) запрос вкладкой в GUI — «покажи мне это»</td></tr>
 <tr><td><code>selection</code></td><td>Что пользователь сейчас видит и выделил в GUI — для реплик вроде «эта строка», «выделенные записи»</td></tr>
 </table>
