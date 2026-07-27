@@ -174,6 +174,10 @@ pub struct SchemaOptions {
     /// Dump this schema only (a system one is allowed); None = every
     /// non-system schema.
     pub schema: Option<String>,
+    /// Dump this relation only, by unqualified name (`schema` narrows which
+    /// schemas it is looked up in). Types, routines and sequences are then cut
+    /// down to the ones this relation actually uses.
+    pub table: Option<String>,
     /// Keep what is normally noise for a schema overview: system schemas,
     /// extension-owned objects and leaf partitions.
     pub internal: bool,
@@ -203,8 +207,12 @@ impl SchemaOptions {
     /// postgis/timescale database this is the difference between a few dozen
     /// user objects and thousands of catalog rows. `class` is a caller-side
     /// constant ('pg_class' / 'pg_type' / 'pg_proc'), never user input.
+    ///
+    /// A named relation ([`SchemaOptions::table`]) is never noise: asking for
+    /// `--table geometry_columns` and getting an empty dump because postgis
+    /// owns it would be a lie about the database.
     fn no_ext(&self, class: &str, oid: &str) -> String {
-        if self.internal {
+        if self.internal || self.table.is_some() {
             return "true".to_string();
         }
         format!(
@@ -243,13 +251,75 @@ impl SchemaOptions {
              OR has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES'))"
                 .to_string(),
         ];
-        if !self.internal {
+        if let Some(t) = &self.table {
+            parts.push(format!("c.relname = {}", quote_literal(t)));
+        }
+        if !self.internal && self.table.is_none() {
             // Leaf partitions repeat the parent's columns/indexes verbatim;
-            // the parent reports how many of them there are.
+            // the parent reports how many of them there are. Named explicitly,
+            // a partition is what the caller asked for — see `no_ext`.
             parts.push("NOT c.relispartition".to_string());
         }
         parts.join("\n           AND ")
     }
+
+    /// The relation(s) [`SchemaOptions::table`] resolves to, as a subquery over
+    /// pg_class — plural because the same name may live in several schemas and
+    /// the dump would rather show both than silently pick one.
+    fn target_oids(&self) -> String {
+        format!(
+            "SELECT tc.oid FROM pg_class tc \
+             JOIN pg_namespace tn ON tn.oid = tc.relnamespace \
+             WHERE tc.relname = {name} AND {nsp}",
+            name = quote_literal(self.table.as_deref().unwrap_or_default()),
+            nsp = self.nsp("tn"),
+        )
+    }
+
+    /// Narrows a type/routine/sequence query to what the named relation uses.
+    /// Without a relation the whole schema is in scope and the predicate is a
+    /// no-op, so callers can splice it in unconditionally.
+    fn used_by_table(&self, kind: UsedBy) -> String {
+        if self.table.is_none() {
+            return "true".to_string();
+        }
+        let target = self.target_oids();
+        match kind {
+            // An array column stores the array type's oid; the enum/domain
+            // behind `status[]` is its typelem, so matching atttypid alone
+            // dropped exactly the types worth printing.
+            UsedBy::Type(alias) => format!(
+                "{alias}.oid IN (SELECT CASE WHEN bt.typelem <> 0 AND bt.typlen = -1 \
+                                             THEN bt.typelem ELSE ua.atttypid END \
+                                   FROM pg_attribute ua \
+                                   JOIN pg_type bt ON bt.oid = ua.atttypid \
+                                  WHERE ua.attnum > 0 AND NOT ua.attisdropped \
+                                    AND ua.attrelid IN ({target}))"
+            ),
+            UsedBy::Routine(alias) => format!(
+                "{alias}.oid IN (SELECT ut.tgfoid FROM pg_trigger ut \
+                                  WHERE NOT ut.tgisinternal AND ut.tgrelid IN ({target}))"
+            ),
+            // Mirror image of the whole-database rule below: there the dump
+            // prints the sequences no table owns, here only the ones this table
+            // does — a column shows `nextval(…)` but not its start/increment.
+            UsedBy::Sequence(alias) => format!(
+                "EXISTS (SELECT 1 FROM pg_depend dep \
+                          WHERE dep.classid = 'pg_class'::regclass AND dep.objid = {alias}.oid \
+                            AND dep.refclassid = 'pg_class'::regclass \
+                            AND dep.deptype IN ('a','i') \
+                            AND dep.refobjid IN ({target}))"
+            ),
+        }
+    }
+}
+
+/// Which catalog a [`SchemaOptions::used_by_table`] predicate is written for;
+/// the payload is the query's alias for that catalog.
+enum UsedBy<'a> {
+    Type(&'a str),
+    Routine(&'a str),
+    Sequence(&'a str),
 }
 
 /// Number of result sets [`schema_dump_sql`] produces, in this order:
@@ -261,6 +331,10 @@ pub const SCHEMA_DUMP_PARTS: usize = 10;
  *  single catalog snapshot instead of the per-table walk (tables → columns →
  *  indexes → ddl) an agent would otherwise do. The cost is therefore constant
  *  in the number of tables, which is the entire point of the command.
+ *
+ *  With [`SchemaOptions::table`] the same batch answers "everything about this
+ *  one relation" — same SQL, narrower filters, so there is no second code path
+ *  for the single-table case.
  *
  *  Requires PostgreSQL 12 or newer (`pg_attribute.attgenerated`); the caller
  *  checks the server version, because a batch this size fails as a whole.
@@ -402,12 +476,14 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
           WHERE t.typtype = 'e'
             AND {nsp}
             AND {no_ext}
+            AND {used}
             AND has_schema_privilege(n.oid, 'USAGE')
             AND has_type_privilege(t.oid, 'USAGE')
           ORDER BY n.nspname, t.typname, e.enumsortorder",
         comment = o.opt_expr(o.comments, "obj_description(t.oid, 'pg_type')"),
         nsp = o.nsp("n"),
         no_ext = o.no_ext("pg_type", "t.oid"),
+        used = o.used_by_table(UsedBy::Type("t")),
     );
 
     // prokind 'a'/'w' (aggregates, window functions) are left out on purpose —
@@ -427,6 +503,7 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
           WHERE p.prokind IN ('f','p')
             AND {nsp}
             AND {no_ext}
+            AND {used}
             AND has_schema_privilege(n.oid, 'USAGE')
             AND has_function_privilege(p.oid, 'EXECUTE')
           ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)",
@@ -434,6 +511,7 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
         comment = o.opt_expr(o.comments, "obj_description(p.oid, 'pg_proc')"),
         nsp = o.nsp("n"),
         no_ext = o.no_ext("pg_proc", "p.oid"),
+        used = o.used_by_table(UsedBy::Routine("p")),
     );
 
     // Without the policies themselves `rowsecurity` is a dead end: the dump
@@ -459,9 +537,18 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
 
     // Standalone sequences only: the ones behind identity/serial columns are
     // already visible on the column itself, while a `nextval('invoice_seq')`
-    // called from application code had nothing to point at in the dump.
+    // called from application code had nothing to point at in the dump. Scoped
+    // to one table it is the other way round (see `used_by_table`).
     // has_sequence_privilege has to sit inside a CASE — the planner may run it
     // before the relkind test, and on a non-sequence it errors out.
+    let owned = match &o.table {
+        Some(_) => o.used_by_table(UsedBy::Sequence("c")),
+        None => "NOT EXISTS (SELECT 1 FROM pg_depend dep \
+                              WHERE dep.classid = 'pg_class'::regclass AND dep.objid = c.oid \
+                                AND dep.refclassid = 'pg_class'::regclass \
+                                AND dep.deptype IN ('a','i'))"
+            .to_string(),
+    };
     let sequences = format!(
         "SELECT n.nspname, c.relname,
                 format_type(s.seqtypid, NULL),
@@ -478,10 +565,7 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
             AND CASE WHEN c.relkind = 'S'
                      THEN has_sequence_privilege(c.oid, 'SELECT, USAGE, UPDATE')
                      ELSE false END
-            AND NOT EXISTS (SELECT 1 FROM pg_depend dep
-                             WHERE dep.classid = 'pg_class'::regclass AND dep.objid = c.oid
-                               AND dep.refclassid = 'pg_class'::regclass
-                               AND dep.deptype IN ('a','i'))
+            AND {owned}
           ORDER BY n.nspname, c.relname",
         comment = o.opt_expr(o.comments, "obj_description(c.oid, 'pg_class')"),
         nsp = o.nsp("n"),
@@ -519,12 +603,14 @@ pub fn schema_dump_sql(o: &SchemaOptions) -> String {
                                   WHERE rc.oid = t.typrelid AND rc.relkind = 'c')))
             AND {nsp}
             AND {no_ext}
+            AND {used}
             AND has_schema_privilege(n.oid, 'USAGE')
             AND has_type_privilege(t.oid, 'USAGE')
           ORDER BY n.nspname, t.typtype, t.typname",
         comment = o.opt_expr(o.comments, "obj_description(t.oid, 'pg_type')"),
         nsp = o.nsp("n"),
         no_ext = o.no_ext("pg_type", "t.oid"),
+        used = o.used_by_table(UsedBy::Type("t")),
     );
 
     [

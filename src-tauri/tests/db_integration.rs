@@ -231,6 +231,95 @@ async fn connect_execute_paginate() {
     assert_eq!(intact.results[0].rows[0][0].as_deref(), Some("row 3"));
 }
 
+/// `schema --table` narrowing against a real catalog: the six relation-scoped
+/// result sets must carry the named table only, and the type/routine/sequence
+/// ones must carry exactly what that table uses. Both are easy to get subtly
+/// wrong (an enum behind an array column hides in `typelem`, a trigger function
+/// lives in another catalog), and neither shows up in a SQL-text unit test.
+#[tokio::test]
+#[ignore]
+async fn schema_dump_narrowed_to_one_table() {
+    let connected = db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
+    let client = connected.session.client.clone();
+
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS scoped CASCADE;
+         DROP TABLE IF EXISTS unscoped CASCADE;
+         DROP TYPE IF EXISTS scoped_state CASCADE;
+         DROP TYPE IF EXISTS lonely_state CASCADE;
+         DROP FUNCTION IF EXISTS scoped_touch() CASCADE;
+         DROP SEQUENCE IF EXISTS lonely_seq CASCADE;
+         CREATE TYPE scoped_state AS ENUM ('new', 'done');
+         CREATE TYPE lonely_state AS ENUM ('nobody');
+         CREATE SEQUENCE lonely_seq;
+         CREATE TABLE scoped (
+           id serial PRIMARY KEY,
+           states scoped_state[] NOT NULL DEFAULT '{}'::scoped_state[]
+         );
+         CREATE TABLE unscoped (id int);
+         CREATE FUNCTION scoped_touch() RETURNS trigger LANGUAGE plpgsql
+           AS $$ BEGIN RETURN NEW; END $$;
+         CREATE TRIGGER scoped_trg BEFORE UPDATE ON scoped
+           FOR EACH ROW EXECUTE FUNCTION scoped_touch()",
+        10,
+    )
+    .await
+    .expect("fixture");
+
+    let opts = db::SchemaOptions {
+        table: Some("scoped".into()),
+        ..Default::default()
+    };
+    let dump = db::execute(&client, &db::schema_dump_sql(&opts), 10_000)
+        .await
+        .expect("scoped dump");
+    assert_eq!(dump.results.len(), db::SCHEMA_DUMP_PARTS);
+    let names = |part: usize, col: usize| -> Vec<String> {
+        dump.results[part]
+            .rows
+            .iter()
+            .map(|r| r[col].clone().unwrap_or_default())
+            .collect()
+    };
+
+    assert_eq!(names(0, 1), vec!["scoped"], "relations");
+    assert_eq!(names(1, 2), vec!["id", "states"], "columns");
+    assert_eq!(names(4, 2), vec!["scoped_trg"], "triggers");
+    // one row per label — the enum sits behind `scoped_state[]`, so matching
+    // atttypid alone would have lost it entirely
+    assert_eq!(names(5, 1), vec!["scoped_state", "scoped_state"], "enum types");
+    assert_eq!(names(5, 2), vec!["new", "done"], "enum labels");
+    assert_eq!(names(6, 1), vec!["scoped_touch"], "routines");
+    // the whole-database dump prints sequences nobody owns; scoped to a table
+    // it is the other way round — only the serial's own sequence
+    assert_eq!(names(8, 1), vec!["scoped_id_seq"], "sequences");
+
+    let all = db::execute(
+        &client,
+        &db::schema_dump_sql(&db::SchemaOptions::default()),
+        10_000,
+    )
+    .await
+    .expect("whole dump");
+    assert!(all.results[0].rows.len() > dump.results[0].rows.len());
+    let seqs: Vec<String> = all.results[8]
+        .rows
+        .iter()
+        .map(|r| r[1].clone().unwrap_or_default())
+        .collect();
+    assert!(seqs.contains(&"lonely_seq".to_string()), "got: {seqs:?}");
+    assert!(!seqs.contains(&"scoped_id_seq".to_string()), "got: {seqs:?}");
+}
+
 /// Verifies the PostgreSQL semantics the broker's read-only gate defends
 /// against: `default_transaction_read_only` applies only to a NEW transaction,
 /// so a read-write transaction left open by a `--write` call stays writable

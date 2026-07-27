@@ -92,19 +92,19 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<ProfilesCmd>,
     },
-    /// Вся схема базы одним дампом: таблицы, вьюхи, enum, функции
+    /// Схема базы одним дампом: таблицы, вьюхи, enum, функции (--table — одна таблица)
     Schema(SchemaArgs),
     /// Список таблиц/вьюх базы
     Tables(TablesArgs),
-    /// Колонки таблицы
+    /// Колонки таблицы (структура целиком — schema --table)
     Columns(TableArgs),
     /// DDL таблицы (CREATE TABLE / VIEW)
     Ddl(TableArgs),
-    /// Индексы таблицы
+    /// Индексы таблицы (структура целиком — schema --table)
     Indexes(TableArgs),
-    /// MCP-сервер (stdio) для AI-агентов: tools query/schema/tables/columns/
-    /// ddl/indexes + open_table/open_query (вкладки в GUI); mcp install —
-    /// прописать сервер в конфиг MCP-клиента, mcp status — где он уже прописан
+    /// MCP-сервер (stdio) для AI-агентов: tools query/schema/tables/ddl +
+    /// open_table/open_query (вкладки в GUI); mcp install — прописать сервер
+    /// в конфиг MCP-клиента, mcp status — где он уже прописан
     Mcp(McpArgs),
     /// История выполненных запросов
     History(HistoryArgs),

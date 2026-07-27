@@ -12,6 +12,10 @@
 //! без системных схем, без объектов расширений (postgis/timescale раздувают
 //! дамп на порядки), без листовых партиций, без тел вьюх/функций и без
 //! COMMENT ON. Всё это возвращают `--internal`, `--definitions`, `--comments`.
+//!
+//! `--table [schema.]name` сужает тот же дамп до одной таблицы (плюс типы и
+//! триггерные функции, которыми она пользуется) — это тот же батч с более
+//! узкими фильтрами, а не отдельный путь: см. `db::SchemaOptions::table`.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -39,6 +43,10 @@ pub struct SchemaArgs {
     /// Только эта схема (можно и системную, например pg_catalog)
     #[arg(long, value_name = "NAME")]
     schema: Option<String>,
+    /// Только эта таблица/вьюха: [schema.]name — колонки, констрейнты,
+    /// индексы, триггеры и используемые ею типы
+    #[arg(long, value_name = "TABLE")]
+    table: Option<String>,
     /// Показать всё: системные схемы, объекты расширений, листовые партиции
     #[arg(long)]
     internal: bool,
@@ -261,9 +269,40 @@ fn cell_opt(row: &[Option<String>], i: usize) -> Option<String> {
     row.get(i).cloned().flatten()
 }
 
+/// `--table [schema.]name` вместе с `--schema`: точка в спецификации задаёт
+/// схему сама, и тогда `--schema` не должен спорить с ней — иначе фильтры
+/// пересеклись бы по пустому множеству и дамп молча вернул бы «ничего».
+pub(crate) fn resolve_target(
+    schema: Option<String>,
+    table: Option<String>,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let Some(spec) = table else {
+        return Ok((schema, None));
+    };
+    let (s, t) = match spec.split_once('.') {
+        Some((s, t)) => (Some(s.to_string()), t.to_string()),
+        None => (schema.clone(), spec.clone()),
+    };
+    if t.is_empty() || s.as_deref() == Some("") {
+        return Err(AppError::Msg(format!(
+            "--table {spec}: ожидается [schema.]table с непустыми частями"
+        )));
+    }
+    if let (Some(from_spec), Some(flag)) = (spec.split_once('.').map(|p| p.0), &schema) {
+        if from_spec != flag {
+            return Err(AppError::Msg(format!(
+                "--table {spec} и --schema {flag} указывают на разные схемы"
+            )));
+        }
+    }
+    Ok((s, Some(t)))
+}
+
 pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
+    let (schema, table) = resolve_target(a.schema.clone(), a.table.clone())?;
     let opts = db::SchemaOptions {
-        schema: a.schema.clone(),
+        schema,
+        table,
         internal: a.internal,
         definitions: a.definitions,
         comments: a.comments,
@@ -287,7 +326,9 @@ pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
 
     let dump = build_dump(&profile.database, &connected.server_version, &exec.results);
     if dump.truncated {
-        eprintln!("sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema");
+        eprintln!(
+            "sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema/--table"
+        );
     }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&dump).unwrap());
@@ -620,11 +661,21 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
         "-- база: {}   сервер: {}\n",
         dump.database, dump.server_version
     ));
-    if let Some(s) = &o.schema {
-        out.push_str(&format!("-- только схема: {s}\n"));
+    match (&o.table, &o.schema) {
+        (Some(t), Some(s)) => out.push_str(&format!("-- только таблица: {s}.{t}\n")),
+        (Some(t), None) => out.push_str(&format!("-- только таблица: {t} (в любой схеме)\n")),
+        (None, Some(s)) => out.push_str(&format!("-- только схема: {s}\n")),
+        (None, None) => {}
     }
     let mut hidden: Vec<&str> = Vec::new();
-    if !o.internal {
+    if o.table.is_some() {
+        // Партиции и объекты расширений под --table как раз не прячутся:
+        // названную таблицу показываем, какой бы она ни была.
+        hidden.push("типы и функции, которыми эта таблица не пользуется");
+        if !o.internal {
+            hidden.push("системные схемы (--internal)");
+        }
+    } else if !o.internal {
         hidden.push("системные схемы, объекты расширений, партиции (--internal)");
     }
     if !o.definitions {
@@ -640,7 +691,7 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
     out.push_str(&format!("-- скрыто: {}\n", hidden.join("; ")));
 
     if dump.schemas.iter().all(SchemaInfo::is_empty) {
-        out.push_str("-- ничего не найдено (проверь --schema / --internal и права роли)\n");
+        out.push_str("-- ничего не найдено (проверь --table / --schema / --internal и права роли)\n");
         return out;
     }
 
@@ -1107,6 +1158,76 @@ mod tests {
         let err = check_server_version("11.5").unwrap_err().to_string();
         assert!(err.contains("PostgreSQL 12+"), "{err}");
         assert!(check_server_version("9.6.24").is_err());
+    }
+
+    /// `--table` — это фильтр поверх того же батча: число стейтментов (а значит
+    /// и разбор по позициям в build_dump) обязано остаться прежним.
+    #[test]
+    fn table_filter_keeps_statement_count() {
+        let o = db::SchemaOptions {
+            table: Some("users".into()),
+            ..Default::default()
+        };
+        let sql = db::schema_dump_sql(&o);
+        assert_eq!(db::split_statements(&sql).len(), db::SCHEMA_DUMP_PARTS);
+        assert!(sql.contains("c.relname = 'users'"));
+        // названную таблицу не прячем как «шум»: ни партицию, ни объект расширения
+        assert!(!sql.contains("NOT c.relispartition"));
+        assert!(!sql.contains("dep.deptype = 'e'"));
+        // типы/функции/секвенции сужены до того, чем таблица пользуется
+        assert!(sql.contains("bt.typelem"));
+        assert!(sql.contains("ut.tgfoid"));
+        assert!(sql.contains("dep.refobjid IN"));
+    }
+
+    /// Без `--table` дамп остаётся прежним: сужающих подзапросов нет, а
+    /// секвенции — наоборот, только ничьи.
+    #[test]
+    fn whole_database_dump_has_no_table_scoping() {
+        let sql = db::schema_dump_sql(&db::SchemaOptions::default());
+        assert!(!sql.contains("bt.typelem"));
+        assert!(!sql.contains("ut.tgfoid"));
+        assert!(sql.contains("NOT EXISTS (SELECT 1 FROM pg_depend dep"));
+    }
+
+    /// Имя таблицы приходит от пользователя (и от модели через MCP) — только
+    /// через quote_literal.
+    #[test]
+    fn dump_sql_escapes_table_name() {
+        let o = db::SchemaOptions {
+            table: Some("us'ers".into()),
+            ..Default::default()
+        };
+        let sql = db::schema_dump_sql(&o);
+        assert!(sql.contains("c.relname = 'us''ers'"));
+        assert!(!sql.contains("'us'ers'"));
+    }
+
+    #[test]
+    fn target_resolves_schema_from_the_table_spec() {
+        // без точки схему задаёт --schema (или её нет — ищем во всех)
+        assert_eq!(
+            resolve_target(None, Some("users".into())).unwrap(),
+            (None, Some("users".to_string()))
+        );
+        assert_eq!(
+            resolve_target(Some("app".into()), Some("users".into())).unwrap(),
+            (Some("app".to_string()), Some("users".to_string()))
+        );
+        assert_eq!(
+            resolve_target(None, Some("app.users".into())).unwrap(),
+            (Some("app".to_string()), Some("users".to_string()))
+        );
+        // тот же --schema рядом с точкой — не конфликт
+        assert_eq!(
+            resolve_target(Some("app".into()), Some("app.users".into())).unwrap(),
+            (Some("app".to_string()), Some("users".to_string()))
+        );
+        // а разные схемы дали бы пустое пересечение фильтров, т.е. «ничего не
+        // найдено» вместо внятной ошибки
+        assert!(resolve_target(Some("app".into()), Some("public.users".into())).is_err());
+        assert!(resolve_target(None, Some("app.".into())).is_err());
+        assert!(resolve_target(None, Some(".users".into())).is_err());
     }
 
     /// Имя схемы приходит от пользователя — только через quote_literal.
