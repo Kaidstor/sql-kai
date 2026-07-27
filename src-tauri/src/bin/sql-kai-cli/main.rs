@@ -83,7 +83,8 @@ enum Cmd {
     Logs(LogsArgs),
     /// Найти postgres на ssh-хосте и создать/обновить профиль
     Discover(DiscoverArgs),
-    /// Массовый импорт профилей из JSON (stdin/файл), пароли — в vault
+    /// Импорт профилей: --from beekeeper|dbeaver или JSON (stdin/файл);
+    /// пароли — в vault
     Import(ImportArgs),
     /// Копия базы профиля в локальном docker + профиль на неё (миграции — не на проде)
     Fork(ForkArgs),

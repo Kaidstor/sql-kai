@@ -127,6 +127,7 @@ sql-kai init                        # первичная настройка: PAT
 sql-kai completion zsh|bash|fish    # скрипт автодополнения (дополняет и имена профилей)
 sql-kai <alias> -c "SELECT ..."     # SQL по профилю; вывод table/--json/--csv/-t
 sql-kai discover <ssh-alias>        # ssh → найти postgres в docker → создать профиль
+sql-kai import --from beekeeper     # переезд из Beekeeper Studio (--from dbeaver — из DBeaver)
 sql-kai import [--file f.json]      # массовый импорт профилей из JSON (пароли → vault)
 sql-kai exec <ssh-alias> -c "..."   # fallback без профиля: ssh + docker exec psql
 sql-kai schema <alias> [--json]     # вся схема одним дампом: таблицы, вьюхи, enum, функции
@@ -181,6 +182,19 @@ sql-kai holder stop                 # погасить фоновый держа
   в vault. Профиль сразу виден в GUI. Если контейнеров несколько — берётся
   первый с предупреждением; конкретный выбирается через
   `--container <имя> --name <профиль>` (флаг есть и у `sql-kai exec`).
+- **Переезд из другого клиента:** `sql-kai import --from beekeeper|dbeaver`
+  читает подключения прямо из файлов клиента — Beekeeper из `app.db`
+  (`~/Library/Application Support/beekeeper-studio`), DBeaver из
+  `data-sources.json` в `~/Library/DBeaverData/workspace*/<проект>/.dbeaver`;
+  нестандартное расположение указывается через `--file`. Переносятся адрес,
+  база, пользователь, ssh-туннель (хост/порт/пользователь/ключ/keepalive),
+  папка → группа, цветная метка, read-only → `production`; пароли и passphrase
+  расшифровываются из хранилища клиента и кладутся в vault sql-kai
+  (`--no-passwords` — только параметры подключений). Берутся только
+  postgres-подключения, остальные попадают в предупреждения — как и ssh по
+  паролю, бастион и прочее, чему нет аналога. Сначала `--dry-run`: покажет план
+  и эти предупреждения. Профиль с таким же именем пропускается, `--replace`
+  перезаписывает.
 - **Переиспользование ssh:** для профилей с туннелем CLI держит персистентный
   ssh-мастер (`ControlMaster` + `ControlPersist`) — первый запрос платит за
   аутентификацию, последующие цепляются к готовому мастеру без повторной

@@ -1,6 +1,10 @@
-//! `sql-kai import` — массовый импорт профилей из JSON (stdin или файл): по объекту
-//! на подключение, пароли и ssh-passphrase кладутся в vault. Сделан под перенос
-//! из внешних клиентов (Beekeeper и т.п.) — форма JSON нейтральна к источнику.
+//! `sql-kai import` — массовый импорт профилей. Два входа в одну и ту же
+//! запись: нейтральный JSON (stdin или файл, по объекту на подключение) и
+//! `--from beekeeper|dbeaver` — чтение чужого клиента прямо из его файлов.
+//! Пароли и ssh-passphrase кладутся в vault, в вывод не попадают никогда.
+
+mod beekeeper;
+mod dbeaver;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -8,13 +12,25 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 use sql_kai_lib::error::AppError;
-use sql_kai_lib::store::{self, Profile, SshConfig};
+use sql_kai_lib::store::{self, Profile, SshConfig, SslConfig};
 
 use crate::session;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum Source {
+    /// ~/Library/Application Support/beekeeper-studio/app.db (или --file)
+    Beekeeper,
+    /// ~/Library/DBeaverData/workspace6/*/.dbeaver/data-sources.json (или --file)
+    Dbeaver,
+}
+
 #[derive(clap::Args)]
 pub struct ImportArgs {
-    /// Файл с JSON-массивом профилей (по умолчанию — stdin)
+    /// Читать подключения из другого клиента вместо JSON
+    #[arg(long, value_enum)]
+    from: Option<Source>,
+    /// Без --from: файл с JSON-массивом профилей (по умолчанию — stdin).
+    /// С --from: файл или каталог источника, если он лежит не по умолчанию
     #[arg(short, long)]
     file: Option<PathBuf>,
     /// Перезаписывать профиль с таким же именем (иначе — пропускать)
@@ -23,6 +39,9 @@ pub struct ImportArgs {
     /// Ничего не писать, только показать план
     #[arg(long)]
     dry_run: bool,
+    /// Не переносить пароли и passphrase — только параметры подключений
+    #[arg(long)]
+    no_passwords: bool,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +78,16 @@ struct ImportProfile {
     color: Option<String>,
     #[serde(default)]
     production: bool,
+    #[serde(default)]
+    ssl: Option<SslConfig>,
+}
+
+/// Что удалось разобрать в источнике и о чём предупредить: подключение не к
+/// postgres, ssh-режим без аналога в sql-kai, нерасшифрованный пароль.
+#[derive(Default)]
+struct Imported {
+    profiles: Vec<ImportProfile>,
+    notes: Vec<String>,
 }
 
 /// Пустая строка секрета = None (не трогать), непустая = положить в vault.
@@ -66,13 +95,13 @@ fn some_nonempty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.is_empty())
 }
 
-pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
-    let raw = match &a.file {
+fn read_json(file: Option<&PathBuf>) -> Result<Vec<ImportProfile>, AppError> {
+    let raw = match file {
         Some(path) => std::fs::read_to_string(path)?,
         None => {
             if std::io::stdin().is_terminal() {
                 return Err(AppError::Msg(
-                    "нет входных данных: передай JSON в stdin или через --file".into(),
+                    "нет входных данных: передай JSON в stdin, через --file или укажи --from".into(),
                 ));
             }
             let mut buf = String::new();
@@ -80,17 +109,44 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
             buf
         }
     };
-    let incoming: Vec<ImportProfile> = serde_json::from_str(&raw)
-        .map_err(|e| AppError::Msg(format!("не разобрать JSON профилей: {e}")))?;
-    if incoming.is_empty() {
+    serde_json::from_str(&raw).map_err(|e| AppError::Msg(format!("не разобрать JSON профилей: {e}")))
+}
+
+pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
+    let Imported {
+        mut profiles,
+        notes,
+    } = match a.from {
+        Some(Source::Beekeeper) => beekeeper::read(a.file.as_deref(), !a.no_passwords)?,
+        Some(Source::Dbeaver) => dbeaver::read(a.file.as_deref(), !a.no_passwords)?,
+        None => Imported {
+            profiles: read_json(a.file.as_ref())?,
+            notes: Vec::new(),
+        },
+    };
+    if a.no_passwords {
+        for p in &mut profiles {
+            p.password = None;
+            p.ssh_passphrase = None;
+        }
+    }
+
+    for note in &notes {
+        println!("! {note}");
+    }
+    if !notes.is_empty() {
+        println!();
+    }
+    if profiles.is_empty() {
         println!("нет профилей для импорта");
         return Ok(ExitCode::SUCCESS);
     }
 
     // Разлочиваем vault один раз, если есть что в него класть.
-    let needs_vault = incoming
-        .iter()
-        .any(|p| some_nonempty(p.password.clone()).is_some() || some_nonempty(p.ssh_passphrase.clone()).is_some());
+    let needs_vault = profiles.iter().any(|p| {
+        some_nonempty(p.password.clone()).is_some()
+            || some_nonempty(p.ssh_passphrase.clone()).is_some()
+    });
     if needs_vault && !a.dry_run {
         session::unlock_vault()?;
     }
@@ -98,7 +154,7 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
     let existing = store::load_profiles()?;
     let (mut created, mut replaced, mut skipped) = (0u32, 0u32, 0u32);
 
-    for imp in incoming {
+    for imp in profiles {
         let existing_id = existing.iter().find(|p| p.name == imp.name).map(|p| p.id.clone());
         let action = match (&existing_id, a.replace) {
             (Some(_), false) => {
@@ -128,7 +184,7 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
             group: imp.group.filter(|g| !g.trim().is_empty()),
             color: imp.color.filter(|c| !c.trim().is_empty()),
             production: imp.production,
-            ssl: None,
+            ssl: imp.ssl,
             fork_container: None,
             has_password: false,
             has_ssh_passphrase: false,
