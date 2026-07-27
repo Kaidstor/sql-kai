@@ -315,13 +315,19 @@ impl Server {
             }
             "schema" => {
                 let profile = self.target(args)?;
-                let opts = db::SchemaOptions {
-                    schema: args
-                        .get("schema")
+                let str_arg = |key: &str| {
+                    args.get(key)
                         .and_then(Value::as_str)
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
-                        .map(str::to_string),
+                        .map(str::to_string)
+                };
+                let (schema, table) =
+                    schema_cmd::resolve_target(str_arg("schema"), str_arg("table"))
+                        .map_err(|e| e.to_string())?;
+                let opts = db::SchemaOptions {
+                    schema,
+                    table,
                     internal: flag(args, "internal"),
                     definitions: flag(args, "definitions"),
                     comments: flag(args, "comments"),
@@ -336,34 +342,6 @@ impl Server {
                 let mut structured = rows_structured("tables", &q.exec, &[
                     "schema", "name", "kind",
                 ], counts.then_some("approx_rows"));
-                mark_truncated(&mut structured, &q);
-                Ok(ToolOutput::new(q.text, structured))
-            }
-            "columns" => {
-                let profile = self.target(args)?;
-                let (schema, table) = table_arg()?;
-                let sql = db::columns_sql(&db::regclass_literal(&schema, &table));
-                let q = run_query(&profile, &sql, MAX_ROWS_CAP, false, None, false).await?;
-                let mut structured = rows_structured(
-                    "columns",
-                    &q.exec,
-                    &["name", "type", "nullable", "primary_key", "default", "comment"],
-                    None,
-                );
-                mark_truncated(&mut structured, &q);
-                Ok(ToolOutput::new(q.text, structured))
-            }
-            "indexes" => {
-                let profile = self.target(args)?;
-                let (schema, table) = table_arg()?;
-                let sql = db::indexes_sql(&db::regclass_literal(&schema, &table));
-                let q = run_query(&profile, &sql, MAX_ROWS_CAP, false, None, false).await?;
-                let mut structured = rows_structured(
-                    "indexes",
-                    &q.exec,
-                    &["name", "unique", "primary", "columns", "definition"],
-                    None,
-                );
                 mark_truncated(&mut structured, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
@@ -722,11 +700,12 @@ fn tool_definitions(multi: bool) -> Value {
         }),
         json!({
             "name": "schema",
-            "description": "The whole schema of the database in ONE call: tables (including partitioned and foreign ones), views and materialized views with their columns, types, nullability, defaults, constraints, indexes and triggers, plus enum types, functions and procedures. Prefer this over walking tables → columns/ddl/indexes table by table: it is a single round-trip and one consistent catalog snapshot, at a cost that does not grow with the number of tables. System schemas, extension-owned objects (postgis, timescaledb), leaf partitions, view/function bodies and COMMENT ON texts are left out by default — the flags below bring them back.",
+            "description": "The schema of the database in ONE call: tables (including partitioned and foreign ones), views and materialized views with their columns, types, nullability, defaults, constraints, indexes and triggers, plus enum types, functions and procedures. This is the only structure tool you need — for a single table pass `table`, which returns that relation with everything attached to it instead of a separate columns/indexes/ddl walk. It is a single round-trip and one consistent catalog snapshot, at a cost that does not grow with the number of tables. System schemas, extension-owned objects (postgis, timescaledb), leaf partitions, view/function bodies and COMMENT ON texts are left out by default — the flags below bring them back.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "schema": { "type": "string", "description": "Restrict the dump to this schema (a system one is allowed, e.g. pg_catalog); default: every non-system schema" },
+                    "table": { "type": "string", "description": "Restrict the dump to one relation: `table` or `schema.table`. Returns its columns, constraints, indexes, triggers and policies, plus the enum/domain types its columns use, the functions its triggers call and the sequences it owns. A leaf partition or an extension-owned table is shown too when named here." },
                     "definitions": { "type": "boolean", "description": "Include view bodies and function sources (default false)" },
                     "comments": { "type": "boolean", "description": "Include COMMENT ON texts of tables, columns, types and routines (default false)" },
                     "internal": { "type": "boolean", "description": "Include system schemas, extension-owned objects and leaf partitions (default false) — usually a lot of noise" }
@@ -747,19 +726,13 @@ fn tool_definitions(multi: bool) -> Value {
             "outputSchema": rows_output_schema("tables", &["schema", "name", "kind", "approx_rows"]),
             "annotations": annotations("List tables", true, false, true),
         }),
-        json!({
-            "name": "columns",
-            "description": "Columns of a table: name, type, nullability, PK, default, comment.",
-            "inputSchema": table_schema,
-            "outputSchema": rows_output_schema(
-                "columns",
-                &["name", "type", "nullable", "primary_key", "default", "comment"],
-            ),
-            "annotations": annotations("Table columns", true, false, true),
-        }),
+        // Отдельных `columns`/`indexes` тут нет: это подмножества
+        // `schema { table }`, а лишний tool в списке — это лишний способ
+        // выбрать не тот. `ddl` остался — он отдаёт другой артефакт (готовый
+        // CREATE TABLE), которого в дампе нет.
         json!({
             "name": "ddl",
-            "description": "CREATE TABLE / CREATE VIEW statement of a table or view.",
+            "description": "CREATE TABLE / CREATE VIEW statement of a table or view, ready to paste into a migration. For reading the structure use `schema` with `table` instead.",
             "inputSchema": table_schema,
             "outputSchema": {
                 "type": "object",
@@ -767,16 +740,6 @@ fn tool_definitions(multi: bool) -> Value {
                 "required": ["ddl"],
             },
             "annotations": annotations("Table DDL", true, false, true),
-        }),
-        json!({
-            "name": "indexes",
-            "description": "Indexes of a table: name, uniqueness, columns, definition.",
-            "inputSchema": table_schema,
-            "outputSchema": rows_output_schema(
-                "indexes",
-                &["name", "unique", "primary", "columns", "definition"],
-            ),
-            "annotations": annotations("Table indexes", true, false, true),
         }),
         json!({
             "name": "open_table",
@@ -894,8 +857,8 @@ async fn schema_output(profile: &Profile, opts: &db::SchemaOptions) -> Result<To
             if msg.contains("attgenerated") {
                 return format!(
                     "схема снимается только с PostgreSQL {}+ (сервер отверг запрос к каталогу: \
-                     {msg}); на более старом бери структуру по частям: tables, columns, \
-                     indexes, ddl",
+                     {msg}); на более старом бери структуру через tables, ddl и \
+                     запросы к information_schema",
                     schema_cmd::MIN_SERVER_MAJOR
                 );
             }
