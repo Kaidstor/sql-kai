@@ -186,7 +186,8 @@ function connectionContext(p: Profile, mcp: boolean): string {
   const alias = JSON.stringify(p.name); // кавычки на случай пробелов в имени
   const viaMcp = [
     "Use the MCP tools of the `sql-kai` server to work with the database:",
-    "  query / tables / columns / ddl / indexes — SQL and schema discovery;",
+    "  schema — the structure, in one call: the whole database, or a single relation with everything attached to it via `table`. Prefer it over walking the catalog table by table;",
+    "  query / tables / ddl — SQL, the list of relation names, a ready-to-paste CREATE TABLE;",
     "  open_table / open_query — show a table or a prepared query to the user as a tab in the sql-kai GUI;",
     "  selection — what the user currently sees in the GUI: active tab (table/filter or query SQL) and the rows/columns/cells they selected, with data. Call it whenever the user refers to what's on their screen (\"this row\", \"the selected rows\", \"эта колонка\").",
     "The sql-kai CLI is also available in the shell as a fallback:",
@@ -195,11 +196,11 @@ function connectionContext(p: Profile, mcp: boolean): string {
   const viaCli = [
     "Run SQL through the locally installed sql-kai CLI (it owns connection, ssh tunnel and credentials):",
     `  sql-kai q ${alias} -c "SELECT ..." --json`,
-    "Schema discovery:",
+    "Schema discovery — one call, not a table-by-table walk:",
+    `  sql-kai schema ${alias}`,
+    `  sql-kai schema ${alias} --table [schema.]table`,
     `  sql-kai tables ${alias}`,
-    `  sql-kai columns ${alias} [schema.]table`,
     `  sql-kai ddl ${alias} [schema.]table`,
-    `  sql-kai indexes ${alias} [schema.]table`,
   ];
   return [
     "You are a database assistant embedded in sql-kai, a Postgres GUI client.",
