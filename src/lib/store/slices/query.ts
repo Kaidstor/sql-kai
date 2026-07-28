@@ -252,7 +252,10 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
     const session = effectiveSession(tab);
     if (!session) return;
     try {
-      await api.executeSql(session.sessionId, verb, 1, false);
+      // prodWrite=true: голый COMMIT/ROLLBACK подтверждённой транзакции не
+      // должен спотыкаться о read-only обёртку (на idle-сессии это безвредный
+      // no-op с warning); сам verb — литерал, инъекции в нём нет.
+      await api.executeSql(session.sessionId, verb, 1, false, undefined, true);
       get().showToast(verb === "COMMIT" ? "Committed" : "Rolled back", "success");
     } catch (e) {
       // Смерть соединения на COMMIT/ROLLBACK — та же маршрутизация, что у
@@ -324,14 +327,17 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           : null);
       set((s) => ({ exporting: { ...s.exporting, [sessionId]: true } }));
       try {
-        const out = await api.exportSql(
-          sessionId,
-          sql,
-          statementIndex,
-          format,
-          path,
-          autoBegin,
-          parameters,
+        const out = await ctx.runProdGuarded(profileId, sql, (prodWrite) =>
+          api.exportSql(
+            sessionId,
+            sql,
+            statementIndex,
+            format,
+            path,
+            autoBegin,
+            parameters,
+            prodWrite,
+          ),
         );
         get().showToast(
           out.truncated
@@ -373,8 +379,10 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
           return;
         }
       }
-      // No prod-confirm on run (deliberate): the dialog was reflex-Enter'd
-      // anyway — the safety story is Ctrl+C cancel + the PROD chrome tints.
+      // Прод-барьер живёт на backend (BEGIN READ ONLY без write-intent):
+      // чтения бегут без диалога, а подтверждение появляется только когда
+      // сервер реально отказал записи — рефлекторного Enter по диалогу на
+      // каждый Run, ради отказа от которого прод-чек отсюда убирали, нет.
       const isolated = Boolean(tab.state.isolated);
       const session = await beginRun(tab, isolated);
       if (!session) return;
@@ -409,12 +417,15 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       };
       const started = Date.now();
       try {
-        const result = await api.executeSql(
-          session.sessionId,
-          sql,
-          tab.state.maxRows,
-          autoBegin,
-          parameters,
+        const result = await ctx.runProdGuarded(tab.profileId, sql, (prodWrite) =>
+          api.executeSql(
+            session.sessionId,
+            sql,
+            tab.state.maxRows,
+            autoBegin,
+            parameters,
+            prodWrite,
+          ),
         );
         pushHistory(true);
         notifyDone(tab.profileId, started, true, sql);
@@ -469,12 +480,16 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
       const autoBegin = analyze && isolated && tab.state.commitMode === "manual";
       const started = Date.now();
       try {
-        const exec = await api.executeSql(
-          session.sessionId,
-          explainSql,
-          10,
-          autoBegin,
-          parameters,
+        // ANALYZE исполняет запрос — на проде это тот же барьер, что у Run.
+        const exec = await ctx.runProdGuarded(tab.profileId, explainSql, (prodWrite) =>
+          api.executeSql(
+            session.sessionId,
+            explainSql,
+            10,
+            autoBegin,
+            parameters,
+            prodWrite,
+          ),
         );
         const raw = exec.results[0]?.rows[0]?.[0];
         const parsed: unknown = raw ? JSON.parse(raw) : null;

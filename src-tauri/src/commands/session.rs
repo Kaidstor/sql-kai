@@ -150,6 +150,18 @@ fn with_session<T>(
     Ok(f(session))
 }
 
+/// Профиль сессии помечен production? Свежее чтение profiles.json на каждый
+/// вызов (как у брокера): метка, поставленная или снятая в карточке профиля,
+/// действует сразу, без реконнекта. Нечитаемые профили — ошибка, а не
+/// «не прод»: чего не видим, тому не доверяем.
+pub(super) fn session_is_production(
+    state: &State<'_, AppState>,
+    session_id: &str,
+) -> Result<bool, AppError> {
+    let profile_id = with_session(state, session_id, |s| s.profile_id.clone())?;
+    Ok(store::profile_by_id(&profile_id)?.production)
+}
+
 /// Client of a live session. A closed client can't recover, so it is removed
 /// here (tearing the tunnel down with it) and every command reports the same
 /// "connection lost" error the frontend recognises to offer a reconnect.

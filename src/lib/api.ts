@@ -118,12 +118,16 @@ export const api = {
     sshPassphrase: string | null,
   ) => invoke<string>("test_profile", { profile, password, sshPassphrase }),
 
+  /** `prodWrite` — подтверждённый write-intent: без него backend исполняет
+   *  батч production-сессии внутри BEGIN READ ONLY (отказ придёт кодом
+   *  "read_only", см. isReadOnlyRefusal). */
   executeSql: (
     sessionId: string,
     sql: string,
     maxRows: number,
     autoBegin = false,
     parameters?: string[],
+    prodWrite = false,
   ) =>
     invoke<ExecResult>("execute_sql", {
       sessionId,
@@ -131,6 +135,7 @@ export const api = {
       maxRows,
       autoBegin,
       parameters,
+      prodWrite,
     }),
 
   /** How many `$N` values the SQL expects. Asked of the backend scanner, not
@@ -164,6 +169,7 @@ export const api = {
     path: string,
     autoBegin = false,
     parameters?: string[],
+    prodWrite = false,
   ) =>
     invoke<ExportResult>("export_sql", {
       sessionId,
@@ -173,6 +179,7 @@ export const api = {
       path,
       autoBegin,
       parameters,
+      prodWrite,
     }),
 
   openIsolatedSession: (profileId: string) =>
@@ -277,6 +284,13 @@ export function errCode(e: unknown): string | null {
 export function isSessionLost(e: unknown): boolean {
   const code = errCode(e);
   return code === "connection_lost" || code === "session_gone";
+}
+
+/** Backend отказал из-за read-only: гейт prod-сессии до отправки или SQLSTATE
+ *  25006 из BEGIN READ ONLY-блока. На production-профиле это сигнал «нужен
+ *  write-intent» — спросить пользователя и повторить с prodWrite. */
+export function isReadOnlyRefusal(e: unknown): boolean {
+  return errCode(e) === "read_only";
 }
 
 // Hot-swapping this module would leave stale references in the store —

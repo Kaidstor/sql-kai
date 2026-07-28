@@ -15,6 +15,12 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("{}", format_pg_error(.0))]
     Pg(#[from] tokio_postgres::Error),
+    /// Батч отвергнут read-only гейтом ещё до отправки на сервер (см.
+    /// `db::execute_read_only`). Для потребителей это тот же класс, что
+    /// SQLSTATE 25006: нужен write-доступ, а не другой SQL, — поэтому и код
+    /// тот же ("read_only"), UI/CLI ветвятся одинаково на оба источника.
+    #[error("{0}")]
+    ReadOnlyRefused(String),
 }
 
 impl AppError {
@@ -33,6 +39,7 @@ impl AppError {
                 _ => "db",
             },
             AppError::Pg(_) => "pg",
+            AppError::ReadOnlyRefused(_) => "read_only",
         }
     }
 
@@ -44,9 +51,11 @@ impl AppError {
         }
     }
 
-    /// Сессия read-only (SQLSTATE 25006) — sql-kai подсказывает `--write`.
+    /// Сессия read-only (SQLSTATE 25006 или отказ гейта до отправки) —
+    /// sql-kai подсказывает `--write`.
     pub fn is_read_only(&self) -> bool {
-        self.sqlstate() == Some(SqlState::READ_ONLY_SQL_TRANSACTION.code())
+        matches!(self, AppError::ReadOnlyRefused(_))
+            || self.sqlstate() == Some(SqlState::READ_ONLY_SQL_TRANSACTION.code())
     }
 }
 

@@ -103,7 +103,7 @@ export function createStructureSlice(
       if (!tab) return false;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return false;
-      if (!(await ctx.confirmProdRun(tab.profileId, sql))) return false;
+      // прод-барьер внутри executeStatements (backend read-only + диалог)
       const { schema, table } = tab.state;
       const message = await ctx.executeStatements(
         tab.profileId,
@@ -187,7 +187,7 @@ export function createStructureSlice(
       if (stmts.length === 0) return;
       const session = ctx.sessionFor(tab.profileId);
       if (!session) return;
-      if (!(await ctx.confirmProdRun(tab.profileId, stmts.join(";\n")))) return;
+      // прод-барьер внутри executeStatements (backend read-only + диалог)
       patchTab<StructureTabState>(tabId, { loading: true });
       const message = await ctx.executeStatements(
         tab.profileId,

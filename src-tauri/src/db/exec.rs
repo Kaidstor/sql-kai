@@ -119,8 +119,25 @@ pub async fn execute_read_only(
     sql: &str,
     max_rows: usize,
 ) -> Result<ExecResult, AppError> {
+    begin_read_only(client, sql).await?;
+    let result = execute(client, sql, max_rows).await;
+    let closed = end_read_only(client, result.is_ok()).await;
+    match (result, closed) {
+        (Ok(exec), Ok(_)) => Ok(exec),
+        // The read succeeded but the block is still open — the caller has to
+        // know, otherwise the next call inherits a transaction it never opened.
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), _) => Err(e),
+    }
+}
+
+/// Gate checks + `BEGIN READ ONLY` — the opening half of
+/// [`execute_read_only`], separate so the export path (which streams rows
+/// instead of collecting an [`ExecResult`]) runs `sql` under the same block.
+/// Every `Ok(())` MUST be paired with [`end_read_only`].
+pub async fn begin_read_only(client: &Client, sql: &str) -> Result<(), AppError> {
     if escapes_read_only_tx(sql) {
-        return Err(AppError::Msg(
+        return Err(AppError::ReadOnlyRefused(
             "read-only session: the batch would leave the read-only transaction it \
              runs in, or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE \
              TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only, including \
@@ -130,7 +147,7 @@ pub async fn execute_read_only(
         ));
     }
     if reaches_server_side_io(sql) {
-        return Err(AppError::Msg(
+        return Err(AppError::ReadOnlyRefused(
             "read-only session: the batch would write outside the database — COPY … TO \
              PROGRAM runs a shell on the server, COPY … TO '/path' and lo_export write \
              its filesystem. A read-only transaction does not cover any of these. Use \
@@ -145,18 +162,16 @@ pub async fn execute_read_only(
     // блока падает с 25001. Результат вызова отбрасывается, на ExecResult
     // батча он не влияет.
     execute(client, "BEGIN READ ONLY; SELECT 1", 1).await?;
-    let result = execute(client, sql, max_rows).await;
-    // Close the block either way: after a failed statement the transaction is
-    // aborted and every later statement on this connection errors until it is
-    // rolled back, so leaving it open would poison a pooled session.
-    let closed = execute(client, if result.is_ok() { "COMMIT" } else { "ROLLBACK" }, 1).await;
-    match (result, closed) {
-        (Ok(exec), Ok(_)) => Ok(exec),
-        // The read succeeded but the block is still open — the caller has to
-        // know, otherwise the next call inherits a transaction it never opened.
-        (Ok(_), Err(e)) => Err(e),
-        (Err(e), _) => Err(e),
-    }
+    Ok(())
+}
+
+/// Closes the read-only block either way: after a failed statement the
+/// transaction is aborted and every later statement on this connection errors
+/// until it is rolled back, so leaving it open would poison a pooled session.
+pub async fn end_read_only(client: &Client, ok: bool) -> Result<(), AppError> {
+    execute(client, if ok { "COMMIT" } else { "ROLLBACK" }, 1)
+        .await
+        .map(|_| ())
 }
 
 /// Runs SQL on a session while keeping its heuristic transaction status
@@ -207,8 +222,15 @@ impl<'a> QueryExecutor<'a> {
         max_rows: usize,
     ) -> Result<ExecResult, AppError> {
         let result = execute_read_only(self.client, sql, max_rows).await;
-        self.tx.store(TxStatus::Idle as u8, Ordering::Relaxed);
+        self.mark_idle();
         result
+    }
+
+    /// Форсирует Idle — для путей, которые открыли и закрыли read-only блок
+    /// сами ([`begin_read_only`]/[`end_read_only`], export) и потому знают,
+    /// что соединение вне транзакции, что бы ни было в батче.
+    pub fn mark_idle(&self) {
+        self.tx.store(TxStatus::Idle as u8, Ordering::Relaxed);
     }
 }
 

@@ -7,9 +7,32 @@ use tauri::State;
 use crate::db::{self, ExecResult, StatementResult, TxStatus};
 use crate::error::AppError;
 
-use super::session::{client_and_tx, client_of};
+use super::session::{client_and_tx, session_is_production};
 use super::AppState;
 
+/// Прод-барьер GUI-сессии: без явного write-intent батч на production-профиле
+/// идёт внутри `BEGIN READ ONLY` — что считается записью, решает Postgres, а
+/// не regex на фронте (тот пропускал CREATE, CALL, DO, пишущие функции).
+/// Отказ уходит на фронт кодом "read_only"; тот показывает подтверждение и
+/// повторяет запрос с `prod_write=true`.
+///
+/// Открытая транзакция (status != Idle) исполняется без обёртки: на
+/// prod-сессии она могла открыться только из батча с подтверждённым
+/// write-intent — без него `execute_read_only` всегда закрывает свой блок и
+/// оставляет Idle (пользовательский BEGIN внутри блока — предупреждение-no-op).
+fn prod_read_only_guard(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    status: TxStatus,
+    prod_write: Option<bool>,
+) -> Result<bool, AppError> {
+    Ok(status == TxStatus::Idle
+        && !prod_write.unwrap_or(false)
+        && session_is_production(state, session_id)?)
+}
+
+// Аргументы — форма IPC-вызова из фронтенда, а не сигнатура для рук.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn execute_sql(
     state: State<'_, AppState>,
@@ -18,6 +41,7 @@ pub async fn execute_sql(
     max_rows: Option<usize>,
     auto_begin: Option<bool>,
     parameters: Option<Vec<String>>,
+    prod_write: Option<bool>,
 ) -> Result<ExecResult, AppError> {
     let (client, tx) = client_and_tx(&state, &session_id)?;
     // Сессия выполняет батчи simple-query, где bind-параметров нет вовсе —
@@ -27,13 +51,17 @@ pub async fn execute_sql(
         _ => sql,
     };
     let executor = db::QueryExecutor::new(&client, &tx);
+    let max_rows = max_rows.unwrap_or(1000).clamp(1, 100_000);
+    if prod_read_only_guard(&state, &session_id, executor.status(), prod_write)? {
+        // auto_begin не префиксуется: блок закрывается сам, а manual-commit
+        // транзакция на проде начинается только с подтверждённого батча.
+        return executor.execute_read_only(&sql, max_rows).await;
+    }
     // Manual-commit mode: hold a transaction open across runs by opening one
     // when the connection is idle, so the user never has to type BEGIN.
     let prepended = auto_begin.unwrap_or(false) && executor.status() == TxStatus::Idle;
     let sql = if prepended { format!("BEGIN;\n{sql}") } else { sql };
-    let mut result = executor
-        .execute(&sql, max_rows.unwrap_or(1000).clamp(1, 100_000))
-        .await;
+    let mut result = executor.execute(&sql, max_rows).await;
     // Hide the synthetic BEGIN's result: the frontend numbers result blocks by
     // the statements of the SQL it sent (per-statement export relies on it),
     // and an "OK" block for a BEGIN the user never typed is just noise.
@@ -65,6 +93,7 @@ pub async fn export_sql(
     path: String,
     auto_begin: Option<bool>,
     parameters: Option<Vec<String>>,
+    prod_write: Option<bool>,
 ) -> Result<db::ExportResult, AppError> {
     let format = db::ExportFormat::parse(&format)?;
     let sql = match parameters.as_deref() {
@@ -74,21 +103,50 @@ pub async fn export_sql(
     let (client, tx) = client_and_tx(&state, &session_id)?;
     let executor = db::QueryExecutor::new(&client, &tx);
     let before = executor.status();
+    let read_only = prod_read_only_guard(&state, &session_id, before, prod_write)?;
     // Mirror execute_sql's manual-commit wrapping — the re-run must not
     // autocommit a write that Run would have kept inside the open transaction.
     // The prepended BEGIN emits its own result set, shifting the numbering.
-    let (sql, statement_index) = if auto_begin.unwrap_or(false) && before == TxStatus::Idle {
-        (format!("BEGIN;\n{sql}"), statement_index.unwrap_or(0) + 1)
-    } else {
-        (sql, statement_index.unwrap_or(0))
-    };
+    // Внутри read-only блока BEGIN не префиксуется (см. execute_sql).
+    let (sql, statement_index) =
+        if !read_only && auto_begin.unwrap_or(false) && before == TxStatus::Idle {
+            (format!("BEGIN;\n{sql}"), statement_index.unwrap_or(0) + 1)
+        } else {
+            (sql, statement_index.unwrap_or(0))
+        };
     let tmp = format!("{path}.part");
-    let result = db::export_statement(&client, &sql, statement_index, format, &tmp).await;
-    // The re-run goes through the same connection — keep the tx badge honest.
-    // Only a database error can have aborted the transaction; local failures
-    // (unwritable path, XLSX cap) never touched the server, so they count ok.
-    let sql_ok = !matches!(&result, Err(db::ExportError::Sql(_)));
-    executor.advance(before, &sql, sql_ok);
+    let result = if read_only {
+        // Тот же блок, что у execute_read_only, только вокруг стримящего
+        // экспорта: гейт-чеки, BEGIN READ ONLY, COMMIT/ROLLBACK.
+        match db::begin_read_only(&client, &sql).await {
+            Ok(()) => {
+                let r = db::export_statement(&client, &sql, statement_index, format, &tmp).await;
+                let sql_ok = !matches!(&r, Err(db::ExportError::Sql(_)));
+                match (r, db::end_read_only(&client, sql_ok).await) {
+                    (Ok(out), Ok(())) => Ok(out),
+                    // Экспорт удался, но блок не закрылся — следующий вызов
+                    // унаследовал бы чужую транзакцию; наружу как SQL-ошибка.
+                    (Ok(_), Err(e)) => Err(db::ExportError::Sql(e)),
+                    (Err(e), _) => Err(e),
+                }
+            }
+            Err(e) => Err(db::ExportError::Sql(e)),
+        }
+    } else {
+        db::export_statement(&client, &sql, statement_index, format, &tmp).await
+    };
+    if read_only {
+        // Блок открыт и закрыт здесь же — соединение вне транзакции, что бы
+        // ни было в батче (как QueryExecutor::execute_read_only).
+        executor.mark_idle();
+    } else {
+        // The re-run goes through the same connection — keep the tx badge
+        // honest. Only a database error can have aborted the transaction;
+        // local failures (unwritable path, XLSX cap) never touched the
+        // server, so they count ok.
+        let sql_ok = !matches!(&result, Err(db::ExportError::Sql(_)));
+        executor.advance(before, &sql, sql_ok);
+    }
     match result {
         Ok(outcome) => {
             std::fs::rename(&tmp, &path)?;
@@ -131,7 +189,12 @@ pub async fn get_table_page(
     sorts: Option<Vec<SortSpec>>,
     filter: Option<String>,
 ) -> Result<TablePageResult, AppError> {
-    let client = client_of(&state, &session_id)?;
+    let (client, tx) = client_and_tx(&state, &session_id)?;
+    let executor = db::QueryExecutor::new(&client, &tx);
+    // Просмотр таблицы — заведомо чтение, write-intent у него не бывает; но
+    // `filter` — сырой SQL, и через `;` в нём батч дописывается вторым
+    // стейтментом. На проде обе строки с фильтром идут в read-only блоке.
+    let read_only = prod_read_only_guard(&state, &session_id, executor.status(), None)?;
     let qualified = format!("{}.{}", db::quote_ident(&schema), db::quote_ident(&table));
     let limit = limit.clamp(1, 1000);
 
@@ -164,13 +227,22 @@ pub async fn get_table_page(
     }
     sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
 
-    let exec = db::execute(&client, &sql, limit as usize).await?;
+    let exec = if read_only {
+        executor.execute_read_only(&sql, limit as usize).await?
+    } else {
+        db::execute(&client, &sql, limit as usize).await?
+    };
     let result = exec.results.into_iter().next().unwrap_or_default();
 
     let approx_rows = if let Some(w) = &where_clause {
         // Planner row estimate for the filtered set — cheap, unlike count(*).
         let explain = format!("EXPLAIN (FORMAT JSON) SELECT * FROM {qualified}{w}");
-        match db::execute(&client, &explain, 10).await {
+        let explained = if read_only {
+            executor.execute_read_only(&explain, 10).await
+        } else {
+            db::execute(&client, &explain, 10).await
+        };
+        match explained {
             Ok(r) => r
                 .results
                 .first()

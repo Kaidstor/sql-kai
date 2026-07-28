@@ -271,6 +271,8 @@ fn introspection_shapes() {
 
 /// AppError уходит как {code, message}; по кодам connection_lost/session_gone
 /// фронт (isSessionLost в api.ts) предлагает reconnect — они и зафиксированы.
+/// Код "read_only" (isReadOnlyRefusal) ведёт прод-диалог «повторить с
+/// write-intent» — отказ гейта обязан делить его с SQLSTATE 25006.
 #[test]
 fn app_error_shape() {
     let err = to_json(&AppError::SessionGone);
@@ -278,6 +280,10 @@ fn app_error_shape() {
     assert!(err["message"].is_string());
     assert_eq!(to_json(&AppError::ConnectionLost)["code"], "connection_lost");
     assert_eq!(to_json(&AppError::Msg("boom".into())), json!({ "code": "app", "message": "boom" }));
+    assert_eq!(
+        to_json(&AppError::ReadOnlyRefused("needs write".into())),
+        json!({ "code": "read_only", "message": "needs write" })
+    );
 }
 
 /// list_cli_sessions / метод sessions брокера → CliSessionInfo в types.ts.

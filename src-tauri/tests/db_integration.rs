@@ -320,6 +320,169 @@ async fn schema_dump_narrowed_to_one_table() {
     assert!(!seqs.contains(&"scoped_id_seq".to_string()), "got: {seqs:?}");
 }
 
+/// Прод-барьер GUI: без write-intent батч идёт через `execute_read_only`, и
+/// записью считается то, что считает записью сам Postgres. Ровно те классы,
+/// которые regex-классификатор фронта пропускал (CREATE, CALL, DO, пишущая
+/// CTE, EXPLAIN ANALYZE UPDATE), обязаны падать с 25006; чтения — проходить.
+#[tokio::test]
+#[ignore]
+async fn read_only_block_refuses_what_the_regex_missed() {
+    let connected = db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
+    let client = connected.session.client.clone();
+
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS guard_t CASCADE;
+         CREATE TABLE guard_t (id int);
+         INSERT INTO guard_t VALUES (1);
+         CREATE OR REPLACE PROCEDURE guard_write() LANGUAGE sql
+           AS $$ INSERT INTO guard_t VALUES (99) $$",
+        10,
+    )
+    .await
+    .expect("fixture");
+
+    let refused = [
+        "CREATE TABLE guard_new (id int)",
+        "CREATE INDEX guard_idx ON guard_t (id)",
+        "CALL guard_write()",
+        "DO $$ BEGIN INSERT INTO guard_t VALUES (7); END $$",
+        "WITH w AS (INSERT INTO guard_t VALUES (8) RETURNING id) SELECT * FROM w",
+        "EXPLAIN (ANALYZE, FORMAT JSON) UPDATE guard_t SET id = id + 1",
+        "INSERT INTO guard_t VALUES (2)",
+    ];
+    for sql in refused {
+        let err = db::execute_read_only(&client, sql, 10)
+            .await
+            .expect_err(sql);
+        assert!(err.is_read_only(), "{sql}: expected 25006, got: {err}");
+    }
+    // отказы не оставили ни изменений, ни открытой транзакции
+    let count = db::query_scalar(&client, "SELECT count(*) FROM guard_t")
+        .await
+        .expect("count")
+        .unwrap_or_default();
+    assert_eq!(count, "1", "no write leaked through the read-only block");
+
+    let ok = db::execute_read_only(
+        &client,
+        "SELECT id FROM guard_t; EXPLAIN (FORMAT JSON) UPDATE guard_t SET id = 0",
+        10,
+    )
+    .await
+    .expect("reads and plain EXPLAIN pass");
+    assert_eq!(ok.results.len(), 2);
+
+    // гейт до отправки: батч, выходящий из блока, отвергается тем же кодом
+    let err = db::execute_read_only(&client, "COMMIT; DELETE FROM guard_t", 10)
+        .await
+        .expect_err("escape refused");
+    assert!(err.is_read_only(), "gate refusal shares the read_only code: {err}");
+}
+
+/// Экспорт обязан дочитывать протокол до конца: ошибка стейтмента ПОСЛЕ
+/// экспортируемого — это ошибка экспорта, а не «успех» с потерянным хвостом;
+/// хвостовые DDL исполняются и должны быть видны; недоступный файл не должен
+/// запускать скрипт вовсе (SQL после создания файла).
+#[tokio::test]
+#[ignore]
+async fn export_drains_the_whole_script() {
+    let connected = db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
+    let client = connected.session.client.clone();
+    let path = |name: &str| {
+        std::env::temp_dir()
+            .join(format!("sql-kai-it-{name}-{}.csv", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS exp_t CASCADE; DROP TABLE IF EXISTS exp_late CASCADE;
+         DROP TABLE IF EXISTS exp_never CASCADE;
+         CREATE TABLE exp_t (id int); INSERT INTO exp_t VALUES (1), (2)",
+        10,
+    )
+    .await
+    .expect("fixture");
+
+    // ошибка после экспортируемого стейтмента — Err, не молчаливый успех
+    let p = path("late-err");
+    let err = db::export_statement(
+        &client,
+        "SELECT id FROM exp_t; SELECT missing_column FROM exp_t",
+        0,
+        db::ExportFormat::parse("csv").unwrap(),
+        &p,
+    )
+    .await
+    .expect_err("late error must surface");
+    let msg = sql_kai_lib::error::AppError::from(err).to_string();
+    assert!(msg.contains("missing_column"), "got: {msg}");
+    let _ = std::fs::remove_file(&p);
+
+    // хвост скрипта исполняется и виден после успешного экспорта
+    let p = path("late-ddl");
+    let out = db::export_statement(
+        &client,
+        "SELECT id FROM exp_t ORDER BY id; CREATE TABLE exp_late (id int)",
+        0,
+        db::ExportFormat::parse("csv").unwrap(),
+        &p,
+    )
+    .await
+    .expect("export with trailing DDL");
+    assert_eq!(out.rows, 2);
+    let text = std::fs::read_to_string(&p).expect("file written");
+    assert!(text.starts_with("id"), "got: {text}");
+    let _ = std::fs::remove_file(&p);
+    let late = db::query_scalar(
+        &client,
+        "SELECT count(*) FROM pg_class WHERE relname = 'exp_late'",
+    )
+    .await
+    .expect("late ddl check");
+    assert_eq!(late.as_deref(), Some("1"), "trailing DDL ran to completion");
+
+    // файл раньше SQL: несоздаваемый путь — скрипт не выполнялся
+    let err = db::export_statement(
+        &client,
+        "CREATE TABLE exp_never (id int); SELECT 1",
+        1,
+        db::ExportFormat::parse("csv").unwrap(),
+        "/nonexistent-dir/never.csv",
+    )
+    .await
+    .expect_err("unwritable path");
+    assert!(
+        matches!(err, db::ExportError::Local(_)),
+        "local error, SQL never sent"
+    );
+    let never = db::query_scalar(
+        &client,
+        "SELECT count(*) FROM pg_class WHERE relname = 'exp_never'",
+    )
+    .await
+    .expect("never-ran check");
+    assert_eq!(never.as_deref(), Some("0"), "doomed export must not run the script");
+}
+
 /// Verifies the PostgreSQL semantics the broker's read-only gate defends
 /// against: `default_transaction_read_only` applies only to a NEW transaction,
 /// so a read-write transaction left open by a `--write` call stays writable

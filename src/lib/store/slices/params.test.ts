@@ -47,6 +47,13 @@ const setup = () => {
     patchTab: (_id: string, patch: Record<string, unknown>) =>
       Object.assign(tab.state, patch),
     sessionFor: () => state.sessions.p1,
+    // тесты не про прод-барьер: прозрачный проход без write-intent
+    runProdGuarded: (
+      _profileId: string,
+      _sql: string,
+      attempt: (prodWrite: boolean) => Promise<unknown>,
+    ) => attempt(false),
+    noteSessionLost: () => {},
   } as unknown as StoreContext;
   Object.assign(state, createQuerySlice(set, get, ctx));
   state.tabs = [tab];
@@ -124,9 +131,14 @@ describe("submitParamsPrompt", () => {
 
     await state.submitParamsPrompt(["ghp_secret"]);
 
-    expect(api.executeSql).toHaveBeenCalledWith("s1", sql, 1000, false, [
-      "ghp_secret",
-    ]);
+    expect(api.executeSql).toHaveBeenCalledWith(
+      "s1",
+      sql,
+      1000,
+      false,
+      ["ghp_secret"],
+      false,
+    );
     // Ради этого значения и держат отдельно от текста запроса.
     expect(api.recordHistory.mock.calls[0][0].sql).toBe(sql);
     expect(api.rememberQueryParameters).toHaveBeenCalledWith("p1", sql, [
