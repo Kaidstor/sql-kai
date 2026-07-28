@@ -31,6 +31,7 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
 
 use sql_kai_lib::error::AppError;
+use sql_kai_lib::prod as prodenv;
 use sql_kai_lib::store::{self, Profile};
 
 use crate::envvar::{self, ALLOW_PROD_DUMP, ALLOW_PROD_WRITE};
@@ -56,25 +57,9 @@ fn grant(id: &str) {
     }
 }
 
-/// Значение `SQL_KAI_ALLOW_PROD_WRITE`: `1` (любой prod-профиль) или список
-/// имён/id профилей через запятую — разрешение точечное, чтобы «открыть» один
-/// сервис агенту, не открывая остальные.
-fn allowlist_matches(raw: &str, name: &str, id: &str) -> bool {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .any(|item| {
-            matches!(
-                item.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on" | "all"
-            ) || item.eq_ignore_ascii_case(name)
-                || item == id
-        })
-}
-
 fn env_allows(profile: &Profile) -> bool {
     envvar::value(ALLOW_PROD_WRITE)
-        .is_some_and(|raw| allowlist_matches(&raw, &profile.name, &profile.id))
+        .is_some_and(|raw| prodenv::allowlist_matches(&raw, &profile.name, &profile.id))
 }
 
 /// Куда именно смотреть, когда запись отвергнута: без этого текста отказ
@@ -151,7 +136,7 @@ pub fn authorize_prod_dump(profile: &Profile, explicit: bool) -> Result<(), AppE
         return Ok(());
     }
     if envvar::value(ALLOW_PROD_DUMP)
-        .is_some_and(|raw| allowlist_matches(&raw, &profile.name, &profile.id))
+        .is_some_and(|raw| prodenv::allowlist_matches(&raw, &profile.name, &profile.id))
     {
         return Ok(());
     }
@@ -289,25 +274,3 @@ pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppEr
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::allowlist_matches;
-
-    #[test]
-    fn wildcard_values_allow_any_profile() {
-        for raw in ["1", "true", "YES", "on", "all"] {
-            assert!(allowlist_matches(raw, "domainator", "id-1"));
-        }
-    }
-
-    #[test]
-    fn allowlist_is_per_profile() {
-        assert!(allowlist_matches("vuln, domainator", "domainator", "id-1"));
-        assert!(allowlist_matches("DOMAINATOR", "domainator", "id-1"));
-        assert!(allowlist_matches("id-1", "domainator", "id-1"));
-        assert!(!allowlist_matches("vuln", "domainator", "id-1"));
-        assert!(!allowlist_matches("", "domainator", "id-1"));
-        // id — точное совпадение: регистр в uuid значим
-        assert!(!allowlist_matches("ID-1", "domainator", "id-1"));
-    }
-}

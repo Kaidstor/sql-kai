@@ -10,9 +10,10 @@ use super::AppState;
 
 #[tauri::command]
 pub fn list_profiles() -> Result<Vec<Profile>, AppError> {
+    let mut marks = store::load_last_connected().unwrap_or_default();
     Ok(store::load_profiles()?
         .into_iter()
-        .map(|p| p.for_frontend())
+        .map(|p| p.for_frontend(&mut marks))
         .collect())
 }
 

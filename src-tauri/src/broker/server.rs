@@ -194,24 +194,10 @@ async fn dispatch(
     }
 }
 
-/// `SQL_KAI_ALLOW_PROD_WRITE` в окружении *сервера*: `1`/`true`/`all` — любой
-/// prod-профиль, иначе список имён/id через запятую. Разбор повторяет
-/// `session::prod::allowlist_matches` на стороне cli — держать их в синхроне
-/// проще, чем тащить cli-модуль в библиотеку.
+/// `SQL_KAI_ALLOW_PROD_WRITE` в окружении *сервера* — разбор общий с cli
+/// (`session::prod`), см. [`crate::prod`].
 fn env_allows_prod_write(profile: &Profile) -> bool {
-    let Ok(raw) = std::env::var("SQL_KAI_ALLOW_PROD_WRITE") else {
-        return false;
-    };
-    raw.split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .any(|item| {
-            matches!(
-                item.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on" | "all"
-            ) || item.eq_ignore_ascii_case(&profile.name)
-                || item == profile.id
-        })
+    crate::prod::env_allows(crate::prod::ALLOW_PROD_WRITE, &profile.name, &profile.id)
 }
 
 /// Прод-барьер на стороне сервера. До этого он жил только в cli

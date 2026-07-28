@@ -7,6 +7,7 @@ pub mod error;
 pub mod format;
 pub mod fsio;
 pub mod logging;
+pub mod prod;
 pub mod store;
 pub mod tunnel;
 pub mod vault;

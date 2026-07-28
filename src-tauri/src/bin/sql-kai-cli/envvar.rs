@@ -17,11 +17,6 @@ pub const SEC_BIN: &str = "SQL_KAI_SEC_BIN";
 /// TTL персистентного ssh-мастера (ControlMaster), секунды.
 pub const SSH_MUX_TTL: &str = "SQL_KAI_SSH_MUX_TTL";
 
-/// Разрешение на запись в профили с меткой `production` без интерактивного
-/// подтверждения: `1` — любой прод-профиль, иначе список имён/id через запятую
-/// (см. `session::prod`). Для MCP это единственный способ разрешить запись.
-pub const ALLOW_PROD_WRITE: &str = "SQL_KAI_ALLOW_PROD_WRITE";
-
-/// То же для выгрузки боевых данных на эту машину (`fork --data` с
-/// production-профиля): значения разбираются так же, как у [`ALLOW_PROD_WRITE`].
-pub const ALLOW_PROD_DUMP: &str = "SQL_KAI_ALLOW_PROD_DUMP";
+// Имена и разбор прод-allowlist-переменных общие с сервером сессий — живут в
+// библиотеке (sql_kai_lib::prod), здесь только реэкспорт в общий неймспейс.
+pub use sql_kai_lib::prod::{ALLOW_PROD_DUMP, ALLOW_PROD_WRITE};

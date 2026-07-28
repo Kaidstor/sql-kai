@@ -126,11 +126,13 @@ impl Profile {
     }
 
     /// Copy for the frontend, with the `has_*` flags refreshed from the vault.
-    pub fn for_frontend(&self) -> Profile {
+    /// `marks` — карта last_connected.json, загруженная вызывающим один раз на
+    /// весь список, а не перечитываемая на каждый профиль.
+    pub fn for_frontend(&self, marks: &mut HashMap<String, LastConnected>) -> Profile {
         let mut p = self.clone();
         p.has_password = vault::has_secret(&p.id);
         p.has_ssh_passphrase = vault::has_secret(&ssh_secret_key(&p.id));
-        p.last_connected = load_last_connected().unwrap_or_default().remove(&p.id);
+        p.last_connected = marks.remove(&p.id);
         p
     }
 }
@@ -236,7 +238,7 @@ pub fn upsert_profile(
         None => all.push(profile.clone()),
     }
     save_profiles(&all)?;
-    Ok(profile.for_frontend())
+    Ok(profile.for_frontend(&mut load_last_connected().unwrap_or_default()))
 }
 
 /// Clones a profile as a new variation. Fork semantics: if the original has
@@ -272,7 +274,7 @@ pub fn duplicate_profile(id: &str) -> Result<Profile, AppError> {
 
     all.push(copy.clone());
     save_profiles(&all)?;
-    Ok(copy.for_frontend())
+    Ok(copy.for_frontend(&mut load_last_connected().unwrap_or_default()))
 }
 
 pub fn delete_profile(id: &str) -> Result<(), AppError> {
