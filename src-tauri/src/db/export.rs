@@ -78,54 +78,79 @@ pub async fn export_statement(
 ) -> Result<ExportResult, ExportError> {
     let sql_err = |e: tokio_postgres::Error| ExportError::Sql(e.into());
     let start = Instant::now();
+    // File before SQL: a path that can't even be created must not run the
+    // script — the re-run may repeat writes the first Run already did.
+    let mut writer = Writer::create(format, path).map_err(ExportError::Local)?;
     let stream = client.simple_query_raw(sql).await.map_err(sql_err)?;
     futures_util::pin_mut!(stream);
 
-    let mut writer = Writer::create(format, path).map_err(ExportError::Local)?;
     let mut idx = 0usize; // statement index, advanced on CommandComplete
     let mut columns_seen = false;
     let mut rows = 0u64;
     let mut truncated = false;
+    // First failure, local or SQL. The loop drains to ReadyForQuery either
+    // way: the server runs the whole simple-query script regardless of what
+    // the client reads, and breaking on the exported statement discards a
+    // later statement's error — the export would report success while the
+    // tail of the script failed (and the tx heuristic would count the script
+    // as fully run). Dropping the stream early has the same effect: the
+    // connection task drains the rest and throws the error away.
+    let mut failure: Option<ExportError> = None;
 
-    while let Some(msg) = stream.try_next().await.map_err(sql_err)? {
+    loop {
+        let msg = match stream.try_next().await {
+            Ok(Some(msg)) => msg,
+            Ok(None) => break,
+            // A failed statement aborts the rest of the script server-side;
+            // the stream ends right after the error.
+            Err(e) => {
+                failure.get_or_insert_with(|| sql_err(e));
+                break;
+            }
+        };
+        if failure.is_some() {
+            continue; // draining only — the file is already abandoned
+        }
         match msg {
             SimpleQueryMessage::RowDescription(cols) if idx == statement_index => {
-                writer
+                match writer
                     .begin(&cols.iter().map(|c| c.name().to_string()).collect::<Vec<_>>())
-                    .map_err(ExportError::Local)?;
-                columns_seen = true;
+                {
+                    Ok(()) => columns_seen = true,
+                    Err(e) => failure = Some(ExportError::Local(e)),
+                }
             }
             SimpleQueryMessage::Row(row) if idx == statement_index => {
                 if !columns_seen {
                     // same tolerance as execute(): a Row without a preceding
                     // RowDescription still carries its column names
-                    writer
-                        .begin(
-                            &row.columns().iter().map(|c| c.name().to_string()).collect::<Vec<_>>(),
-                        )
-                        .map_err(ExportError::Local)?;
-                    columns_seen = true;
+                    match writer.begin(
+                        &row.columns().iter().map(|c| c.name().to_string()).collect::<Vec<_>>(),
+                    ) {
+                        Ok(()) => columns_seen = true,
+                        Err(e) => {
+                            failure = Some(ExportError::Local(e));
+                            continue;
+                        }
+                    }
                 }
                 if writer.at_capacity(rows) {
-                    // dropping the stream discards the rest of the response
-                    truncated = true;
-                    break;
+                    truncated = true; // keep draining, just stop writing
+                    continue;
                 }
-                writer
-                    .row(&(0..row.len()).map(|i| row.get(i)).collect::<Vec<_>>())
-                    .map_err(ExportError::Local)?;
-                rows += 1;
-            }
-            SimpleQueryMessage::CommandComplete(_) => {
-                if idx == statement_index {
-                    break;
+                match writer.row(&(0..row.len()).map(|i| row.get(i)).collect::<Vec<_>>()) {
+                    Ok(()) => rows += 1,
+                    Err(e) => failure = Some(ExportError::Local(e)),
                 }
-                idx += 1;
             }
+            SimpleQueryMessage::CommandComplete(_) => idx += 1,
             _ => {}
         }
     }
 
+    if let Some(e) = failure {
+        return Err(e);
+    }
     if !columns_seen {
         return Err(ExportError::Local(AppError::Msg(
             "the statement produced no result set to export".into(),
