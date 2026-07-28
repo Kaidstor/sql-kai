@@ -16,11 +16,6 @@ export interface NpmAdapter {
   bin: string;
 }
 
-/** Node child processes get IPv4-first DNS: npm's fetch stack (and some
- * agents) don't do happy-eyeballs and hang forever on networks where IPv6
- * black-holes (VPNs). Plain order change — IPv6-only setups still work. */
-export const NODE_NET_ENV = { NODE_OPTIONS: "--dns-result-order=ipv4first" };
-
 /** Kill `npm install` when it prints nothing for this long. */
 const INSTALL_IDLE_MS = 60_000;
 
@@ -78,7 +73,6 @@ export function ensureAdapter(
         "--loglevel=http",
         `${a.pkg}@${a.version}`,
       ],
-      NODE_NET_ENV,
       dir,
       (line) => {
         lastActivity = Date.now();

@@ -53,7 +53,6 @@ vi.mock("../../acp", () => {
     static async spawn(
       _cmd: string,
       _args: string[],
-      _env: Record<string, string>,
       _cwd: string,
       handlers: FakeHandlers,
     ) {
@@ -101,7 +100,6 @@ vi.mock("../../acp", () => {
 });
 
 vi.mock("../../agentInstall", () => ({
-  NODE_NET_ENV: {},
   ensureAdapter: async (_id: string, a: { bin: string }) =>
     `/tmp/sql-kai/acp/${a.bin}`,
 }));

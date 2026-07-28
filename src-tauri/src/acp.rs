@@ -82,6 +82,42 @@ fn login_shell_path() -> &'static str {
     })
 }
 
+/// Гейт на команду агента: webview через IPC не запускает произвольный бинарь,
+/// только известные ACP-пути — `npm` (установка адаптера), бинарь из
+/// `<appData>/acp/…` (установленный адаптер), `cursor-agent` (ставится их
+/// инсталлером) и кастомная команда из settings.json. Кастом сверяется с
+/// файлом, который пишет backend по явному действию в настройках, а не с тем,
+/// что прислал вызов. Это защита в глубину при компрометации webview (основной
+/// барьер — CSP), а не граница против процессов того же пользователя.
+fn spawn_allowed(app: &AppHandle, cmd: &str) -> Result<(), AppError> {
+    if cmd == "npm" || cmd == "cursor-agent" {
+        return Ok(());
+    }
+    if let Ok(dir) = app.path().app_data_dir() {
+        // canonicalize обеих сторон: `..` в присланном пути проходит голый
+        // starts_with (компоненты сравниваются лексически, без нормализации)
+        if let (Ok(cmd_real), Ok(acp_real)) =
+            (std::fs::canonicalize(cmd), std::fs::canonicalize(dir.join("acp")))
+        {
+            if cmd_real.starts_with(&acp_real) {
+                return Ok(());
+            }
+        }
+    }
+    if let Ok(settings) = crate::store::load_settings() {
+        if let Some(custom) = settings.get("agentCustomCmd").and_then(|v| v.as_str()) {
+            // тот же разбор, что parseCustomCmd на фронте: первый токен — бинарь
+            if custom.split_whitespace().next() == Some(cmd) {
+                return Ok(());
+            }
+        }
+    }
+    Err(AppError::Msg(format!(
+        "`{cmd}` is not an allowed agent command — only built-in ACP adapters \
+         and the custom command saved in Settings can be launched"
+    )))
+}
+
 /// Запускает процесс агента и подписывает его stdio на события webview.
 /// `agent_id` выбирает фронт (uuid) — по нему адресуются send/kill/события.
 #[tauri::command]
@@ -91,9 +127,9 @@ pub async fn acp_spawn(
     agent_id: String,
     cmd: String,
     args: Vec<String>,
-    env: HashMap<String, String>,
     cwd: String,
 ) -> Result<(), AppError> {
+    spawn_allowed(&app, &cmd)?;
     // повторный spawn под тем же id — сначала убрать старый процесс
     if let Some(old) = state.agents.lock().unwrap().remove(&agent_id) {
         let _ = old.child.lock().unwrap().start_kill();
@@ -105,13 +141,18 @@ pub async fn acp_spawn(
     let mut command = Command::new(&cmd);
     command
         .args(&args)
-        .envs(&env)
+        // ipv4-first для node-детей: npm и часть агентов без happy-eyeballs
+        // виснут навечно на сетях с IPv6-блэкхолом (VPN). Env задаётся здесь,
+        // а не приходит из webview: произвольный env из IPC — это
+        // NODE_OPTIONS=--require и подобные инъекции в разрешённый бинарь.
+        .env("NODE_OPTIONS", "--dns-result-order=ipv4first")
         .env("PATH", login_shell_path())
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::vault::scrub_master_password_env_tokio(&mut command);
 
     let mut child = command
         .spawn()

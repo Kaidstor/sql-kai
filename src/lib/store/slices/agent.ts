@@ -13,7 +13,7 @@ import {
   type SessionUpdate,
   type ToolCallUpdate,
 } from "../../acp";
-import { ensureAdapter, NODE_NET_ENV, type NpmAdapter } from "../../agentInstall";
+import { ensureAdapter, type NpmAdapter } from "../../agentInstall";
 import {
   normalizeToolResult,
   type AgentToolDiff,
@@ -417,7 +417,7 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
 
     // рабочая папка агента — карантин в app data, не $HOME пользователя
     const cwd = await join(await appDataDir(), "agent", profileId);
-    const agent = await AcpAgent.spawn(cmd, args, NODE_NET_ENV, cwd, {
+    const agent = await AcpAgent.spawn(cmd, args, cwd, {
       onSessionUpdate: (u) => {
         if (isCurrent()) applyUpdate(profileId, u);
       },

@@ -172,7 +172,6 @@ export class RawProc implements ProcSink {
   static async spawn(
     cmd: string,
     args: string[],
-    env: Record<string, string>,
     cwd: string,
     onLine: (line: string) => void,
   ): Promise<RawProc> {
@@ -180,7 +179,7 @@ export class RawProc implements ProcSink {
     const proc = new RawProc(onLine);
     agents.set(proc.id, proc);
     try {
-      await invoke("acp_spawn", { agentId: proc.id, cmd, args, env, cwd });
+      await invoke("acp_spawn", { agentId: proc.id, cmd, args, cwd });
     } catch (e) {
       agents.delete(proc.id);
       throw e;
@@ -217,11 +216,12 @@ export class AcpAgent implements ProcSink {
 
   private constructor(readonly handlers: AgentHandlers) {}
 
-  /** Spawns the agent process and registers it for event routing. */
+  /** Spawns the agent process and registers it for event routing. Env не
+   *  передаётся: backend сам задаёт PATH и NODE_OPTIONS — произвольный env
+   *  из webview был бы инъекцией в разрешённый бинарь. */
   static async spawn(
     cmd: string,
     args: string[],
-    env: Record<string, string>,
     cwd: string,
     handlers: AgentHandlers,
   ): Promise<AcpAgent> {
@@ -229,7 +229,7 @@ export class AcpAgent implements ProcSink {
     const agent = new AcpAgent(handlers);
     agents.set(agent.id, agent);
     try {
-      await invoke("acp_spawn", { agentId: agent.id, cmd, args, env, cwd });
+      await invoke("acp_spawn", { agentId: agent.id, cmd, args, cwd });
     } catch (e) {
       agents.delete(agent.id);
       throw e;

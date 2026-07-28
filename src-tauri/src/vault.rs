@@ -40,6 +40,11 @@ pub fn scrub_master_password_env(cmd: &mut std::process::Command) {
     cmd.env_remove(MASTER_PASSWORD_ENV);
 }
 
+/// То же для tokio-команд (ACP-агенты): у tokio свой тип Command.
+pub fn scrub_master_password_env_tokio(cmd: &mut tokio::process::Command) {
+    cmd.env_remove(MASTER_PASSWORD_ENV);
+}
+
 // Argon2id cost parameters (stored in the file so re-derivation stays correct
 // even if these defaults change later).
 const ARGON_M_COST: u32 = 19_456; // KiB (~19 MiB)
@@ -422,9 +427,13 @@ pub fn has_secret(key: &str) -> bool {
 /// re-encrypts and writes — all under the cross-process config lock, so a
 /// concurrent GUI/CLI writer can't clobber the file (the whole map was rewritten
 /// on every change, so a stale in-memory snapshot would drop the other side's
-/// secrets). Refreshes the in-memory session to match. Falls back to the
-/// in-memory state only if the on-disk file can't be read or decrypted (e.g. a
-/// concurrent master-password rotation changed the DEK).
+/// secrets). Refreshes the in-memory session to match.
+///
+/// Fails closed when the on-disk state can't be read back: writing the
+/// in-memory snapshot over a file we failed to read would resurrect deleted
+/// secrets, drop another process's writes, or roll the vault back to an old
+/// DEK. A DEK that no longer opens the file means another process rotated the
+/// master password — the in-memory session locks and the user unlocks again.
 ///
 /// Lock order: config lock first (it may already be held reentrantly by a store
 /// mutation calling us), then the vault mutex — never the reverse.
@@ -436,16 +445,22 @@ fn mutate_vault(
     let v = guard
         .as_mut()
         .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
-    let (mut file, mut secrets) = match read_file() {
-        Ok(f) => match decrypt(&v.dek, &f.secrets) {
-            Ok(plain) => (
-                f,
-                serde_json::from_slice(&plain).unwrap_or_else(|_| v.secrets.clone()),
-            ),
-            Err(_) => (v.file.clone(), v.secrets.clone()),
-        },
-        Err(_) => (v.file.clone(), v.secrets.clone()),
+    let mut file =
+        read_file().map_err(|e| AppError::Msg(format!("vault not updated — {e}")))?;
+    let plain = match decrypt(&v.dek, &file.secrets) {
+        Ok(plain) => plain,
+        Err(_) => {
+            *guard = None;
+            return Err(AppError::Msg(
+                "vault not updated — its key changed on disk (master password \
+                 rotated by another process?); the vault is now locked, unlock \
+                 it again"
+                    .into(),
+            ));
+        }
     };
+    let mut secrets: BTreeMap<String, String> = serde_json::from_slice(&plain)
+        .map_err(|e| AppError::Msg(format!("vault not updated — secrets corrupted: {e}")))?;
     edit(&mut file, &mut secrets);
     file.secrets = encrypt(&v.dek, &serde_json::to_vec(&secrets).unwrap())?;
     write_file(&file)?;
