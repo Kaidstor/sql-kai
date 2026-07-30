@@ -5,7 +5,7 @@ import type { AppStore, Tab } from "../types";
 // The slice reads the reopen stack once at creation; keep persistence inert.
 vi.mock("../../persist", () => ({
   CLOSED_CAP: 10,
-  loadClosedTabs: () => [],
+  restoreClosedTabs: () => [],
   persistClosedTabs: () => {},
 }));
 

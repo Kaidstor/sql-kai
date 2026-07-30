@@ -1,6 +1,5 @@
 import { CircleStop, Loader2, OctagonX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { fmtDuration } from "../lib/format";
 import { isKey } from "../lib/keys";
@@ -40,8 +39,8 @@ export function ActivityTab({ tab }: { tab: Tab }) {
   const sessions = useApp((s) => s.sessions);
   const refreshActivity = useApp((s) => s.refreshActivity);
   const setActivityOptions = useApp((s) => s.setActivityOptions);
+  const signalBackend = useApp((s) => s.signalBackend);
   const showToast = useApp((s) => s.showToast);
-  const confirmDialog = useApp((s) => s.confirmDialog);
   const session = sessions[tab.profileId];
   const connected = Boolean(session);
 
@@ -64,37 +63,6 @@ export function ActivityTab({ tab }: { tab: Tab }) {
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, state.refreshSec, state.includeIdle]);
-
-  /** pg_cancel_backend (soft) / pg_terminate_backend (kills the connection). */
-  const signal = async (row: ActivityInfo, terminate: boolean) => {
-    if (!session) return;
-    if (
-      terminate &&
-      !(await confirmDialog({
-        title: `Terminate backend ${row.pid}?`,
-        message: "Its connection will be closed and the transaction rolled back.",
-        confirmLabel: "Terminate",
-        danger: true,
-      }))
-    ) {
-      return;
-    }
-    const fn = terminate ? "pg_terminate_backend" : "pg_cancel_backend";
-    try {
-      await api.executeSql(
-        session.sessionId,
-        `SELECT ${fn}(${Number(row.pid)})`,
-        10,
-      );
-      showToast(
-        terminate ? `Terminated backend ${row.pid}` : `Cancel sent to ${row.pid}`,
-        "info",
-      );
-    } catch (e) {
-      showToast(errText(e));
-    }
-    void refreshActivity(tab.id);
-  };
 
   const rows = state.rows ?? [];
   const blocked = rows.filter((r) => r.blockedBy).length;
@@ -343,13 +311,13 @@ export function ActivityTab({ tab }: { tab: Tab }) {
                     <span className="invisible flex items-center group-hover:visible">
                       <IconButton
                         title="Cancel query (pg_cancel_backend)"
-                        onClick={() => void signal(r, false)}
+                        onClick={() => void signalBackend(tab.id, r.pid, false)}
                       >
                         <CircleStop size={13} className="text-amber-400" />
                       </IconButton>
                       <IconButton
                         title="Terminate backend (pg_terminate_backend)"
-                        onClick={() => void signal(r, true)}
+                        onClick={() => void signalBackend(tab.id, r.pid, true)}
                       >
                         <OctagonX size={13} className="text-red-400" />
                       </IconButton>

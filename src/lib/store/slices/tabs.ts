@@ -3,7 +3,7 @@
 import { api } from "../../api";
 import {
   CLOSED_CAP,
-  loadClosedTabs,
+  restoreClosedTabs,
   persistClosedTabs,
   type ClosedTab,
 } from "../../persist";
@@ -123,7 +123,7 @@ export function createTabsSlice(set: Set, get: Get, ctx: StoreContext): TabsSlic
   return {
     tabs: [],
     activeTabId: null,
-    closedTabs: loadClosedTabs(),
+    closedTabs: restoreClosedTabs(),
 
     openQueryTab: (profileId, sql = "", title, savedQueryId) => {
       const tab: Tab = {

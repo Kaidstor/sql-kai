@@ -15,7 +15,6 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, errText } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { columnsKey, useApp, type RelRef } from "../lib/store";
 import { isViewKind, type TableInfo } from "../lib/types";
@@ -49,7 +48,7 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
   const openStructureTab = useApp((s) => s.openStructureTab);
   const loadTableColumns = useApp((s) => s.loadTableColumns);
   const tableColumns = useApp((s) => s.tableColumns);
-  const sessions = useApp((s) => s.sessions);
+  const fetchTableDdl = useApp((s) => s.fetchTableDdl);
   const showToast = useApp((s) => s.showToast);
   const [expanded, setExpanded] = useState(false);
   const ref = useMemo<RelRef>(
@@ -59,18 +58,9 @@ function TableNode({ profileId, table }: { profileId: string; table: TableInfo }
   const cols = tableColumns[columnsKey(ref)];
 
   const copyDdl = async () => {
-    const session = sessions[profileId];
-    if (!session) return;
-    try {
-      const ddl = await api.getTableDdl(
-        session.sessionId,
-        table.schema,
-        table.name,
-      );
-      if (await copyText(ddl)) showToast("CREATE statement copied", "info");
-    } catch (e) {
-      showToast(errText(e));
-    }
+    const ddl = await fetchTableDdl(ref);
+    if (ddl === null) return;
+    if (await copyText(ddl)) showToast("CREATE statement copied", "info");
   };
 
   // Fetches on expand, and refetches after runDdl invalidates the cache.

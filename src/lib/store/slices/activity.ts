@@ -9,6 +9,13 @@ export interface ActivitySlice {
     tabId: string,
     patch: Partial<Pick<ActivityTabState, "refreshSec" | "includeIdle">>,
   ) => void;
+  /** pg_cancel_backend (soft) / pg_terminate_backend — последний закрывает
+   *  соединение и откатывает транзакцию, поэтому спрашивает подтверждение. */
+  signalBackend: (
+    tabId: string,
+    pid: string,
+    terminate: boolean,
+  ) => Promise<void>;
 }
 
 export function createActivitySlice(
@@ -69,6 +76,35 @@ export function createActivitySlice(
           connectionLost: isSessionLost(e),
         });
       }
+    },
+
+    signalBackend: async (tabId, pid, terminate) => {
+      const tab = tabOf(tabId, "activity");
+      if (!tab) return;
+      const session = get().sessions[tab.profileId];
+      if (!session) return;
+      if (
+        terminate &&
+        !(await get().confirmDialog({
+          title: `Terminate backend ${pid}?`,
+          message: "Its connection will be closed and the transaction rolled back.",
+          confirmLabel: "Terminate",
+          danger: true,
+        }))
+      ) {
+        return;
+      }
+      const fn = terminate ? "pg_terminate_backend" : "pg_cancel_backend";
+      try {
+        await api.executeSql(session.sessionId, `SELECT ${fn}(${Number(pid)})`, 10);
+        get().showToast(
+          terminate ? `Terminated backend ${pid}` : `Cancel sent to ${pid}`,
+          "info",
+        );
+      } catch (e) {
+        get().showToast(ctx.handleSqlError(tab.profileId, e));
+      }
+      void get().refreshActivity(tabId);
     },
 
     setActivityOptions: (tabId, patch) => {
