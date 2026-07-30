@@ -20,6 +20,12 @@ describe("quoting", () => {
     expect(quoteLit("")).toBe("''");
   });
 
+  // близнец src-tauri/src/db/catalog.rs::quote_literal — формы обязаны совпадать
+  it("escapes a backslash via the E'…' form", () => {
+    expect(quoteLit("a\\b")).toBe("E'a\\\\b'");
+    expect(quoteLit("\\'")).toBe("E'\\\\'''");
+  });
+
   it("qualifies relations", () => {
     expect(relIdent("public", "users")).toBe('"public"."users"');
   });

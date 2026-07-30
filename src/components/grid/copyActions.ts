@@ -5,7 +5,7 @@
 import { api, errText } from "../../lib/api";
 import { copyText } from "../../lib/clipboard";
 import { exportedMessage, toCsv, toJson } from "../../lib/export";
-import { promptExportPath } from "../../lib/exportFile";
+import { promptExportPath } from "../../lib/exportPath";
 import { quoteIdent, quoteLit, relIdent } from "../../lib/sql";
 import type { StatementResult } from "../../lib/types";
 

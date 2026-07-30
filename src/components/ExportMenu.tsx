@@ -6,7 +6,7 @@ import { FileDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { toCsv, toJson, toTsv } from "../lib/export";
-import { promptExportPath } from "../lib/exportFile";
+import { promptExportPath } from "../lib/exportPath";
 import { dangerousStatements } from "../lib/sql";
 import { useApp } from "../lib/store";
 import type { ExportFormat, StatementResult } from "../lib/types";

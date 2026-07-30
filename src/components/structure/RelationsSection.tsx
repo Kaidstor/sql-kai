@@ -18,9 +18,9 @@ import {
   SectionTable,
   Td,
   Th,
-  useStructureDdl,
   ZTr,
-} from "./shared";
+} from "./ui";
+import { useStructureDdl } from "./useStructureDdl";
 
 export function RelationsSection({
   tab,

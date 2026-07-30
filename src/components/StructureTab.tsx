@@ -1,5 +1,6 @@
 import { Plus, Undo2, X } from "lucide-react";
 import { useState } from "react";
+import { useLazyTabLoad } from "../hooks/useLazyTabLoad";
 import {
   useApp,
   type NewColumn,
@@ -8,7 +9,6 @@ import {
   type Tab,
 } from "../lib/store";
 import { TabError } from "./TabError";
-import { useLazyTabLoad } from "./useLazyTabLoad";
 import { IndexesSection } from "./structure/IndexesSection";
 import { PoliciesSection } from "./structure/PoliciesSection";
 import { RelationsSection } from "./structure/RelationsSection";
@@ -20,7 +20,7 @@ import {
   Td,
   Th,
   ZTr,
-} from "./structure/shared";
+} from "./structure/ui";
 import {
   Button,
   IconButton,

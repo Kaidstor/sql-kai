@@ -1,6 +1,16 @@
 // Tab-state model shared by every slice and by consumers outside the store
 // (persist snapshots, mutationSql, components). AppStore is assembled at the
 // bottom from the slice interfaces — each slice file owns its own contract.
+//
+// Naming convention for slice actions — three verbs, three distinct roles;
+// new actions must pick the one that matches, not invent a fourth (см. тот же
+// блок для записи на диске в src-tauri/src/store.rs):
+// - `load*` — fill a cache keyed by ref (`loadTableColumns`) and do nothing if
+//   it is already filled: cheap to call from a render effect.
+// - `refresh*` — re-read what the tab shows right now, cache or no cache
+//   (`refreshTablePage`, `refreshActivity`). Always hits the backend.
+// - `restore*` — rebuild state from localStorage (`restoreWorkspace`,
+//   `restoreClosedTabs`): no backend, no session needed.
 import type {
   ColumnInfo,
   ExecResult,
@@ -9,6 +19,7 @@ import type {
   RelationInfo,
   SavedQuery,
   SortSpec,
+  StatementResult,
   TablePageResult,
   TablePolicies,
   TriggerInfo,
@@ -79,6 +90,16 @@ export interface InsertRow {
   after?: number;
 }
 
+/** Строки, на которые ссылается FK-ячейка (⌘-клик), в нижней панели таба. */
+export interface FkPreview {
+  target: { schema: string; table: string };
+  /** WHERE, которым набраны строки — он же уходит в «Open table». */
+  filter: string;
+  result?: StatementResult;
+  loading: boolean;
+  error?: string;
+}
+
 export interface TableTabState {
   kind: "table";
   schema: string;
@@ -104,6 +125,8 @@ export interface TableTabState {
   applyFailed?: boolean;
   /** DB error from the last failed Apply — shown as a persistent banner. */
   applyError?: string;
+  /** Открытая панель FK-превью (см. previewFk). */
+  fkPreview?: FkPreview;
 }
 
 /** One backend from pg_stat_activity (see the activity slice for the SQL). */

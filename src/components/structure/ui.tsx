@@ -1,8 +1,7 @@
-// Building blocks shared by the Structure-tab sections (tables, inline edit
-// cells, the confirm-then-run DDL helper).
+// Building blocks shared by the Structure-tab sections: section tables and the
+// inline-edit cells.
 import { Check, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useApp } from "../../lib/store";
 import { cn, IconButton } from "../ui";
 
 /** Double-click-to-edit cell: Enter commits, Esc/blur cancels. */
@@ -150,29 +149,6 @@ export function BoolMark({ value }: { value: boolean }) {
   ) : (
     <span className="inline-block size-3.5 rounded border border-zinc-700" />
   );
-}
-
-/** Confirm(optional)-then-run for the ad-hoc section DDL (create / drop /
- *  rename / toggle). The confirm message is the SQL itself; runDdl adds the
- *  production guard and refreshes the section. */
-export function useStructureDdl(tabId: string) {
-  const runDdl = useApp((s) => s.runDdl);
-  const confirmDialog = useApp((s) => s.confirmDialog);
-  return async (
-    sql: string,
-    confirm?: { title: string; danger?: boolean; label?: string },
-  ): Promise<boolean> => {
-    if (confirm) {
-      const ok = await confirmDialog({
-        title: confirm.title,
-        message: sql,
-        confirmLabel: confirm.label ?? (confirm.danger ? "Drop" : "Run"),
-        danger: confirm.danger,
-      });
-      if (!ok) return false;
-    }
-    return runDdl(tabId, sql);
-  };
 }
 
 /** Compact ✓/✗ pair for the inline "add …" rows. */

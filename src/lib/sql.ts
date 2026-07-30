@@ -1,8 +1,17 @@
 /** Quote an SQL identifier: `my col` -> `"my col"`. */
 export const quoteIdent = (s: string) => `"${s.replaceAll('"', '""')}"`;
 
-/** Quote an SQL string literal: `it's` -> `'it''s'`. */
-export const quoteLit = (s: string) => `'${s.replaceAll("'", "''")}'`;
+/** Quote an SQL string literal: `it's` -> `'it''s'`. Значение с обратным
+ *  слэшем уходит в форму `E'…'`: при `standard_conforming_strings = off`
+ *  (один серверный конфиг или `ALTER ROLE SET`) обычный литерал прочитал бы
+ *  `\` как escape — значение изменится, а `…\'` порвёт литерал. Должна
+ *  совпадать с `quote_literal` в src-tauri/src/db/catalog.rs. */
+export const quoteLit = (s: string) => {
+  const escaped = s.replaceAll("'", "''");
+  return escaped.includes("\\")
+    ? `E'${escaped.replaceAll("\\", "\\\\")}'`
+    : `'${escaped}'`;
+};
 
 /** Schema-qualified, quoted relation: `(public, users)` -> `"public"."users"`. */
 export const relIdent = (schema: string, table: string) =>
@@ -35,7 +44,14 @@ export interface DangerousStatement {
 }
 
 /** Blanks string literals / quoted identifiers and strips comments, so `;`
- *  and keywords can be matched naively afterwards. */
+ *  and keywords can be matched naively afterwards.
+ *
+ *  Намеренно приблизительный сканер: dollar-quoting (`$$ … ; … $$`, тело
+ *  функции в CREATE FUNCTION) он не понимает и разрежет такой текст по `;`
+ *  внутри тела. Отсюда правило — вешать на него только UX-подсказки
+ *  (предупреждение про перезапуск скрипта в экспорте, «Explain needs a single
+ *  statement»); барьер записи в прод обеспечивает backend (BEGIN READ ONLY,
+ *  src-tauri/src/commands/query.rs), а не этот разбор. */
 const stripSqlNoise = (sql: string) =>
   sql
     .replace(/'(?:[^']|'')*'/g, "''")

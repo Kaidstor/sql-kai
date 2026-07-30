@@ -2,8 +2,14 @@
 // row deletes, duplicated-row inserts) up to the transactional Apply.
 import { api, isSessionLost } from "../../api";
 import { buildTableDml } from "../../mutationSql";
-import type { Get, Set, StoreContext } from "../context";
-import { columnsKey, noTableEdits } from "../helpers";
+import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../../sql";
+import {
+  PROD_WRITE_DECLINED,
+  type Get,
+  type Set,
+  type StoreContext,
+} from "../context";
+import { columnsKey, fkByColumn, noTableEdits } from "../helpers";
 import type { InsertRow, TableTabState } from "../types";
 
 export interface TableSlice {
@@ -37,7 +43,15 @@ export interface TableSlice {
   applyTableEdits: (tabId: string) => Promise<void>;
   /** Hides the failed-Apply banner; staged cells stay red until re-applied. */
   dismissApplyError: (tabId: string) => void;
+  /** ⌘-клик по FK-ячейке: показать строки по ссылке в нижней панели. */
+  previewFk: (tabId: string, row: number, col: number) => Promise<void>;
+  closeFkPreview: (tabId: string) => void;
 }
+
+/** Отдельное пространство номеров загрузок: превью и страница грузятся
+ *  независимо, и общий счётчик на tabId делал бы каждый запрос отменой
+ *  другого (страница осталась бы висеть в loading). */
+const fkSeqKey = (tabId: string) => `fk:${tabId}`;
 
 export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableSlice {
   const { tabOf, patchTab } = ctx;
@@ -63,11 +77,14 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       }
       const seq = ctx.nextLoadSeq(tabId);
       const next = { ...tab.state, ...patch };
+      // страница/фильтр уехали — превью относится к строкам, которых уже нет
+      ctx.nextLoadSeq(fkSeqKey(tabId));
       patchTab<TableTabState>(tabId, {
         ...patch,
         loading: true,
         error: undefined,
         connectionLost: undefined,
+        fkPreview: undefined,
       });
       try {
         const data = await api.getTablePage(
@@ -220,23 +237,15 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
       }
       const { stmts, updates, deletes } = dml;
       if (stmts.length === 0) return;
-      const profile = get().profiles.find((p) => p.id === tab.profileId);
-      if (profile?.production) {
-        const parts = [
-          updates > 0 && `${updates} UPDATE`,
-          deletes > 0 && `${deletes} DELETE`,
-          st.inserts.length > 0 && `${st.inserts.length} INSERT`,
-        ]
-          .filter(Boolean)
-          .join(", ");
-        const ok = await get().confirmDialog({
-          title: `"${profile.name}" is PRODUCTION`,
-          message: `Apply ${parts}?`,
-          confirmLabel: "Apply",
-          danger: true,
-        });
-        if (!ok) return;
-      }
+      // прод-барьер внутри executeStatements (backend read-only + диалог);
+      // считанные строки информативнее превью SQL — уходят в него как describe
+      const parts = [
+        updates > 0 && `${updates} UPDATE`,
+        deletes > 0 && `${deletes} DELETE`,
+        st.inserts.length > 0 && `${st.inserts.length} INSERT`,
+      ]
+        .filter(Boolean)
+        .join(", ");
       patchTab<TableTabState>(tabId, {
         loading: true,
         applyFailed: false,
@@ -246,7 +255,13 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
         tab.profileId,
         session.sessionId,
         stmts,
+        `Apply ${parts}?`,
       );
+      if (message === PROD_WRITE_DECLINED) {
+        // отказ в прод-диалоге — не провал применения: правки не красить
+        patchTab<TableTabState>(tabId, { loading: false });
+        return;
+      }
       if (message) {
         patchTab<TableTabState>(tabId, {
           loading: false,
@@ -291,5 +306,65 @@ export function createTableSlice(_set: Set, get: Get, ctx: StoreContext): TableS
 
     dismissApplyError: (tabId) =>
       patchTab<TableTabState>(tabId, { applyError: undefined }),
+
+    previewFk: async (tabId, row, col) => {
+      const tab = tabOf(tabId, "table");
+      const res = tab?.state.data?.result;
+      if (!tab || !res) return;
+      const ref = {
+        profileId: tab.profileId,
+        schema: tab.state.schema,
+        table: tab.state.table,
+      };
+      const rel = fkByColumn(get().tableRelations[columnsKey(ref)]).get(
+        res.columns[col],
+      );
+      if (!rel) return;
+      const session = ctx.sessionFor(tab.profileId);
+      if (!session) return;
+      const from = rel.columns?.split(", ") ?? [];
+      const to = (rel.refColumns ?? rel.columns)?.split(", ") ?? [];
+      const target = parseRegclass(rel.refTable);
+      const filter = to
+        .map((refCol, i) => {
+          const idx = res.columns.indexOf(from[i]);
+          const v = idx >= 0 ? (res.rows[row]?.[idx] ?? null) : null;
+          return v === null
+            ? `${quoteIdent(refCol)} IS NULL`
+            : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
+        })
+        .join(" AND ");
+      const seq = ctx.nextLoadSeq(fkSeqKey(tabId));
+      patchTab<TableTabState>(tabId, {
+        fkPreview: { target, filter, loading: true },
+      });
+      try {
+        const exec = await api.executeSql(
+          session.sessionId,
+          `SELECT * FROM ${relIdent(target.schema, target.table)} WHERE ${filter} LIMIT 50`,
+          50,
+        );
+        if (ctx.staleLoad(fkSeqKey(tabId), seq)) return;
+        patchTab<TableTabState>(tabId, {
+          fkPreview: {
+            target,
+            filter,
+            result: exec.results[0],
+            loading: false,
+          },
+        });
+      } catch (e) {
+        const message = ctx.handleSqlError(tab.profileId, e);
+        if (ctx.staleLoad(fkSeqKey(tabId), seq)) return;
+        patchTab<TableTabState>(tabId, {
+          fkPreview: { target, filter, loading: false, error: message },
+        });
+      }
+    },
+
+    closeFkPreview: (tabId) => {
+      ctx.nextLoadSeq(fkSeqKey(tabId));
+      patchTab<TableTabState>(tabId, { fkPreview: undefined });
+    },
   };
 }

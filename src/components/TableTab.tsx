@@ -1,16 +1,14 @@
 import {
-  ArrowUpRight,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileCode2,
   Funnel,
-  Loader2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, errText } from "../lib/api";
-import { parseRegclass, quoteIdent, quoteLit, relIdent } from "../lib/sql";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLazyTabLoad } from "../hooks/useLazyTabLoad";
+import { quoteIdent, relIdent } from "../lib/sql";
 import {
   columnsKey,
   useApp,
@@ -18,17 +16,12 @@ import {
   type Tab,
   type TableTabState,
 } from "../lib/store";
-import {
-  isViewKind,
-  type ColumnInfo,
-  type RelationInfo,
-  type SortSpec,
-  type StatementResult,
-} from "../lib/types";
+import { isViewKind, type ColumnInfo, type SortSpec } from "../lib/types";
 import { ExportMenu } from "./ExportMenu";
 import { FilterBar } from "./FilterBar";
 import { ReconnectButton } from "./ReconnectButton";
-import { useLazyTabLoad } from "./useLazyTabLoad";
+import { FkPreviewPanel } from "./table/FkPreviewPanel";
+import { useTableFk } from "./table/useTableFk";
 import { ResultsGrid, type GridEditing } from "./ResultsGrid";
 import { TabError } from "./TabError";
 import { IconButton, PendingChangesBar, RefreshButton, Select } from "./ui";
@@ -69,8 +62,8 @@ export function TableTab({ tab }: { tab: Tab }) {
   const refreshTablePage = useApp((s) => s.refreshTablePage);
   const loadTableColumns = useApp((s) => s.loadTableColumns);
   const tableColumns = useApp((s) => s.tableColumns);
-  const loadTableRelations = useApp((s) => s.loadTableRelations);
-  const tableRelations = useApp((s) => s.tableRelations);
+  const previewFk = useApp((s) => s.previewFk);
+  const closeFkPreview = useApp((s) => s.closeFkPreview);
   const openQueryTab = useApp((s) => s.openQueryTab);
   const openTableTab = useApp((s) => s.openTableTab);
   const stageCellEdit = useApp((s) => s.stageCellEdit);
@@ -116,93 +109,13 @@ export function TableTab({ tab }: { tab: Tab }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cols, ref]);
 
-  // Foreign keys enable ⌘-click navigation to the referenced row.
-  const rels = tableRelations[columnsKey(ref)];
-  useEffect(() => {
-    if (connected && !rels) void loadTableRelations(ref);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, rels, ref]);
-
-  /** First FK covering each column name (string_agg output is ", "-joined). */
-  const fkByCol = useMemo(() => {
-    const map = new Map<string, RelationInfo>();
-    for (const r of rels ?? []) {
-      for (const c of r.columns?.split(", ") ?? []) {
-        if (!map.has(c)) map.set(c, r);
-      }
-    }
-    return map;
-  }, [rels]);
-
-  const fkColumns = useMemo(() => {
-    const set = new Set<number>();
-    state.data?.result.columns.forEach((name, i) => {
-      if (fkByCol.has(name)) set.add(i);
-    });
-    return set;
-  }, [state.data, fkByCol]);
-
-  // FK preview (Drizzle-Studio-style): ⌘-клик показывает записи по ссылке
-  // в нижней панели — чаще всего нужна одна строка глазами, а не переход;
-  // переход остаётся кнопкой в шапке панели.
-  const [fkPreview, setFkPreview] = useState<{
-    target: { schema: string; table: string };
-    filter: string;
-    result: StatementResult | null;
-    loading: boolean;
-    error?: string;
-  } | null>(null);
-  const previewSeq = useRef(0);
-
-  // Смена страницы/фильтра/таблицы делает превью неактуальным.
-  useEffect(() => {
-    previewSeq.current++;
-    setFkPreview(null);
-  }, [state.schema, state.table, state.filter, state.page]);
-
-  /** Показывает записи, на которые ссылается FK-ячейка, в нижней панели. */
-  const previewFk = useCallback(
-    (ri: number, ci: number) => {
-      const res = state.data?.result;
-      if (!res) return;
-      const rel = fkByCol.get(res.columns[ci]);
-      if (!rel) return;
-      const from = rel.columns?.split(", ") ?? [];
-      const to = (rel.refColumns ?? rel.columns)?.split(", ") ?? [];
-      const target = parseRegclass(rel.refTable);
-      const parts = to.map((refCol, i) => {
-        const idx = res.columns.indexOf(from[i]);
-        const v = idx >= 0 ? (res.rows[ri]?.[idx] ?? null) : null;
-        return v === null
-          ? `${quoteIdent(refCol)} IS NULL`
-          : `${quoteIdent(refCol)} = ${quoteLit(v)}`;
-      });
-      const filter = parts.join(" AND ");
-      const session = useApp.getState().sessions[tab.profileId];
-      if (!session) return;
-      const seq = ++previewSeq.current;
-      setFkPreview({ target, filter, result: null, loading: true });
-      void api
-        .executeSql(
-          session.sessionId,
-          `SELECT * FROM ${relIdent(target.schema, target.table)} WHERE ${filter} LIMIT 50`,
-          50,
-        )
-        .then((exec) => {
-          if (previewSeq.current !== seq) return;
-          setFkPreview((p) =>
-            p ? { ...p, result: exec.results[0] ?? null, loading: false } : p,
-          );
-        })
-        .catch((e) => {
-          if (previewSeq.current !== seq) return;
-          setFkPreview((p) =>
-            p ? { ...p, loading: false, error: errText(e) } : p,
-          );
-        });
-    },
-    [state.data, fkByCol, tab.profileId],
+  const fkColumns = useTableFk(ref, connected, state.data?.result.columns);
+  const fkPreview = state.fkPreview;
+  const followFk = useCallback(
+    (row: number, col: number) => void previewFk(tab.id, row, col),
+    [previewFk, tab.id],
   );
+
   const hasPk = (cols ?? []).some((c) => c.isPk);
   // Views (and matviews) are read-only: no INSERT/UPDATE/DELETE through the grid.
   const relKind = (tables[tab.profileId] ?? []).find(
@@ -478,7 +391,7 @@ export function TableTab({ tab }: { tab: Tab }) {
             columnNullable={columnNullable}
             insertTarget={insertTarget}
             fkColumns={fkColumns}
-            onFollowFk={previewFk}
+            onFollowFk={followFk}
             editing={editing}
           />
         ) : (
@@ -489,65 +402,15 @@ export function TableTab({ tab }: { tab: Tab }) {
       </div>
 
       {fkPreview && (
-        <div className="flex h-56 shrink-0 flex-col border-t border-zinc-800">
-          <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-925 px-2 py-1 text-[11px]">
-            <span className="shrink-0 font-mono font-medium text-zinc-200">
-              {fkPreview.target.schema === "public"
-                ? fkPreview.target.table
-                : `${fkPreview.target.schema}.${fkPreview.target.table}`}
-            </span>
-            <span
-              className="truncate font-mono text-zinc-500"
-              title={fkPreview.filter}
-            >
-              {fkPreview.filter}
-            </span>
-            {fkPreview.result && (
-              <span className="shrink-0 text-zinc-600">
-                {fkPreview.result.rows.length}
-                {fkPreview.result.truncated ? "+" : ""} row(s)
-              </span>
-            )}
-            <div className="ml-auto flex shrink-0 items-center gap-1">
-              <button
-                onClick={() => {
-                  openTableTab(
-                    tab.profileId,
-                    fkPreview.target.schema,
-                    fkPreview.target.table,
-                    fkPreview.filter,
-                  );
-                  setFkPreview(null);
-                }}
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
-                title="Open the referenced table as a tab with this filter"
-              >
-                <ArrowUpRight size={12} />
-                Open table
-              </button>
-              <IconButton title="Close preview" onClick={() => setFkPreview(null)}>
-                <X size={13} />
-              </IconButton>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1">
-            {fkPreview.loading ? (
-              <div className="flex h-full items-center justify-center gap-2 text-[12px] text-zinc-600">
-                <Loader2 size={13} className="animate-spin" /> loading…
-              </div>
-            ) : fkPreview.error ? (
-              <div className="selectable overflow-auto p-3 font-mono text-[12px] whitespace-pre-wrap text-red-400">
-                {fkPreview.error}
-              </div>
-            ) : fkPreview.result && fkPreview.result.rows.length > 0 ? (
-              <ResultsGrid result={fkPreview.result} />
-            ) : (
-              <div className="flex h-full items-center justify-center text-[12px] text-zinc-600">
-                no referenced rows
-              </div>
-            )}
-          </div>
-        </div>
+        <FkPreviewPanel
+          preview={fkPreview}
+          onOpenTable={() => {
+            const { target, filter } = fkPreview;
+            openTableTab(tab.profileId, target.schema, target.table, filter);
+            closeFkPreview(tab.id);
+          }}
+          onClose={() => closeFkPreview(tab.id)}
+        />
       )}
     </div>
   );

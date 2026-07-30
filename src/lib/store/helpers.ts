@@ -1,4 +1,5 @@
 // Pure helpers shared by the slices — no store access, no side effects.
+import type { RelationInfo } from "../types";
 import type { RelRef, StructureTabState, Tab, TableTabState } from "./types";
 
 /** Smallest free "Query N" title among open tabs (VS Code untitled-style).
@@ -31,6 +32,21 @@ export const columnsKey = ({ profileId, schema, table }: RelRef) =>
   // разделитель `|` и между schema/table — `a`+`b.c` и `a.b`+`c` не должны
   // коллидировать в одном ключе кэша
   `${profileId}|${schema}|${table}`;
+
+/** First FK covering each column name (string_agg output is ", "-joined) —
+ *  один и тот же разбор нужен гриду (какие колонки кликабельны) и previewFk
+ *  (по какой связи собирать WHERE). */
+export function fkByColumn(
+  rels: readonly RelationInfo[] | undefined,
+): Map<string, RelationInfo> {
+  const map = new Map<string, RelationInfo>();
+  for (const r of rels ?? []) {
+    for (const c of r.columns?.split(", ") ?? []) {
+      if (!map.has(c)) map.set(c, r);
+    }
+  }
+  return map;
+}
 
 /** Immutable single-key removal — replaces the `{ ...map }; delete map[id]`
  *  boilerplate that recurred ~15× (session/metadata teardown). */

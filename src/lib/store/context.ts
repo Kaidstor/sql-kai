@@ -12,6 +12,11 @@ import type { AppStore, Tab } from "./types";
 export type Set = StoreApi<AppStore>["setState"];
 export type Get = StoreApi<AppStore>["getState"];
 
+/** Отказ в прод-диалоге: ничего не выполнялось. Вызывающий, который красит
+ *  неудачное применение, обязан отличать его от ошибки SQL. */
+export const PROD_WRITE_DECLINED =
+  "Not run — the production write was not confirmed";
+
 export interface StoreContext {
   /** Tab by id, narrowed to the given kind; null when missing or another kind. */
   tabOf: <K extends Tab["state"]["kind"]>(
@@ -34,21 +39,26 @@ export interface StoreContext {
    *  message — one implicit transaction, atomic, and an error auto-rolls-back
    *  without leaving the session in an aborted tx. Returns null on success,
    *  else the user-facing message (session-lost bookkeeping already done).
-   *  Проходит через runProdGuarded — запись в прод спросит подтверждение. */
+   *  Проходит через runProdGuarded — запись в прод спросит подтверждение,
+   *  `describe` заменяет в нём превью SQL. */
   executeStatements: (
     profileId: string,
     sessionId: string,
     stmts: readonly string[],
+    describe?: string,
   ) => Promise<string | null>;
   /** Production write-guard, backend-enforced: runs `attempt` without write
    *  intent; на prod-сессии backend исполняет батч в BEGIN READ ONLY, и
    *  запись возвращается отказом "read_only" — тогда спросить пользователя и
    *  повторить attempt(true). Что считается записью, решает Postgres, а не
-   *  regex по SQL (тот пропускал CREATE/CALL/DO/пишущие функции). */
+   *  regex по SQL (тот пропускал CREATE/CALL/DO/пишущие функции).
+   *  Единственное место, где спрашивают про запись в прод: вызывающему нельзя
+   *  добавлять свой диалог перед этим — пользователь подтвердит дважды. */
   runProdGuarded: <T>(
     profileId: string,
     sql: string,
     attempt: (prodWrite: boolean) => Promise<T>,
+    describe?: string,
   ) => Promise<T>;
   /** Монотонные номера загрузок по табам: устаревший ответ (медленная
    *  страница, обогнанная следующим запросом) молча отбрасывается. */
@@ -66,6 +76,7 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
     profileId: string,
     sql: string,
     attempt: (prodWrite: boolean) => Promise<T>,
+    describe?: string,
   ): Promise<T> => {
     try {
       return await attempt(false);
@@ -76,13 +87,12 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
       if (!profile?.production || !isReadOnlyRefusal(e)) throw e;
       const ok = await get().confirmDialog({
         title: `"${profile.name}" is PRODUCTION`,
-        message: `This SQL needs write access:\n\n${sqlPreview(sql, 200)}`,
+        message:
+          describe ?? `This SQL needs write access:\n\n${sqlPreview(sql, 200)}`,
         confirmLabel: "Run",
         danger: true,
       });
-      if (!ok) {
-        throw new Error("Not run — the production write was not confirmed");
-      }
+      if (!ok) throw new Error(PROD_WRITE_DECLINED);
       return attempt(true);
     }
   };
@@ -127,11 +137,15 @@ export function createStoreContext(set: Set, get: Get): StoreContext {
       return errText(e);
     },
 
-    executeStatements: async (profileId, sessionId, stmts) => {
+    executeStatements: async (profileId, sessionId, stmts, describe) => {
       const sql = stmts.join(";\n");
       try {
-        await runProdGuarded(profileId, sql, (prodWrite) =>
-          api.executeSql(sessionId, sql, 10, false, undefined, prodWrite),
+        await runProdGuarded(
+          profileId,
+          sql,
+          (prodWrite) =>
+            api.executeSql(sessionId, sql, 10, false, undefined, prodWrite),
+          describe,
         );
         return null;
       } catch (e) {
