@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   saveSettings: vi.fn(async () => {}),
   /** Опции, которые фейковый агент отдаёт из session/new. */
   configOptions: [] as FakeConfigOption[],
+  /** Если задан — session/new ждёт его (для гонок прогрев/отправка). */
+  sessionGate: null as Promise<void> | null,
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -80,6 +82,7 @@ vi.mock("../../acp", () => {
     async initialize() {}
 
     async newSession() {
+      if (mocks.sessionGate) await mocks.sessionGate;
       return {
         sessionId: `session-${mocks.agents.length}`,
         configOptions: mocks.configOptions,
@@ -210,6 +213,7 @@ afterEach(() => {
   currentState = undefined;
   mocks.agents.length = 0;
   mocks.configOptions = [];
+  mocks.sessionGate = null;
   mocks.saveSettings.mockClear();
 });
 
@@ -346,6 +350,58 @@ describe("session config options", () => {
     await state.setAgentConfigOption("a", "model", "fable");
     expect(state.settings.agentSessionConfig?.claude?.model).toBe("fable");
     expect(mocks.agents).toHaveLength(0);
+  });
+});
+
+describe("session warm-up", () => {
+  it("spawns the agent without a prompt and lands on ready", async () => {
+    mocks.configOptions = [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "opus",
+        options: [{ value: "opus", name: "Claude Opus 5" }],
+      },
+    ];
+    const state = harness();
+    await state.warmAgentSession("a");
+    expect(mocks.agents).toHaveLength(1);
+    expect(mocks.agents[0].prompts).toEqual([]);
+    expect(state.agentChats.a.status).toBe("ready");
+    expect(state.agentChats.a.warming).toBe(false);
+    expect(state.agentChats.a.configOptions).toMatchObject([{ id: "model" }]);
+  });
+
+  it("send during warm-up reuses the same start instead of a second spawn", async () => {
+    let openGate!: () => void;
+    mocks.sessionGate = new Promise((r) => {
+      openGate = r;
+    });
+    const state = harness();
+    const warm = state.warmAgentSession("a");
+    await vi.waitFor(() => expect(mocks.agents).toHaveLength(1));
+    // ввод не заблокирован прогревом — отправка проходит и ждёт тот же старт
+    const turn = state.sendAgentPrompt("a", "hi");
+    openGate();
+    await waitUntilRunning(state, "a");
+    expect(mocks.agents).toHaveLength(1);
+    expect(mocks.agents[0].prompts).toHaveLength(1);
+    expect(mocks.agents[0].prompts[0]).toContain("hi");
+    mocks.agents[0].finish();
+    await Promise.all([warm, turn]);
+    expect(state.agentChats.a.status).toBe("ready");
+  });
+
+  it("warm-up is a no-op when a chat already exists", async () => {
+    const state = harness();
+    const turn = state.sendAgentPrompt("a", "hello");
+    await waitUntilRunning(state, "a");
+    await state.warmAgentSession("a");
+    expect(mocks.agents).toHaveLength(1);
+    mocks.agents[0].finish();
+    await turn;
   });
 });
 

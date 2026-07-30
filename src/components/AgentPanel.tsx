@@ -2,9 +2,12 @@
 // call cards and permission prompts. One chat per connection profile — the
 // store slice (slices/agent.ts) owns the agent process and the protocol.
 import {
+  Check,
+  ChevronDown,
   CircleStop,
   History,
   Loader2,
+  Lock,
   MessagesSquare,
   RotateCcw,
   ShieldAlert,
@@ -12,7 +15,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   configSelectValues,
   type ConfigSelectGroup,
@@ -38,16 +41,7 @@ import {
 import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
 import { ToolCard, ToolStatusIcon } from "./agent/ToolCard";
-import {
-  Button,
-  cn,
-  Field,
-  fmtTime,
-  IconButton,
-  Input,
-  Popover,
-  Select,
-} from "./ui";
+import { Button, cn, fmtTime, IconButton, Input, Popover, Select } from "./ui";
 
 /** Panel width survives close/open within the session (not persisted).
  *  Module-level, so the vault lock resets it like the rest of the session
@@ -138,7 +132,45 @@ function SavedChatRow({
   );
 }
 
-function ConfigOptionSelect({
+function OptionRow({
+  name,
+  description,
+  selected,
+  onSelect,
+}: {
+  name: string;
+  description?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className="flex w-full items-start gap-1.5 rounded px-2 py-1.5 text-left hover:bg-zinc-800"
+    >
+      <span className="mt-0.5 w-3 shrink-0">
+        {selected && <Check size={12} className="text-sky-400" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block text-[12px]",
+            selected ? "text-zinc-100" : "text-zinc-300",
+          )}
+        >
+          {name}
+        </span>
+        {description && (
+          <span className="block text-[10px] leading-snug text-zinc-500">
+            {description}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+function OptionRows({
   opt,
   onSet,
 }: {
@@ -147,41 +179,86 @@ function ConfigOptionSelect({
 }) {
   if (opt.type === "boolean") {
     return (
-      <Select
-        className="w-full"
-        value={opt.currentValue ? "on" : "off"}
-        title={opt.description ?? undefined}
-        onChange={(e) => onSet(e.target.value === "on")}
-      >
-        <option value="on">On</option>
-        <option value="off">Off</option>
-      </Select>
+      <>
+        <OptionRow name="On" selected={opt.currentValue} onSelect={() => onSet(true)} />
+        <OptionRow name="Off" selected={!opt.currentValue} onSelect={() => onSet(false)} />
+      </>
     );
   }
+  const row = (v: ConfigSelectValue) => (
+    <OptionRow
+      key={v.value}
+      name={v.name}
+      description={v.description ?? undefined}
+      selected={v.value === opt.currentValue}
+      onSelect={() => onSet(v.value)}
+    />
+  );
   const entries = opt.options as (ConfigSelectValue | ConfigSelectGroup)[];
   return (
-    <Select
-      className="w-full"
-      value={opt.currentValue}
-      title={opt.description ?? undefined}
-      onChange={(e) => onSet(e.target.value)}
-    >
+    <>
       {entries.map((entry) =>
         "group" in entry ? (
-          <optgroup key={entry.group} label={entry.name}>
-            {entry.options.map((v) => (
-              <option key={v.value} value={v.value}>
-                {v.name}
-              </option>
-            ))}
-          </optgroup>
+          <div key={entry.group}>
+            <div className="px-2 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-zinc-600">
+              {entry.name}
+            </div>
+            {entry.options.map(row)}
+          </div>
         ) : (
-          <option key={entry.value} value={entry.value}>
-            {entry.name}
-          </option>
+          row(entry)
         ),
       )}
-    </Select>
+    </>
+  );
+}
+
+/** Кнопка у поля ввода («Opus 5 ˅»), открывающая поповер вверх. */
+function ConfigTrigger({
+  icon,
+  label,
+  title,
+  align = "left",
+  open,
+  onToggle,
+  onClose,
+  panelClassName,
+  children,
+}: {
+  icon?: ReactNode;
+  label: string;
+  title?: string;
+  align?: "left" | "right";
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  panelClassName?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Popover
+      open={open}
+      onClose={onClose}
+      side="top"
+      align={align}
+      panelClassName={cn("max-h-80 overflow-y-auto p-1", panelClassName)}
+      trigger={
+        <button
+          title={title}
+          onClick={onToggle}
+          className={cn(
+            "flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5",
+            "text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200",
+          )}
+        >
+          {icon}
+          <span className="truncate">{label}</span>
+          <ChevronDown size={9} className="shrink-0 text-zinc-600" />
+        </button>
+      }
+    >
+      {children}
+    </Popover>
   );
 }
 
@@ -242,17 +319,30 @@ export function AgentPanel() {
   const setAgentProvider = useApp((s) => s.setAgentProvider);
   const setAgentCustomCmd = useApp((s) => s.setAgentCustomCmd);
   const setAgentConfigOption = useApp((s) => s.setAgentConfigOption);
+  const warmAgentSession = useApp((s) => s.warmAgentSession);
 
   const [draft, setDraft] = useState("");
   const [width, setWidth] = useState(savedWidth);
   const [customDraft, setCustomDraft] = useState(settings.agentCustomCmd ?? "");
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState<"model" | "opts" | "mode" | null>(
+    null,
+  );
   const [savedChats, setSavedChats] = useState<PersistedAgentChat[]>([]);
 
   const provider = activeProvider(settings);
-  const busy = chat?.status === "running" || chat?.status === "starting";
+  // warming-старт (прогрев при открытии) не блокирует ввод — отправка
+  // дождётся того же старта сессии
+  const busy =
+    chat?.status === "running" ||
+    (chat?.status === "starting" && !chat.warming);
   const chatEmpty = !chat || chat.items.length === 0;
+
+  // прогрев: процесс и сессия поднимаются при открытии панели, а не при
+  // первом сообщении — опции (модель/режим) видны сразу
+  useEffect(() => {
+    if (activeProfileId && !chat) void warmAgentSession(activeProfileId);
+  }, [activeProfileId, chat, warmAgentSession]);
 
   // Опции сессии: живые из чата, до старта сессии — кэш прошлой сессии
   // провайдера с наложенным сохранённым выбором (то, что реально применится)
@@ -269,14 +359,34 @@ export function AgentPanel() {
     });
   }, [liveOptions, provider.id, sessionConfig]);
 
+  type SelectOpt = Extract<SessionConfigOption, { type: "select" }>;
+  const currentName = (o: SelectOpt) =>
+    configSelectValues(o).find((v) => v.value === o.currentValue)?.name ??
+    o.currentValue;
+
+  // раскладка как в привычных чатах: модель · reasoning-опции · режим доступа
   const modelOpt = configOptions.find(
-    (o): o is Extract<SessionConfigOption, { type: "select" }> =>
-      o.type === "select" && o.category === "model",
+    (o): o is SelectOpt => o.type === "select" && o.category === "model",
   );
-  const modelLabel = modelOpt
-    ? (configSelectValues(modelOpt).find((v) => v.value === modelOpt.currentValue)
-        ?.name ?? modelOpt.currentValue)
-    : null;
+  const modeOpt = configOptions.find(
+    (o): o is SelectOpt => o.type === "select" && o.category === "mode",
+  );
+  const restOpts = configOptions.filter((o) => o !== modelOpt && o !== modeOpt);
+  const effortOpt = restOpts.find(
+    (o): o is SelectOpt => o.type === "select" && o.category === "thought_level",
+  );
+  const fastOn = restOpts.some(
+    (o) =>
+      /fast/i.test(o.name) &&
+      (o.type === "boolean" ? o.currentValue : o.currentValue === "on"),
+  );
+  const restLabel =
+    (effortOpt ? currentName(effortOpt) : "Options") + (fastOn ? " · Fast" : "");
+
+  const applyOption = (opt: SessionConfigOption, value: string | boolean) => {
+    setConfigOpen(null);
+    if (activeProfileId) void setAgentConfigOption(activeProfileId, opt.id, value);
+  };
 
   // список читается из localStorage лениво — когда он виден (пустое
   // состояние или поповер), не на каждый стрим-чанк
@@ -342,36 +452,6 @@ export function AgentPanel() {
             </option>
           ))}
         </Select>
-        {configOptions.length > 0 && activeProfileId && (
-          <Popover
-            open={configOpen}
-            onClose={() => setConfigOpen(false)}
-            align="right"
-            panelClassName="w-60 p-2"
-            trigger={
-              <button
-                title="Session settings — model, permission mode"
-                onClick={() => setConfigOpen((v) => !v)}
-                className={cn(
-                  "flex min-w-0 items-center gap-1 rounded px-1.5 py-1",
-                  "text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200",
-                )}
-              >
-                <SlidersHorizontal size={11} className="shrink-0" />
-                {modelLabel && <span className="truncate">{modelLabel}</span>}
-              </button>
-            }
-          >
-            {configOptions.map((o) => (
-              <Field key={o.id} label={o.name} className="mb-2 last:mb-0">
-                <ConfigOptionSelect
-                  opt={o}
-                  onSet={(v) => void setAgentConfigOption(activeProfileId, o.id, v)}
-                />
-              </Field>
-            ))}
-          </Popover>
-        )}
         <div className="ml-auto flex items-center">
           <Popover
             open={historyOpen}
@@ -525,6 +605,7 @@ export function AgentPanel() {
           rows={3}
           spellCheck={false}
           disabled={!activeProfileId}
+          title="⏎ send · ⇧⏎ newline"
           placeholder={
             profile ? `Ask about ${profile.name}…` : "No active connection"
           }
@@ -534,9 +615,54 @@ export function AgentPanel() {
             "focus:border-sky-600 focus:outline-none",
           )}
         />
-        <div className="mt-1 flex items-center gap-2">
-          <span className="text-[10px] text-zinc-600">⏎ send · ⇧⏎ newline</span>
-          <div className="ml-auto">
+        <div className="mt-1 flex items-center gap-0.5">
+          {modelOpt && (
+            <ConfigTrigger
+              label={currentName(modelOpt)}
+              title={modelOpt.description ?? modelOpt.name}
+              open={configOpen === "model"}
+              onToggle={() => setConfigOpen((v) => (v === "model" ? null : "model"))}
+              onClose={() => setConfigOpen(null)}
+              panelClassName="w-56"
+            >
+              <OptionRows opt={modelOpt} onSet={(v) => applyOption(modelOpt, v)} />
+            </ConfigTrigger>
+          )}
+          {restOpts.length > 0 && (
+            <ConfigTrigger
+              icon={<SlidersHorizontal size={10} className="shrink-0" />}
+              label={restLabel}
+              title="Reasoning effort and session options"
+              open={configOpen === "opts"}
+              onToggle={() => setConfigOpen((v) => (v === "opts" ? null : "opts"))}
+              onClose={() => setConfigOpen(null)}
+              panelClassName="w-56"
+            >
+              {restOpts.map((o) => (
+                <div key={o.id}>
+                  <div className="px-2 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wide text-zinc-600">
+                    {o.name}
+                  </div>
+                  <OptionRows opt={o} onSet={(v) => applyOption(o, v)} />
+                </div>
+              ))}
+            </ConfigTrigger>
+          )}
+          {modeOpt && (
+            <ConfigTrigger
+              icon={<Lock size={10} className="shrink-0" />}
+              label={currentName(modeOpt)}
+              title={modeOpt.description ?? modeOpt.name}
+              align="right"
+              open={configOpen === "mode"}
+              onToggle={() => setConfigOpen((v) => (v === "mode" ? null : "mode"))}
+              onClose={() => setConfigOpen(null)}
+              panelClassName="w-64"
+            >
+              <OptionRows opt={modeOpt} onSet={(v) => applyOption(modeOpt, v)} />
+            </ConfigTrigger>
+          )}
+          <div className="ml-auto shrink-0">
             {chat?.status === "running" ? (
               <Button
                 variant="danger"

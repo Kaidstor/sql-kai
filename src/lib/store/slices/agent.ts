@@ -148,6 +148,9 @@ export interface AgentChat {
   /** Опции живой сессии (модель, permission-режим, effort…) — из session/new
    *  и config_option_update. */
   configOptions?: SessionConfigOption[];
+  /** starting-прогрев при открытии панели: prompt ещё не отправлялся, ввод
+   *  не блокируется — отправка дождётся этого же старта сессии. */
+  warming?: boolean;
 }
 
 export interface AgentSlice {
@@ -171,6 +174,9 @@ export interface AgentSlice {
   ) => Promise<void>;
   /** Останавливает текущий prompt turn (session/cancel). */
   cancelAgentPrompt: (profileId: string) => void;
+  /** Прогрев при открытии панели: поднимает процесс и ACP-сессию заранее,
+   *  чтобы опции (модель/режим) были видны до первого сообщения. */
+  warmAgentSession: (profileId: string) => Promise<void>;
   /** Ответ на session/request_permission; null = cancelled. */
   answerAgentPermission: (profileId: string, optionId: string | null) => void;
   /** Сохраняет текущий диалог, убивает процесс агента и очищает чат профиля. */
@@ -200,6 +206,9 @@ const startingAgents = new Map<string, AcpAgent>();
 const agentGenerations = new Map<string, symbol>();
 /** Открытые permission-запросы: резолвер ответа пользователя. */
 const permResolvers = new Map<string, (optionId: string | null) => void>();
+/** In-flight ensureAgent по profileId: прогрев и первая отправка не должны
+ *  спавнить два процесса — второй вызов ждёт тот же старт. */
+const startInFlight = new Map<string, Promise<unknown>>();
 
 let nextItemId = 1;
 
@@ -453,6 +462,8 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
     liveAgents.delete(profileId);
     startingAgents.delete(profileId);
     agentGenerations.delete(profileId);
+    // висящий старт больше не разделяем: новый прогрев/промпт стартует заново
+    startInFlight.delete(profileId);
     permResolvers.get(profileId)?.(null);
     permResolvers.delete(profileId);
     live?.agent.kill();
@@ -608,6 +619,21 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
     }
   };
 
+  /** ensureAgent с дедупликацией конкурентных вызовов (прогрев + отправка). */
+  const ensureAgentShared = (
+    profileId: string,
+  ): Promise<Awaited<ReturnType<typeof ensureAgent>>> => {
+    const inflight = startInFlight.get(profileId);
+    if (inflight) {
+      return inflight as Promise<Awaited<ReturnType<typeof ensureAgent>>>;
+    }
+    const p = ensureAgent(profileId).finally(() => {
+      if (startInFlight.get(profileId) === p) startInFlight.delete(profileId);
+    });
+    startInFlight.set(profileId, p);
+    return p;
+  };
+
   return {
     agentOpen: false,
     agentChats: {},
@@ -659,7 +685,14 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
       if (!trimmed) return;
       const s = get();
       const chat = s.agentChats[profileId];
-      if (chat && (chat.status === "running" || chat.status === "starting")) return;
+      // warming-старт не блокирует отправку — она дождётся того же старта
+      if (
+        chat &&
+        (chat.status === "running" ||
+          (chat.status === "starting" && !chat.warming))
+      ) {
+        return;
+      }
       if (!chat) {
         set((st) => ({
           agentChats: {
@@ -674,12 +707,15 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
             },
           },
         }));
+      } else if (chat.warming) {
+        // с этого момента ход занят — повторный Send не проскочит
+        patchChat(profileId, { warming: false });
       }
       pushItem(profileId, { kind: "user", text: trimmed });
 
       let promptGeneration: symbol | undefined;
       try {
-        const live = await ensureAgent(profileId);
+        const live = await ensureAgentShared(profileId);
         promptGeneration = live.generation;
         const profile = get().profiles.find((p) => p.id === profileId);
         let prompt = trimmed;
@@ -726,6 +762,48 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
         const tail = chatNow.stderr.slice(-5).join("\n");
         patchChat(profileId, {
           status: "error",
+          permission: null,
+          startNote: undefined,
+          error: errText(e) + hint + (tail ? `\n${tail}` : ""),
+        });
+      }
+    },
+
+    warmAgentSession: async (profileId) => {
+      if (get().agentChats[profileId]) return;
+      if (liveAgents.get(profileId)?.agent.alive) return;
+      set((st) => ({
+        agentChats: {
+          ...st.agentChats,
+          [profileId]: {
+            chatId: crypto.randomUUID(),
+            providerId: activeProvider(st.settings).id,
+            status: "starting",
+            warming: true,
+            items: [],
+            permission: null,
+            stderr: [],
+          },
+        },
+      }));
+      try {
+        await ensureAgentShared(profileId);
+        const chat = get().agentChats[profileId];
+        if (chat?.status === "starting") {
+          patchChat(profileId, { status: "ready", warming: false, startNote: undefined });
+        }
+      } catch (e) {
+        if (e instanceof AgentSupersededError) return;
+        const chatNow = get().agentChats[profileId];
+        if (!chatNow || chatNow.status !== "starting") return; // ход уже перехвачен
+        const hint =
+          e instanceof RpcError && e.code === AUTH_REQUIRED
+            ? `\n${activeProvider(get().settings).authHint}`
+            : "";
+        const tail = chatNow.stderr.slice(-5).join("\n");
+        patchChat(profileId, {
+          status: "error",
+          warming: false,
           permission: null,
           startNote: undefined,
           error: errText(e) + hint + (tail ? `\n${tail}` : ""),
