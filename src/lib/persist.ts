@@ -1,8 +1,10 @@
-// localStorage persistence: query history, per-profile workspaces (open tabs)
-// and the closed-tabs stack. Everything here is best-effort — storage errors
-// are swallowed, corrupt snapshots are dropped.
+// localStorage persistence: query history, per-profile workspaces (open tabs),
+// the closed-tabs stack and saved agent chats. Everything here is best-effort —
+// storage errors are swallowed, corrupt snapshots are dropped.
 import type {
   ActivityTabState,
+  AgentChatItem,
+  AgentChatItemBody,
   QueryTabState,
   StructureTabState,
   Tab,
@@ -260,7 +262,7 @@ export function persistClosedTabs(entries: ClosedTab[]) {
 }
 
 /** Restored without result/page data — reopening refetches what's missing. */
-export function loadClosedTabs(): ClosedTab[] {
+export function restoreClosedTabs(): ClosedTab[] {
   const raw = readJson<PersistedClosedTab[]>(CLOSED_KEY);
   if (!Array.isArray(raw)) return [];
   const out: ClosedTab[] = [];
@@ -275,4 +277,80 @@ export function loadClosedTabs(): ClosedTab[] {
     }
   }
   return out.slice(-CLOSED_CAP);
+}
+
+// --- Agent chats (per profile, resumable from the panel) ----------------------
+
+const agentChatsKey = (profileId: string) => `sqlt.agentChats.${profileId}`;
+export const AGENT_CHATS_CAP = 10;
+
+export interface PersistedAgentChat {
+  id: string;
+  /** First user message, truncated — the label in the chat picker. */
+  title: string;
+  providerId: string;
+  updatedAt: number;
+  /** Items without ids (reassigned on restore); tool statuses are settled. */
+  items: AgentChatItemBody[];
+}
+
+/** Last saved items reference per chatId: the debounced auto-persist upserts on
+ *  every store change — an unchanged chat must not be rewritten (or get a fresh
+ *  updatedAt reordering the list). */
+const savedItemsRef = new Map<string, AgentChatItem[]>();
+
+function snapshotChatItems(items: AgentChatItem[]): AgentChatItemBody[] {
+  return items.map((it) => {
+    const { id: _id, ...body } = it;
+    // an unfinished tool call never completes in a future agent process
+    return body.kind === "tool" &&
+      (body.status === "pending" || body.status === "in_progress")
+      ? { ...body, status: "failed" as const }
+      : body;
+  });
+}
+
+export function loadAgentChats(profileId: string): PersistedAgentChat[] {
+  const raw = readJson<PersistedAgentChat[]>(agentChatsKey(profileId));
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c) => c && typeof c.id === "string" && Array.isArray(c.items),
+  );
+}
+
+/** Chats without a user message (nothing but an error banner) are skipped. */
+export function upsertAgentChat(
+  profileId: string,
+  chat: { chatId: string; providerId: string; items: AgentChatItem[] },
+) {
+  if (savedItemsRef.get(chat.chatId) === chat.items) return;
+  const firstUser = chat.items.find((it) => it.kind === "user");
+  if (!firstUser || firstUser.kind !== "user") return;
+  const rest = loadAgentChats(profileId).filter((c) => c.id !== chat.chatId);
+  const list: PersistedAgentChat[] = [
+    {
+      id: chat.chatId,
+      title: firstUser.text.slice(0, 80),
+      providerId: chat.providerId,
+      updatedAt: Date.now(),
+      items: snapshotChatItems(chat.items),
+    },
+    ...rest,
+  ];
+  writeJson(agentChatsKey(profileId), list.slice(0, AGENT_CHATS_CAP));
+  savedItemsRef.set(chat.chatId, chat.items);
+}
+
+export function deleteAgentChat(profileId: string, chatId: string) {
+  const rest = loadAgentChats(profileId).filter((c) => c.id !== chatId);
+  if (rest.length === 0) removeAgentChats(profileId);
+  else writeJson(agentChatsKey(profileId), rest);
+}
+
+export function removeAgentChats(profileId: string) {
+  try {
+    localStorage.removeItem(agentChatsKey(profileId));
+  } catch {
+    // best-effort
+  }
 }

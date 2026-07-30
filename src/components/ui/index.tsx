@@ -8,7 +8,7 @@ import type {
   ReactNode,
   SelectHTMLAttributes,
 } from "react";
-import { isViewKind } from "../lib/types";
+import { isViewKind } from "../../lib/types";
 
 // Naming of in-flight flags, one word per source so a prop name tells you where
 // the flag came from:
@@ -182,6 +182,15 @@ export function MenuButton({
       <ChevronDown size={11} className="text-zinc-600" />
     </button>
   );
+}
+
+/** Time for today's timestamps, short date otherwise (history lists). */
+export function fmtTime(at: number): string {
+  const d = new Date(at);
+  const sameDay = new Date().toDateString() === d.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 /** Red PROD chip shown wherever a production profile appears. */

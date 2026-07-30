@@ -2,7 +2,12 @@
 // session maps, per-profile metadata caches (tables, autocomplete columns,
 // sidebar column/FK caches) and the broker's cli-session badges.
 import { api, errText } from "../../api";
-import { persistClosedTabs, persistWorkspace, removeWorkspace } from "../../persist";
+import {
+  persistClosedTabs,
+  persistWorkspace,
+  removeAgentChats,
+  removeWorkspace,
+} from "../../persist";
 import { connectedProfiles } from "../../profile";
 import type {
   CliSessionInfo,
@@ -90,6 +95,9 @@ export interface ConnectionsSlice {
   refreshProfiles: () => Promise<void>;
   loadTableColumns: (ref: RelRef) => Promise<void>;
   loadTableRelations: (ref: RelRef) => Promise<void>;
+  /** CREATE-скрипт таблицы для копирования; null — ошибка, уже показанная
+   *  тостом (не кэшируется: DDL меняется под ногами). */
+  fetchTableDdl: (ref: RelRef) => Promise<string | null>;
 }
 
 /** Grace period between "Delete" and the profile actually going away. */
@@ -501,6 +509,9 @@ export function createConnectionsSlice(
         return;
       }
       removeWorkspace(id);
+      // reset сохраняет диалог в localStorage — remove обязан идти после него
+      get().resetAgentChat(id);
+      removeAgentChats(id);
       set((s) => {
         // backend delete_profile already dropped its (isolated) sessions
         const isolatedSessions = Object.fromEntries(
@@ -570,6 +581,17 @@ export function createConnectionsSlice(
         set((s) => ({ tableRelations: { ...s.tableRelations, [key]: rels } }));
       } catch {
         // non-fatal: FK navigation just stays off for this table
+      }
+    },
+
+    fetchTableDdl: async (ref) => {
+      const session = get().sessions[ref.profileId];
+      if (!session) return null;
+      try {
+        return await api.getTableDdl(session.sessionId, ref.schema, ref.table);
+      } catch (e) {
+        get().showToast(ctx.handleSqlError(ref.profileId, e));
+        return null;
       }
     },
   };

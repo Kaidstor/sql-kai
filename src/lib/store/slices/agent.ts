@@ -2,7 +2,9 @@
 // process (Claude Code / Gemini / Codex / custom) spawned through acp.rs.
 // The agent reaches the database itself via the sql-kai CLI — the first
 // prompt of a session carries the connection context (profile alias, CLI
-// usage, read-only note). Chats are ephemeral: they die with the app.
+// usage, read-only note). Chats are saved per profile (lib/persist) and can
+// be resumed from the panel; an agent process is still ephemeral, so a new
+// session gets a transcript digest with its first prompt.
 import { appDataDir, join } from "@tauri-apps/api/path";
 import {
   AcpAgent,
@@ -20,6 +22,7 @@ import {
   type AgentToolOutput,
 } from "../../agentTool";
 import { api, errText } from "../../api";
+import { loadAgentChats, upsertAgentChat } from "../../persist";
 import type { Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
 
@@ -124,6 +127,8 @@ export interface AgentPermission {
 }
 
 export interface AgentChat {
+  /** Идентификатор сохранённого диалога (lib/persist); переживает restore. */
+  chatId: string;
   providerId: string;
   /** starting: процесс/сессия поднимаются; running: идёт prompt turn. */
   status: "starting" | "ready" | "running" | "error";
@@ -139,7 +144,8 @@ export interface AgentChat {
 export interface AgentSlice {
   /** Правая панель агента (⌘J). */
   agentOpen: boolean;
-  /** Чаты по profileId (эфемерные, не персистятся). */
+  /** Живые чаты по profileId; диалоги с сообщениями пользователя
+   *  автосохраняются в localStorage (lib/persist, дебаунс в store/index). */
   agentChats: Record<string, AgentChat>;
 
   toggleAgentPanel: () => void;
@@ -151,8 +157,11 @@ export interface AgentSlice {
   cancelAgentPrompt: (profileId: string) => void;
   /** Ответ на session/request_permission; null = cancelled. */
   answerAgentPermission: (profileId: string, optionId: string | null) => void;
-  /** Убивает процесс агента и очищает чат профиля. */
+  /** Сохраняет текущий диалог, убивает процесс агента и очищает чат профиля. */
   resetAgentChat: (profileId: string) => void;
+  /** Поднимает сохранённый диалог в панель (текущий сохраняется). Модель его
+   *  не помнит — новый процесс получит дайджест переписки с первым промптом. */
+  restoreAgentChat: (profileId: string, chatId: string) => void;
 }
 
 /** Живые процессы агентов по profileId — вне стора (несериализуемые). */
@@ -213,6 +222,20 @@ function connectionContext(p: Profile, mcp: boolean): string {
     "- Row counts are capped by default; prefer JSON output.",
     "- If the sql-kai command is not found, ask the user to run “Install CLI…” from the sql-kai application menu.",
   ].join("\n");
+}
+
+const DIGEST_CAP = 6000;
+
+/** Хвост переписки user/assistant для нового процесса агента: рестор диалога
+ *  или перезапуск после падения — модель прежних ходов не видела. */
+function transcriptDigest(items: AgentChatItem[]): string {
+  const lines: string[] = [];
+  for (const it of items) {
+    if (it.kind === "user") lines.push(`User: ${it.text}`);
+    else if (it.kind === "assistant") lines.push(`Assistant: ${it.text}`);
+  }
+  const text = lines.join("\n\n");
+  return text.length > DIGEST_CAP ? `…${text.slice(-DIGEST_CAP)}` : text;
 }
 
 /** Разбор кастомной команды: split по пробелам (без shell-квотинга). */
@@ -525,6 +548,9 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
 
     setAgentProvider: async (id) => {
       const settings = { ...get().settings, agentProvider: id };
+      for (const [profileId, chat] of Object.entries(get().agentChats)) {
+        upsertAgentChat(profileId, chat);
+      }
       // Провайдер — глобальная настройка. Ни один фоновый профиль не должен
       // сохранить процесс старого провайдера, иначе селектор и реальный агент
       // расходятся после переключения подключения.
@@ -565,6 +591,7 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
           agentChats: {
             ...st.agentChats,
             [profileId]: {
+              chatId: crypto.randomUUID(),
               providerId: activeProvider(st.settings).id,
               status: "starting",
               items: [],
@@ -581,10 +608,21 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
         const live = await ensureAgent(profileId);
         promptGeneration = live.generation;
         const profile = get().profiles.find((p) => p.id === profileId);
-        const prompt =
-          !live.contextSent && profile
-            ? `${connectionContext(profile, live.mcp)}\n\n---\n\nUser request:\n${trimmed}`
-            : trimmed;
+        let prompt = trimmed;
+        if (!live.contextSent && profile) {
+          // последний item — только что отправленное сообщение; всё до него
+          // этот процесс не видел (рестор диалога или перезапуск после смерти)
+          const prior = transcriptDigest(
+            (get().agentChats[profileId]?.items ?? []).slice(0, -1),
+          );
+          prompt = [
+            connectionContext(profile, live.mcp),
+            ...(prior
+              ? [`Earlier conversation with this user (previous agent session):\n${prior}`]
+              : []),
+            `User request:\n${trimmed}`,
+          ].join("\n\n---\n\n");
+        }
         live.contextSent = true;
         patchChat(profileId, { status: "running", error: undefined, startNote: undefined });
         const stop = await live.agent.prompt(live.sessionId, prompt);
@@ -637,11 +675,39 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
     },
 
     resetAgentChat: (profileId) => {
+      const chat = get().agentChats[profileId];
+      if (chat) upsertAgentChat(profileId, chat);
       dropAgent(profileId);
       set((s) => {
         const { [profileId]: _, ...rest } = s.agentChats;
         return { agentChats: rest };
       });
+    },
+
+    restoreAgentChat: (profileId, chatId) => {
+      const cur = get().agentChats[profileId];
+      if (cur && (cur.status === "running" || cur.status === "starting")) return;
+      const saved = loadAgentChats(profileId).find((c) => c.id === chatId);
+      if (!saved) return;
+      if (cur) upsertAgentChat(profileId, cur);
+      dropAgent(profileId);
+      set((s) => ({
+        agentChats: {
+          ...s.agentChats,
+          [profileId]: {
+            chatId: saved.id,
+            // процесс поднимется активным провайдером, не тем, что в снапшоте
+            providerId: activeProvider(s.settings).id,
+            status: "ready",
+            // свежие id: сохранённые могли пересечься с уже розданными
+            items: saved.items.map(
+              (body) => ({ ...body, id: nextItemId++ }) as AgentChatItem,
+            ),
+            permission: null,
+            stderr: [],
+          },
+        },
+      }));
     },
   };
 }

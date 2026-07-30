@@ -4,7 +4,7 @@
 // and re-exports the store's public surface, so consumers keep importing
 // from "lib/store".
 import { create } from "zustand";
-import { persistWorkspace } from "../persist";
+import { persistWorkspace, upsertAgentChat } from "../persist";
 import { createStoreContext } from "./context";
 import { createActivitySlice } from "./slices/activity";
 import { createAgentSlice } from "./slices/agent";
@@ -37,11 +37,12 @@ export const useApp = create<AppStore>((set, get) => {
 // Public surface of the store — the ONE module everything outside `lib/store`
 // imports from ("lib/store", never a slice file or ./store/types directly), so
 // slices stay free to move without a repo-wide import churn.
-export { columnsKey } from "./helpers";
+export { columnsKey, fkByColumn } from "./helpers";
 export {
   activeProvider,
   AGENT_PROVIDERS,
   type AgentChatItem,
+  type AgentChatItemBody,
   type AgentPermission,
   type AgentToolItem,
 } from "./slices/agent";
@@ -52,6 +53,7 @@ export {
   type ActivityTabState,
   type AppStore,
   type ColumnPatch,
+  type FkPreview,
   type FunctionInfo,
   type InsertRow,
   type NewColumn,
@@ -77,6 +79,11 @@ function flushPersist() {
   const s = useApp.getState();
   for (const profileId of Object.keys(s.sessions)) {
     persistWorkspace(s, profileId);
+  }
+  // чаты — по всем профилям, не только подключённым: после disconnect чат
+  // остаётся в сторе, и его хвост тоже должен доехать до localStorage
+  for (const [profileId, chat] of Object.entries(s.agentChats)) {
+    upsertAgentChat(profileId, chat);
   }
 }
 

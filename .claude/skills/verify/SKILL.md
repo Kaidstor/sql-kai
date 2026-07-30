@@ -27,6 +27,15 @@ macOS-разрешений. Для frontend-изменений (React, zustand-�
    на соседний и проверка пойдёт против чужого инстанса.
 2. Через chrome-devtools MCP: `new_page('about:blank')`, затем
    `navigate_page` с `initScript` — шим должен встать **до** загрузки модулей.
+   **Браузер должен быть headless** — всплывающее окно Chrome мешает
+   пользователю работать и ест ресурсы: сервер в `~/.claude.json` запускается
+   с флагом `--headless=true` в `args`. Скриншоты, снапшоты и trusted-ввод в
+   headless работают как обычно. Если по ходу проверки на экране всё же
+   всплыло окно — флаг из конфига пропал; верни его
+   (`"args": ["-y", "chrome-devtools-mcp@latest", "--headless=true"]`) и
+   предупреди пользователя, что подействует он после переподключения MCP
+   (новой сессии) — текущую проверку можно закончить в видимом окне,
+   не дёргая браузер.
    Если `new_page` падает с «The browser is already running for
    …/chrome-devtools-mcp/chrome-profile» — лок профиля держит осиротевший
    Chrome прошлой сессии: убей его процессы
@@ -165,6 +174,13 @@ await s.runQuery(tab.id);
   `columns`), не имя колонки. Со строкой вместо индекса правка молча ляжет
   под несуществующий ключ: счётчик Apply вырастет, а подсветки в гриде не
   будет — выглядит как «правки не применились».
+- **Сколько подтверждений спросит действие** (прод-барьер и т.п.) считай не
+  по DOM — селектор диалога легко промахивается по контейнеру — а по самому
+  промису: `const p = page.evaluate(id => __useApp.getState().applyTableEdits(id), id)`,
+  один клик по кнопке диалога, `await p`. Промис резолвится только если
+  диалог был последним; будь их два — `await` повиснет до таймаута. Прод-путь
+  дополнительно виден в вызовах шима: `execute_sql` с `prodWrite:false`
+  (отказ `{code:"read_only"}`) и повтор с `true`.
 
 ## Фолбэк без MCP (playwright-core)
 
@@ -172,13 +188,24 @@ MCP — не единственный способ довести браузер
 команд и гочи ниже применимы один в один.
 
 1. В скретчпаде сессии: `npm i playwright-core` (только драйвер, без
-   загрузки браузеров).
-2. Браузер бери из кэша playwright, не качай заново:
-   `~/Library/Caches/ms-playwright/chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
-   → `chromium.launch({executablePath})`.
-3. Шим ставится через `page.addInitScript(…)` — тот же
+   загрузки браузеров). `npm` на VPN с IPv6-блэкхолом виснет —
+   `NODE_OPTIONS=--dns-result-order=ipv4first`.
+2. Браузер — **системный Chrome**, ничего не качать:
+   `executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"`.
+   Кэш playwright (`~/Library/Caches/ms-playwright/`) проверить можно, но он
+   бывает пустым (каталог `b/browser@<hash>` без содержимого) — тогда это
+   тупик, а не повод запускать `playwright install`.
+3. Запуск — **`chromium.launchPersistentContext(userDataDir, {executablePath,
+   headless: true, viewport})`**, каталог профиля свой, в скретчпаде.
+   `headless: true` ставь явно (и не «чини» отсутствием headless упавший
+   запуск): окно браузера не должно всплывать у пользователя. `chromium.launch()` с
+   `args: ["--user-data-dir=…"]` падает с требованием
+   launchPersistentContext, а без своего профиля инстанс полезет в чужой.
+   `launchPersistentContext` возвращает контекст: `newPage()` у него, в конце
+   `close()` — отдельного `browser` нет.
+4. Шим ставится через `page.addInitScript(…)` — тот же
    `window.__TAURI_INTERNALS__`, что и в `initScript` у MCP.
-4. Скриншоты — `page.screenshot({path})`, ограничения workspace roots на
+5. Скриншоты — `page.screenshot({path})`, ограничения workspace roots на
    него не распространяются (можно писать прямо в скретчпад).
 
 Селекторы: подсказки/пункты меню ищи через `getByRole("button", …)`,
@@ -208,6 +235,17 @@ MCP — не единственный способ довести браузер
   per-profile): при повторном заходе с тем же фейковым profile id
   восстановится старый SQL/вкладки — не удивляйся задвоенному тексту;
   либо чисти localStorage, либо бери свежие id профилей.
+- **Ленивые чанки (React.lazy)**: `AgentPanel` и прочие lazy-компоненты
+  монтируются только после подгрузки своего чанка — проверка
+  `document.body.innerText`/скриншот сразу после `setState({agentOpen:true})`
+  ловит пустоту и выглядит как «фича не работает». Перед ассертом дождись
+  элемента панели (или ~1с) и только потом делай выводы.
+- **Батчинг React в одном `evaluate_script`**: несколько шагов стора в одном
+  вызове (`setState` + экшен) схлопываются в один рендер — эффекты с deps на
+  промежуточное состояние не сработают, как будто шага не было (например,
+  `setState(чат с items)` + `resetAgentChat()` одним тиком не обновит
+  список сохранённых). Шаги, между которыми UI должен отрендериться,
+  разноси по отдельным `evaluate_script`.
 - **Dev = React.StrictMode**: mount→unmount→remount двоит эффекты —
   cleanup с `focus()`/сайд-эффектами срабатывает сразу после первого
   mount'а и перебивает autoFocus. Если такое видишь — это баг паттерна,

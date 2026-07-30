@@ -3,15 +3,22 @@
 // store slice (slices/agent.ts) owns the agent process and the protocol.
 import {
   CircleStop,
+  History,
   Loader2,
+  MessagesSquare,
   RotateCcw,
   ShieldAlert,
   Sparkles,
   X,
 } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { parseMcpTitle } from "../lib/agentTool";
 import { resetOnVaultLock } from "../lib/moduleCaches";
+import {
+  deleteAgentChat,
+  loadAgentChats,
+  type PersistedAgentChat,
+} from "../lib/persist";
 import {
   activeProvider,
   AGENT_PROVIDERS,
@@ -22,7 +29,7 @@ import {
 import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
 import { ToolCard, ToolStatusIcon } from "./agent/ToolCard";
-import { Button, cn, IconButton, Input, Select } from "./ui";
+import { Button, cn, fmtTime, IconButton, Input, Popover, Select } from "./ui";
 
 /** Panel width survives close/open within the session (not persisted).
  *  Module-level, so the vault lock resets it like the rest of the session
@@ -79,6 +86,40 @@ const ItemView = memo(function ItemView({ item }: { item: AgentChatItem }) {
   }
 });
 
+function SavedChatRow({
+  chat,
+  onOpen,
+  onDelete,
+}: {
+  chat: PersistedAgentChat;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className="group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-zinc-800"
+      onClick={onOpen}
+      title={chat.title}
+    >
+      <MessagesSquare size={12} className="shrink-0 text-zinc-500" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] text-zinc-300">{chat.title}</div>
+        <div className="text-[10px] text-zinc-600">{fmtTime(chat.updatedAt)}</div>
+      </div>
+      <IconButton
+        title="Delete saved chat"
+        className="invisible group-hover:visible"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <X size={12} />
+      </IconButton>
+    </div>
+  );
+}
+
 function PermissionCard({
   perm,
   onAnswer,
@@ -132,15 +173,38 @@ export function AgentPanel() {
   const cancelAgentPrompt = useApp((s) => s.cancelAgentPrompt);
   const answerAgentPermission = useApp((s) => s.answerAgentPermission);
   const resetAgentChat = useApp((s) => s.resetAgentChat);
+  const restoreAgentChat = useApp((s) => s.restoreAgentChat);
   const setAgentProvider = useApp((s) => s.setAgentProvider);
   const setAgentCustomCmd = useApp((s) => s.setAgentCustomCmd);
 
   const [draft, setDraft] = useState("");
   const [width, setWidth] = useState(savedWidth);
   const [customDraft, setCustomDraft] = useState(settings.agentCustomCmd ?? "");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [savedChats, setSavedChats] = useState<PersistedAgentChat[]>([]);
 
   const provider = activeProvider(settings);
   const busy = chat?.status === "running" || chat?.status === "starting";
+  const chatEmpty = !chat || chat.items.length === 0;
+
+  // список читается из localStorage лениво — когда он виден (пустое
+  // состояние или поповер), не на каждый стрим-чанк
+  useEffect(() => {
+    if (chatEmpty || historyOpen) {
+      setSavedChats(activeProfileId ? loadAgentChats(activeProfileId) : []);
+    }
+  }, [activeProfileId, chatEmpty, historyOpen]);
+
+  const openSavedChat = (chatId: string) => {
+    if (!activeProfileId || busy) return;
+    setHistoryOpen(false);
+    restoreAgentChat(activeProfileId, chatId);
+  };
+  const deleteSavedChat = (chatId: string) => {
+    if (!activeProfileId) return;
+    deleteAgentChat(activeProfileId, chatId);
+    setSavedChats((list) => list.filter((c) => c.id !== chatId));
+  };
 
   const doSend = () => {
     if (!activeProfileId || busy) return;
@@ -188,8 +252,37 @@ export function AgentPanel() {
           ))}
         </Select>
         <div className="ml-auto flex items-center">
+          <Popover
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+            align="right"
+            panelClassName="w-72 max-h-80 overflow-y-auto p-1"
+            trigger={
+              <IconButton
+                title="Saved chats of this connection"
+                onClick={() => setHistoryOpen((v) => !v)}
+              >
+                <History size={13} />
+              </IconButton>
+            }
+          >
+            {savedChats.length === 0 ? (
+              <div className="px-2 py-3 text-center text-[11px] italic text-zinc-600">
+                no saved chats on this connection yet
+              </div>
+            ) : (
+              savedChats.map((c) => (
+                <SavedChatRow
+                  key={c.id}
+                  chat={c}
+                  onOpen={() => openSavedChat(c.id)}
+                  onDelete={() => deleteSavedChat(c.id)}
+                />
+              ))
+            )}
+          </Popover>
           <IconButton
-            title="New chat (stops the agent)"
+            title="New chat (saves the current one, stops the agent)"
             disabled={!chat}
             onClick={() => activeProfileId && resetAgentChat(activeProfileId)}
           >
@@ -229,6 +322,23 @@ export function AgentPanel() {
             {profile && (
               <div className="text-[11px] text-zinc-600">
                 connection: <span className="text-zinc-400">{profile.name}</span>
+              </div>
+            )}
+            {savedChats.length > 0 && (
+              <div className="mt-1.5 w-full max-w-72">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-600">
+                  continue a saved chat
+                </div>
+                <div className="flex flex-col">
+                  {savedChats.slice(0, 5).map((c) => (
+                    <SavedChatRow
+                      key={c.id}
+                      chat={c}
+                      onOpen={() => openSavedChat(c.id)}
+                      onDelete={() => deleteSavedChat(c.id)}
+                    />
+                  ))}
+                </div>
               </div>
             )}
           </ConversationItem>

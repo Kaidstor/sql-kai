@@ -10,15 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./ContextMenu";
-import { MenuButton, Popover, cn } from "./ui";
-
-function fmtTime(at: number): string {
-  const d = new Date(at);
-  const sameDay = new Date().toDateString() === d.toDateString();
-  return sameDay
-    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
+import { MenuButton, Popover, cn, fmtTime } from "./ui";
 
 function HistoryRow({
   entry,

@@ -1,14 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppStore } from "../types";
 import type { Set, StoreContext } from "../context";
 
 interface FakeHandlers {
   onExit: (code: number | null) => void;
+  onSessionUpdate: (update: unknown) => void;
 }
 
 interface FakeAgentRecord {
   handlers: FakeHandlers;
   killed: boolean;
+  prompts: string[];
   finish: (reason?: string) => void;
   emitExit: (code?: number | null) => void;
 }
@@ -45,6 +47,7 @@ vi.mock("../../acp", () => {
   class FakeAcpAgent implements FakeAgentRecord {
     alive = true;
     killed = false;
+    prompts: string[] = [];
     private resolvePrompt?: (reason: string) => void;
     private rejectPrompt?: (error: Error) => void;
 
@@ -67,7 +70,8 @@ vi.mock("../../acp", () => {
       return `session-${mocks.agents.length}`;
     }
 
-    prompt() {
+    prompt(_sessionId: string, text: string) {
+      this.prompts.push(text);
       return new Promise<string>((resolve, reject) => {
         this.resolvePrompt = resolve;
         this.rejectPrompt = reject;
@@ -104,7 +108,22 @@ vi.mock("../../agentInstall", () => ({
     `/tmp/sql-kai/acp/${a.bin}`,
 }));
 
+import { loadAgentChats } from "../../persist";
 import { createAgentSlice } from "./agent";
+
+// сохранение диалогов идёт в localStorage (lib/persist) — стаб как в persist.test
+const backing = new Map<string, string>();
+beforeEach(() => {
+  backing.clear();
+  globalThis.localStorage = {
+    getItem: (k: string) => backing.get(k) ?? null,
+    setItem: (k: string, v: string) => void backing.set(k, v),
+    removeItem: (k: string) => void backing.delete(k),
+    clear: () => backing.clear(),
+    key: () => null,
+    length: 0,
+  } as Storage;
+});
 
 let currentState: AppStore | undefined;
 
@@ -201,6 +220,44 @@ describe("agent process lifecycle", () => {
     expect(mocks.agents.every((agent) => agent.killed)).toBe(true);
     expect(state.agentChats).toEqual({});
     expect(state.settings.agentProvider).toBe("gemini");
+  });
+});
+
+describe("saved chats", () => {
+  it("saves on reset and resumes with a transcript digest for the new process", async () => {
+    const state = harness();
+    const firstTurn = state.sendAgentPrompt("a", "what tables exist?");
+    await waitUntilRunning(state, "a");
+    mocks.agents[0].handlers.onSessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "users, orders" },
+    });
+    mocks.agents[0].finish();
+    await firstTurn;
+
+    state.resetAgentChat("a");
+    expect(state.agentChats.a).toBeUndefined();
+    const saved = loadAgentChats("a");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].title).toBe("what tables exist?");
+
+    state.restoreAgentChat("a", saved[0].id);
+    expect(state.agentChats.a.status).toBe("ready");
+    expect(state.agentChats.a.items.map((i) => i.kind)).toEqual([
+      "user",
+      "assistant",
+    ]);
+
+    const secondTurn = state.sendAgentPrompt("a", "and views?");
+    await waitUntilRunning(state, "a");
+    const prompt = mocks.agents[1].prompts[0];
+    expect(prompt).toContain("Earlier conversation");
+    expect(prompt).toContain("User: what tables exist?");
+    expect(prompt).toContain("Assistant: users, orders");
+    expect(prompt).toContain("User request:\nand views?");
+    mocks.agents[1].finish();
+    await secondTurn;
+    expect(state.agentChats.a.status).toBe("ready");
   });
 });
 

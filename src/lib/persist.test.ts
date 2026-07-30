@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  AGENT_CHATS_CAP,
   CLOSED_CAP,
-  loadClosedTabs,
+  deleteAgentChat,
+  loadAgentChats,
   persistClosedTabs,
   persistWorkspace,
+  restoreClosedTabs,
   restoreWorkspace,
+  upsertAgentChat,
   type ClosedTab,
 } from "./persist";
-import type { Tab } from "./store";
+import type { AgentChatItem, Tab } from "./store";
 
 // persist.ts is best-effort over localStorage — a Map-backed stub is enough
 const backing = new Map<string, string>();
@@ -170,7 +174,7 @@ describe("closed-tabs stack", () => {
 
   it("round-trips with profile and bar position", () => {
     persistClosedTabs([closed(1), closed(2)]);
-    const out = loadClosedTabs();
+    const out = restoreClosedTabs();
     expect(out).toHaveLength(2);
     expect(out[1].index).toBe(2);
     expect(out[1].tab.profileId).toBe("p1");
@@ -179,7 +183,7 @@ describe("closed-tabs stack", () => {
 
   it("keeps only the newest CLOSED_CAP entries", () => {
     persistClosedTabs(Array.from({ length: CLOSED_CAP + 5 }, (_, i) => closed(i)));
-    const out = loadClosedTabs();
+    const out = restoreClosedTabs();
     expect(out).toHaveLength(CLOSED_CAP);
     expect(out[out.length - 1].index).toBe(CLOSED_CAP + 4);
   });
@@ -191,6 +195,97 @@ describe("closed-tabs stack", () => {
         { title: "x", state: { kind: "query", sql: "1" }, index: 0 },
       ]),
     );
-    expect(loadClosedTabs()).toEqual([]);
+    expect(restoreClosedTabs()).toEqual([]);
+  });
+});
+
+describe("saved agent chats", () => {
+  const userItem = (id: number, text: string): AgentChatItem => ({
+    id,
+    kind: "user",
+    text,
+  });
+
+  it("round-trips with ids stripped and unfinished tools settled", () => {
+    const items: AgentChatItem[] = [
+      userItem(7, "how many users?"),
+      { id: 8, kind: "assistant", text: "42" },
+      {
+        id: 9,
+        kind: "tool",
+        toolCallId: "t1",
+        title: "query",
+        toolKind: "execute",
+        status: "in_progress",
+      },
+    ];
+    upsertAgentChat("p1", { chatId: "c-round", providerId: "claude", items });
+
+    const [saved] = loadAgentChats("p1");
+    expect(saved.title).toBe("how many users?");
+    expect(saved.providerId).toBe("claude");
+    expect(saved.items).toHaveLength(3);
+    expect("id" in saved.items[0]).toBe(false);
+    expect(saved.items[2]).toMatchObject({ kind: "tool", status: "failed" });
+  });
+
+  it("skips chats without a user message", () => {
+    upsertAgentChat("p1", {
+      chatId: "c-noise",
+      providerId: "claude",
+      items: [{ id: 1, kind: "assistant", text: "hi" }],
+    });
+    expect(loadAgentChats("p1")).toEqual([]);
+  });
+
+  it("does not rewrite an unchanged items reference", () => {
+    const items = [userItem(1, "q")];
+    upsertAgentChat("p1", { chatId: "c-ref", providerId: "claude", items });
+    // подменяем запись руками: повторный upsert той же ссылки не должен её тронуть
+    backing.set(
+      "sqlt.agentChats.p1",
+      JSON.stringify([
+        { id: "c-ref", title: "MANUAL", providerId: "claude", updatedAt: 1, items: [] },
+      ]),
+    );
+    upsertAgentChat("p1", { chatId: "c-ref", providerId: "claude", items });
+    expect(loadAgentChats("p1")[0].title).toBe("MANUAL");
+
+    upsertAgentChat("p1", {
+      chatId: "c-ref",
+      providerId: "claude",
+      items: [...items, userItem(2, "more")],
+    });
+    expect(loadAgentChats("p1")[0].title).toBe("q");
+  });
+
+  it("keeps the newest AGENT_CHATS_CAP chats, newest first", () => {
+    for (let i = 0; i <= AGENT_CHATS_CAP + 2; i++) {
+      upsertAgentChat("p1", {
+        chatId: `c-cap-${i}`,
+        providerId: "claude",
+        items: [userItem(1, `q${i}`)],
+      });
+    }
+    const list = loadAgentChats("p1");
+    expect(list).toHaveLength(AGENT_CHATS_CAP);
+    expect(list[0].title).toBe(`q${AGENT_CHATS_CAP + 2}`);
+  });
+
+  it("deletes one entry; the last delete drops the key", () => {
+    upsertAgentChat("p1", {
+      chatId: "c-d1",
+      providerId: "claude",
+      items: [userItem(1, "a")],
+    });
+    upsertAgentChat("p1", {
+      chatId: "c-d2",
+      providerId: "claude",
+      items: [userItem(1, "b")],
+    });
+    deleteAgentChat("p1", "c-d2");
+    expect(loadAgentChats("p1").map((c) => c.id)).toEqual(["c-d1"]);
+    deleteAgentChat("p1", "c-d1");
+    expect(backing.has("sqlt.agentChats.p1")).toBe(false);
   });
 });
