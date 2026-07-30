@@ -6,9 +6,11 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::Profile;
 use sql_kai_lib::vault;
 
+use crate::envvar;
+
 /// Мастер-пароль vault из окружения (см. `envvar` — единый префикс SQL_KAI_*).
 fn master_password_env() -> Option<String> {
-    crate::envvar::value(vault::MASTER_PASSWORD_ENV)
+    envvar::value(envvar::VAULT_PASSWORD)
 }
 
 /// Тихая часть цепочки разлока (без TTY): keychain-trust -> SQL_KAI_VAULT_PASSWORD.
@@ -31,7 +33,7 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
     Err(AppError::Msg(format!(
         "vault заблокирован — настрой `sql-kai vault trust`, задай {} \
          или используй --password-env",
-        vault::MASTER_PASSWORD_ENV,
+        envvar::VAULT_PASSWORD,
     )))
 }
 
@@ -75,7 +77,7 @@ pub fn read_new_password() -> Result<String, AppError> {
     if !std::io::stdin().is_terminal() {
         return Err(AppError::Msg(format!(
             "нет TTY — задай мастер-пароль через {}",
-            vault::MASTER_PASSWORD_ENV,
+            envvar::VAULT_PASSWORD,
         )));
     }
     let pw = rpassword::prompt_password("новый мастер-пароль: ").map_err(AppError::Io)?;

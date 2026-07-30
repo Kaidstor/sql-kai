@@ -32,7 +32,8 @@ use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
 use cmd::init::InitArgs;
-use cmd::introspect::{TableArgs, TableInfoKind, TablesArgs};
+use cmd::table_info::{TableArgs, TableInfoKind};
+use cmd::tables::TablesArgs;
 use cmd::logs::LogsArgs;
 use cmd::mcp::McpArgs;
 use cmd::profiles::ProfilesCmd;
@@ -232,12 +233,14 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Discover(a) => cmd::discover::run(a).await,
         Cmd::Import(a) => cmd::import::run(a).await,
         Cmd::Fork(a) => cmd::fork::run(a).await,
-        Cmd::Profiles { cmd } => cmd::profiles::run(cmd.unwrap_or(ProfilesCmd::List { filter: None, fmt: Default::default() })).await,
+        Cmd::Profiles { cmd } => {
+            cmd::profiles::run(cmd.unwrap_or_else(ProfilesCmd::default_list)).await
+        }
         Cmd::Schema(a) => cmd::schema::run(a).await,
-        Cmd::Tables(a) => cmd::introspect::tables(a).await,
-        Cmd::Columns(a) => cmd::introspect::table_info(a, TableInfoKind::Columns).await,
-        Cmd::Ddl(a) => cmd::introspect::table_info(a, TableInfoKind::Ddl).await,
-        Cmd::Indexes(a) => cmd::introspect::table_info(a, TableInfoKind::Indexes).await,
+        Cmd::Tables(a) => cmd::tables::run(a).await,
+        Cmd::Columns(a) => cmd::table_info::run(a, TableInfoKind::Columns).await,
+        Cmd::Ddl(a) => cmd::table_info::run(a, TableInfoKind::Ddl).await,
+        Cmd::Indexes(a) => cmd::table_info::run(a, TableInfoKind::Indexes).await,
         Cmd::Mcp(a) => cmd::mcp::run(a).await,
         Cmd::History(a) => cmd::history::run(a),
         Cmd::Saved { cmd } => cmd::saved::run(cmd).await,

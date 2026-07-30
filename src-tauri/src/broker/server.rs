@@ -197,7 +197,7 @@ async fn dispatch(
 /// `SQL_KAI_ALLOW_PROD_WRITE` в окружении *сервера* — разбор общий с cli
 /// (`session::prod`), см. [`crate::prod`].
 fn env_allows_prod_write(profile: &Profile) -> bool {
-    crate::prod::env_allows(crate::prod::ALLOW_PROD_WRITE, &profile.name, &profile.id)
+    crate::prod::env_allows(crate::envvar::ALLOW_PROD_WRITE, &profile.name, &profile.id)
 }
 
 /// Прод-барьер на стороне сервера. До этого он жил только в cli

@@ -6,7 +6,7 @@
 
 mod app;
 mod introspect;
-mod profiles;
+mod profile;
 mod query;
 mod session;
 mod storage;
@@ -14,7 +14,7 @@ mod vault;
 
 pub use app::*;
 pub use introspect::*;
-pub use profiles::*;
+pub use profile::*;
 pub use query::*;
 pub use session::*;
 pub use storage::*;

@@ -30,19 +30,15 @@ use crate::fsio::{config_path, write_atomic};
 const VAULT_FILE: &str = "vault.json";
 const VERSION: u32 = 1;
 
-/// Env-переменная с мастер-паролем vault. Единый префикс `SQL_KAI_*` — как у
-/// `SQL_KAI_SSH_PASSPHRASE` и `SQL_KAI_CONFIG_DIR`.
-pub const MASTER_PASSWORD_ENV: &str = "SQL_KAI_VAULT_PASSWORD";
-
 /// Вычищает мастер-пароль vault из окружения дочернего процесса — ssh/sec и
 /// прочие внешние бинари не должны его видеть.
 pub fn scrub_master_password_env(cmd: &mut std::process::Command) {
-    cmd.env_remove(MASTER_PASSWORD_ENV);
+    cmd.env_remove(crate::envvar::VAULT_PASSWORD);
 }
 
 /// То же для tokio-команд (ACP-агенты): у tokio свой тип Command.
 pub fn scrub_master_password_env_tokio(cmd: &mut tokio::process::Command) {
-    cmd.env_remove(MASTER_PASSWORD_ENV);
+    cmd.env_remove(crate::envvar::VAULT_PASSWORD);
 }
 
 // Argon2id cost parameters (stored in the file so re-derivation stays correct

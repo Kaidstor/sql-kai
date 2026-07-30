@@ -30,7 +30,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
 
-use crate::cmd::introspect::split_table;
+use crate::cmd::table_info::split_table;
 use crate::cmd::mcp_setup::{self, InstallArgs, StatusArgs};
 use crate::cmd::schema as schema_cmd;
 use crate::{broker_client, redact, session};

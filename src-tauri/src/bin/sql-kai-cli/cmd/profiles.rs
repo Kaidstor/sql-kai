@@ -31,6 +31,16 @@ pub enum ProfilesCmd {
     },
 }
 
+impl ProfilesCmd {
+    /// Подкоманда по умолчанию: голый `sql-kai profiles` = `profiles list`.
+    pub fn default_list() -> Self {
+        Self::List {
+            filter: None,
+            fmt: Default::default(),
+        }
+    }
+}
+
 /// Компактное «сколько назад» для колонки last: 45s / 12m / 5h / 3d / 2mo / 1y.
 fn fmt_ago(ts_ms: i64) -> String {
     let s = ((store::now_ms() - ts_ms) / 1000).max(0);

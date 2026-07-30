@@ -1,4 +1,8 @@
+# релизные секреты: .env + любые варианты (.env.local, .env.prod)
 .env
+.env.*
+!.env.example
+
 # Logs
 logs
 *.log

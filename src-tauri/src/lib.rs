@@ -3,6 +3,7 @@ pub mod biometric;
 pub mod broker;
 pub mod commands;
 pub mod db;
+pub mod envvar;
 pub mod error;
 pub mod format;
 pub mod fsio;

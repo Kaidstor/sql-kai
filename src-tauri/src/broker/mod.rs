@@ -86,6 +86,13 @@ pub async fn shutdown_holder() {
 }
 
 /// Removes a stale socket file and binds a fresh 0600 listener.
+///
+/// В отличие от [`bind_holder`] живой сокет не проверяется — второй GUI-процесс
+/// молча перехватит сокет первого, и sql-kai будет ходить сессиями второго.
+/// Расчёт на то, что двух GUI не бывает (LaunchServices активирует уже
+/// запущенный .app), а не на проверку: dev-сборка рядом с установленной этот
+/// расчёт нарушает. Понадобится параллельный запуск — сюда нужен тот же
+/// `UnixStream::connect`, что в `bind_holder`.
 #[cfg(unix)]
 pub fn bind() -> Result<UnixListener, AppError> {
     let path = socket_path()?;

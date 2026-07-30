@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::envvar;
 use crate::error::AppError;
 use crate::logging;
 use crate::store::SshConfig;
-
-const ASKPASS_ENV: &str = "SQL_KAI_SSH_PASSPHRASE";
 
 /// Writes a helper that echoes the passphrase env var back to ssh.
 /// ssh refuses to read a passphrase from stdin without a TTY, but it will
@@ -30,7 +29,10 @@ fn ensure_askpass_script() -> Result<PathBuf, AppError> {
         }
     }
     let path = mux_dir()?.join("askpass.sh");
-    fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_ENV}\"\n"))?;
+    fs::write(
+        &path,
+        format!("#!/bin/sh\nprintf '%s\\n' \"${{{}}}\"\n", envvar::SSH_PASSPHRASE),
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -182,7 +184,7 @@ fn push_auth(cmd: &mut Command, passphrase: Option<&str>) -> Result<(), AppError
                 .args(["-o", "NumberOfPasswordPrompts=1"])
                 .env("SSH_ASKPASS", ensure_askpass_script()?)
                 .env("SSH_ASKPASS_REQUIRE", "force")
-                .env(ASKPASS_ENV, pp);
+                .env(envvar::SSH_PASSPHRASE, pp);
             // Pre-8.4 ssh has no SSH_ASKPASS_REQUIRE and only runs the
             // askpass helper when DISPLAY is set.
             if std::env::var_os("DISPLAY").is_none() {

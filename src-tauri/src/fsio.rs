@@ -84,9 +84,9 @@ fn os_lock_exclusive(_file: &File) -> std::io::Result<()> {
 }
 
 /// Path of `file` inside the app's config dir (created on demand).
-/// `SQL_KAI_CONFIG_DIR` overrides the location (isolated runs, tests).
+/// `envvar::CONFIG_DIR` overrides the location (isolated runs, tests).
 pub fn config_path(file: &str) -> Result<PathBuf, AppError> {
-    let dir = match std::env::var_os("SQL_KAI_CONFIG_DIR").filter(|v| !v.is_empty()) {
+    let dir = match std::env::var_os(crate::envvar::CONFIG_DIR).filter(|v| !v.is_empty()) {
         Some(custom) => PathBuf::from(custom),
         None => {
             let base = dirs::config_dir()
@@ -124,7 +124,10 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     // link to follow and the given path is already the real one.
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path = resolved.as_path();
-    let tmp = path.with_extension("tmp");
+    // pid в имени: конфиги vault/store пишутся под lock_config, но чужие файлы
+    // (`sql-kai mcp install` в ~/.cursor/mcp.json) — нет, и два процесса на
+    // фиксированном `.tmp` затирали бы друг другу временный файл.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);

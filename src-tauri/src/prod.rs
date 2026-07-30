@@ -1,18 +1,9 @@
 //! Общая политика production-профилей: разбор allowlist-значений
-//! `SQL_KAI_ALLOW_PROD_WRITE` / `SQL_KAI_ALLOW_PROD_DUMP`. Security-sensitive
-//! разбор живёт в одном месте — CLI (`session::prod`) и сервер сессий
-//! (`broker::server`) обязаны трактовать значение одинаково, иначе разрешение,
-//! выданное для одной стороны, молча оказывается шире на другой.
-
-/// Разрешение на запись в профили с меткой `production` без интерактивного
-/// подтверждения: `1` — любой прод-профиль, иначе список имён/id через запятую
-/// (см. `session::prod` в CLI). Для MCP это единственный способ разрешить
-/// запись.
-pub const ALLOW_PROD_WRITE: &str = "SQL_KAI_ALLOW_PROD_WRITE";
-
-/// То же для выгрузки боевых данных на эту машину (`fork --data` с
-/// production-профиля): значения разбираются так же, как у [`ALLOW_PROD_WRITE`].
-pub const ALLOW_PROD_DUMP: &str = "SQL_KAI_ALLOW_PROD_DUMP";
+//! [`crate::envvar::ALLOW_PROD_WRITE`] / [`crate::envvar::ALLOW_PROD_DUMP`].
+//! Security-sensitive разбор живёт в одном месте — CLI (`session::prod`) и
+//! сервер сессий (`broker::server`) обязаны трактовать значение одинаково,
+//! иначе разрешение, выданное для одной стороны, молча оказывается шире на
+//! другой.
 
 /// Значение allowlist-переменной: `1`/`true`/`yes`/`on`/`all` (любой
 /// prod-профиль) или список имён/id профилей через запятую — разрешение

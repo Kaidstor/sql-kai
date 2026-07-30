@@ -17,9 +17,9 @@ use clap::Subcommand;
 use sql_kai_lib::broker::{self, BrokerHooks, BrokerState};
 use sql_kai_lib::error::AppError;
 use sql_kai_lib::logging;
-use sql_kai_lib::vault;
 
 use crate::broker_client;
+use crate::envvar;
 use crate::session;
 
 /// Без сессий и запросов по сокету дольше этого — holder выходит.
@@ -55,7 +55,7 @@ async fn serve() -> Result<ExitCode, AppError> {
     }
     // Мастер-пароль из env сделал своё дело — не держать его в окружении
     // долгоживущего процесса и не отдавать детям (ssh-туннелям).
-    std::env::remove_var(vault::MASTER_PASSWORD_ENV);
+    std::env::remove_var(envvar::VAULT_PASSWORD);
     let Some(listener) = broker::bind_holder().await? else {
         return Ok(ExitCode::SUCCESS); // живой holder уже есть
     };
