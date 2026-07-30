@@ -9,9 +9,11 @@ import { appDataDir, join } from "@tauri-apps/api/path";
 import {
   AcpAgent,
   AUTH_REQUIRED,
+  configSelectValues,
   RpcError,
   withTimeout,
   type PermissionOption,
+  type SessionConfigOption,
   type SessionUpdate,
   type ToolCallUpdate,
 } from "../../acp";
@@ -22,7 +24,11 @@ import {
   type AgentToolOutput,
 } from "../../agentTool";
 import { api, errText } from "../../api";
-import { loadAgentChats, upsertAgentChat } from "../../persist";
+import {
+  loadAgentChats,
+  saveAgentConfigOptions,
+  upsertAgentChat,
+} from "../../persist";
 import type { Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
 
@@ -139,6 +145,9 @@ export interface AgentChat {
   startNote?: string;
   /** Хвост stderr процесса — показывается при смерти агента. */
   stderr: string[];
+  /** Опции живой сессии (модель, permission-режим, effort…) — из session/new
+   *  и config_option_update. */
+  configOptions?: SessionConfigOption[];
 }
 
 export interface AgentSlice {
@@ -153,6 +162,13 @@ export interface AgentSlice {
   setAgentProvider: (id: string) => Promise<void>;
   setAgentCustomCmd: (cmd: string) => Promise<void>;
   sendAgentPrompt: (profileId: string, text: string) => Promise<void>;
+  /** Меняет опцию сессии (модель, режим…) и запоминает выбор per-provider;
+   *  без живой сессии только запоминает — применится при её старте. */
+  setAgentConfigOption: (
+    profileId: string,
+    configId: string,
+    value: string | boolean,
+  ) => Promise<void>;
   /** Останавливает текущий prompt turn (session/cancel). */
   cancelAgentPrompt: (profileId: string) => void;
   /** Ответ на session/request_permission; null = cancelled. */
@@ -236,6 +252,20 @@ function transcriptDigest(items: AgentChatItem[]): string {
   }
   const text = lines.join("\n\n");
   return text.length > DIGEST_CAP ? `…${text.slice(-DIGEST_CAP)}` : text;
+}
+
+/** Сохранённый выбор применим к опции: тип совпадает, значение есть в списке
+ *  и отличается от текущего (список моделей/режимов у адаптера мог смениться). */
+export function prefApplicable(
+  opt: SessionConfigOption,
+  value: string | boolean,
+): boolean {
+  if (opt.currentValue === value) return false;
+  if (opt.type === "boolean") return typeof value === "boolean";
+  return (
+    typeof value === "string" &&
+    configSelectValues(opt).some((v) => v.value === value)
+  );
 }
 
 /** Разбор кастомной команды: split по пробелам (без shell-квотинга). */
@@ -366,8 +396,34 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
           return { agentChats: { ...s.agentChats, [profileId]: { ...chat, items } } };
         });
         return;
+      case "config_option_update":
+        saveAgentConfigOptions(
+          activeProvider(get().settings).id,
+          update.configOptions,
+        );
+        patchChat(profileId, { configOptions: update.configOptions });
+        return;
+      case "current_mode_update":
+        // режим может смениться и без config_option_update (например,
+        // "allow always" в permission-запросе) — правим опцию mode на месте
+        set((s) => {
+          const chat = s.agentChats[profileId];
+          if (!chat?.configOptions) return {};
+          const configOptions = chat.configOptions.map((o) =>
+            o.type === "select" && o.category === "mode"
+              ? { ...o, currentValue: update.currentModeId }
+              : o,
+          );
+          return {
+            agentChats: {
+              ...s.agentChats,
+              [profileId]: { ...chat, configOptions },
+            },
+          };
+        });
+        return;
       default:
-        // user_message_chunk (своё сообщение уже показано), current_mode_update,
+        // user_message_chunk (своё сообщение уже показано),
         // available_commands_update и будущие варианты — молча пропускаем
         return;
     }
@@ -506,12 +562,30 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
       const mcpServers = cliPath
         ? [{ name: "sql-kai", command: cliPath, args: ["mcp", profileId], env: [] }]
         : [];
-      const sessionId = await withTimeout(
+      const session = await withTimeout(
         agent.newSession(cwd, mcpServers),
         90_000,
         `${provider.label}: session/new`,
       );
       if (!isCurrent()) throw new AgentSupersededError();
+      const { sessionId } = session;
+      let { configOptions } = session;
+      // сохранённый выбор пользователя (модель/режим/…) — на новую сессию
+      const prefs = get().settings.agentSessionConfig?.[provider.id] ?? {};
+      for (const [configId, value] of Object.entries(prefs)) {
+        const opt = configOptions.find((o) => o.id === configId);
+        if (!opt || !prefApplicable(opt, value)) continue;
+        try {
+          configOptions = await agent.setConfigOption(sessionId, configId, value);
+        } catch {
+          // устаревшая опция не должна ломать старт — сессия живёт с дефолтом
+        }
+        if (!isCurrent()) throw new AgentSupersededError();
+      }
+      if (configOptions.length > 0) {
+        saveAgentConfigOptions(provider.id, configOptions);
+      }
+      patchChat(profileId, { configOptions });
       startingAgents.delete(profileId);
       const live = {
         agent,
@@ -656,6 +730,38 @@ export function createAgentSlice(set: Set, get: Get, _ctx: StoreContext): AgentS
           startNote: undefined,
           error: errText(e) + hint + (tail ? `\n${tail}` : ""),
         });
+      }
+    },
+
+    setAgentConfigOption: async (profileId, configId, value) => {
+      const providerId = activeProvider(get().settings).id;
+      const prev = get().settings.agentSessionConfig ?? {};
+      const settings = {
+        ...get().settings,
+        agentSessionConfig: {
+          ...prev,
+          [providerId]: { ...prev[providerId], [configId]: value },
+        },
+      };
+      set({ settings });
+      try {
+        await api.saveSettings(settings);
+      } catch (e) {
+        get().showToast(`Settings not saved: ${errText(e)}`);
+      }
+      const live = liveAgents.get(profileId);
+      if (!live?.agent.alive) return; // применится при старте сессии
+      try {
+        const configOptions = await live.agent.setConfigOption(
+          live.sessionId,
+          configId,
+          value,
+        );
+        if (agentGenerations.get(profileId) !== live.generation) return;
+        saveAgentConfigOptions(providerId, configOptions);
+        patchChat(profileId, { configOptions });
+      } catch (e) {
+        get().showToast(`Agent option not applied: ${errText(e)}`);
       }
     },
 

@@ -76,6 +76,10 @@ export interface AppSettings {
   agentProvider?: string;
   /** Command line of the "custom" agent provider. */
   agentCustomCmd?: string;
+  /** Выбор пользователя в опциях сессии агента, по провайдеру:
+   *  providerId → configId → значение (модель, режим, effort…).
+   *  Переприменяется при старте каждой новой сессии. */
+  agentSessionConfig?: Record<string, Record<string, string | boolean>>;
   [key: string]: unknown;
 }
 

@@ -41,12 +41,56 @@ export type SessionUpdate =
       entries: { content: string; priority?: string; status?: string }[];
     }
   | { sessionUpdate: "available_commands_update"; [key: string]: unknown }
-  | { sessionUpdate: "current_mode_update"; currentModeId: string };
+  | { sessionUpdate: "current_mode_update"; currentModeId: string }
+  | {
+      sessionUpdate: "config_option_update";
+      configOptions: SessionConfigOption[];
+    };
 
 export interface PermissionOption {
   optionId: string;
   name: string;
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+}
+
+// Session config options (model / permission mode / effort / …): the agent
+// reports them in session/new, the client changes them with
+// session/set_config_option and receives config_option_update notifications.
+
+export interface ConfigSelectValue {
+  value: string;
+  name: string;
+  description?: string | null;
+}
+
+export interface ConfigSelectGroup {
+  group: string;
+  name: string;
+  options: ConfigSelectValue[];
+}
+
+export type SessionConfigOption = {
+  id: string;
+  name: string;
+  description?: string | null;
+  /** "mode" | "model" | "thought_level" | … — открытый набор по спеке. */
+  category?: string | null;
+} & (
+  | {
+      type: "select";
+      currentValue: string;
+      options: ConfigSelectValue[] | ConfigSelectGroup[];
+    }
+  | { type: "boolean"; currentValue: boolean }
+);
+
+/** Плоский список значений select-опции (спека допускает группы). */
+export function configSelectValues(
+  o: Extract<SessionConfigOption, { type: "select" }>,
+): ConfigSelectValue[] {
+  return (o.options as (ConfigSelectValue | ConfigSelectGroup)[]).flatMap(
+    (entry) => ("group" in entry ? entry.options : [entry]),
+  );
 }
 
 export interface PermissionRequest {
@@ -285,12 +329,33 @@ export class AcpAgent implements ProcSink {
     return this.request("authenticate", { methodId });
   }
 
-  async newSession(cwd: string, mcpServers: McpServerConfig[] = []): Promise<string> {
-    const res = await this.request<{ sessionId: string }>("session/new", {
-      cwd,
-      mcpServers,
+  async newSession(
+    cwd: string,
+    mcpServers: McpServerConfig[] = [],
+  ): Promise<{ sessionId: string; configOptions: SessionConfigOption[] }> {
+    const res = await this.request<{
+      sessionId: string;
+      configOptions?: SessionConfigOption[] | null;
+    }>("session/new", { cwd, mcpServers });
+    return { sessionId: res.sessionId, configOptions: res.configOptions ?? [] };
+  }
+
+  /** Меняет опцию сессии (модель, режим…); возвращает свежий список опций. */
+  async setConfigOption(
+    sessionId: string,
+    configId: string,
+    value: string | boolean,
+  ): Promise<SessionConfigOption[]> {
+    const res = await this.request<{
+      configOptions?: SessionConfigOption[] | null;
+    }>("session/set_config_option", {
+      sessionId,
+      configId,
+      value,
+      // спека различает варианты запроса по type только для boolean
+      ...(typeof value === "boolean" ? { type: "boolean" } : {}),
     });
-    return res.sessionId;
+    return res.configOptions ?? [];
   }
 
   async prompt(sessionId: string, text: string): Promise<StopReason> {

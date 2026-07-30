@@ -8,20 +8,29 @@ import {
   MessagesSquare,
   RotateCcw,
   ShieldAlert,
+  SlidersHorizontal,
   Sparkles,
   X,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
+import {
+  configSelectValues,
+  type ConfigSelectGroup,
+  type ConfigSelectValue,
+  type SessionConfigOption,
+} from "../lib/acp";
 import { parseMcpTitle } from "../lib/agentTool";
 import { resetOnVaultLock } from "../lib/moduleCaches";
 import {
   deleteAgentChat,
   loadAgentChats,
+  loadAgentConfigOptions,
   type PersistedAgentChat,
 } from "../lib/persist";
 import {
   activeProvider,
   AGENT_PROVIDERS,
+  prefApplicable,
   useApp,
   type AgentChatItem,
   type AgentPermission,
@@ -29,7 +38,16 @@ import {
 import { Conversation, ConversationItem } from "./agent/Conversation";
 import { Markdown } from "./agent/Markdown";
 import { ToolCard, ToolStatusIcon } from "./agent/ToolCard";
-import { Button, cn, fmtTime, IconButton, Input, Popover, Select } from "./ui";
+import {
+  Button,
+  cn,
+  Field,
+  fmtTime,
+  IconButton,
+  Input,
+  Popover,
+  Select,
+} from "./ui";
 
 /** Panel width survives close/open within the session (not persisted).
  *  Module-level, so the vault lock resets it like the rest of the session
@@ -120,6 +138,53 @@ function SavedChatRow({
   );
 }
 
+function ConfigOptionSelect({
+  opt,
+  onSet,
+}: {
+  opt: SessionConfigOption;
+  onSet: (value: string | boolean) => void;
+}) {
+  if (opt.type === "boolean") {
+    return (
+      <Select
+        className="w-full"
+        value={opt.currentValue ? "on" : "off"}
+        title={opt.description ?? undefined}
+        onChange={(e) => onSet(e.target.value === "on")}
+      >
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </Select>
+    );
+  }
+  const entries = opt.options as (ConfigSelectValue | ConfigSelectGroup)[];
+  return (
+    <Select
+      className="w-full"
+      value={opt.currentValue}
+      title={opt.description ?? undefined}
+      onChange={(e) => onSet(e.target.value)}
+    >
+      {entries.map((entry) =>
+        "group" in entry ? (
+          <optgroup key={entry.group} label={entry.name}>
+            {entry.options.map((v) => (
+              <option key={v.value} value={v.value}>
+                {v.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : (
+          <option key={entry.value} value={entry.value}>
+            {entry.name}
+          </option>
+        ),
+      )}
+    </Select>
+  );
+}
+
 function PermissionCard({
   perm,
   onAnswer,
@@ -176,16 +241,42 @@ export function AgentPanel() {
   const restoreAgentChat = useApp((s) => s.restoreAgentChat);
   const setAgentProvider = useApp((s) => s.setAgentProvider);
   const setAgentCustomCmd = useApp((s) => s.setAgentCustomCmd);
+  const setAgentConfigOption = useApp((s) => s.setAgentConfigOption);
 
   const [draft, setDraft] = useState("");
   const [width, setWidth] = useState(savedWidth);
   const [customDraft, setCustomDraft] = useState(settings.agentCustomCmd ?? "");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const [savedChats, setSavedChats] = useState<PersistedAgentChat[]>([]);
 
   const provider = activeProvider(settings);
   const busy = chat?.status === "running" || chat?.status === "starting";
   const chatEmpty = !chat || chat.items.length === 0;
+
+  // Опции сессии: живые из чата, до старта сессии — кэш прошлой сессии
+  // провайдера с наложенным сохранённым выбором (то, что реально применится)
+  const liveOptions = chat?.configOptions;
+  const sessionConfig = settings.agentSessionConfig;
+  const configOptions = useMemo(() => {
+    if (liveOptions && liveOptions.length > 0) return liveOptions;
+    const prefs = sessionConfig?.[provider.id] ?? {};
+    return loadAgentConfigOptions(provider.id).map((o) => {
+      const pref = prefs[o.id];
+      return pref !== undefined && prefApplicable(o, pref)
+        ? ({ ...o, currentValue: pref } as SessionConfigOption)
+        : o;
+    });
+  }, [liveOptions, provider.id, sessionConfig]);
+
+  const modelOpt = configOptions.find(
+    (o): o is Extract<SessionConfigOption, { type: "select" }> =>
+      o.type === "select" && o.category === "model",
+  );
+  const modelLabel = modelOpt
+    ? (configSelectValues(modelOpt).find((v) => v.value === modelOpt.currentValue)
+        ?.name ?? modelOpt.currentValue)
+    : null;
 
   // список читается из localStorage лениво — когда он виден (пустое
   // состояние или поповер), не на каждый стрим-чанк
@@ -251,6 +342,36 @@ export function AgentPanel() {
             </option>
           ))}
         </Select>
+        {configOptions.length > 0 && activeProfileId && (
+          <Popover
+            open={configOpen}
+            onClose={() => setConfigOpen(false)}
+            align="right"
+            panelClassName="w-60 p-2"
+            trigger={
+              <button
+                title="Session settings — model, permission mode"
+                onClick={() => setConfigOpen((v) => !v)}
+                className={cn(
+                  "flex min-w-0 items-center gap-1 rounded px-1.5 py-1",
+                  "text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200",
+                )}
+              >
+                <SlidersHorizontal size={11} className="shrink-0" />
+                {modelLabel && <span className="truncate">{modelLabel}</span>}
+              </button>
+            }
+          >
+            {configOptions.map((o) => (
+              <Field key={o.id} label={o.name} className="mb-2 last:mb-0">
+                <ConfigOptionSelect
+                  opt={o}
+                  onSet={(v) => void setAgentConfigOption(activeProfileId, o.id, v)}
+                />
+              </Field>
+            ))}
+          </Popover>
+        )}
         <div className="ml-auto flex items-center">
           <Popover
             open={historyOpen}

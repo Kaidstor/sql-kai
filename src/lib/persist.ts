@@ -1,6 +1,7 @@
 // localStorage persistence: query history, per-profile workspaces (open tabs),
 // the closed-tabs stack and saved agent chats. Everything here is best-effort —
 // storage errors are swallowed, corrupt snapshots are dropped.
+import type { SessionConfigOption } from "./acp";
 import type {
   ActivityTabState,
   AgentChatItem,
@@ -277,6 +278,24 @@ export function restoreClosedTabs(): ClosedTab[] {
     }
   }
   return out.slice(-CLOSED_CAP);
+}
+
+// --- Agent session config options (last seen per provider) -------------------
+// Кэш для панели: селекторы модели/режима видны до старта первой сессии
+// нового чата — реальные значения приедут с session/new.
+
+const agentCfgKey = (providerId: string) => `sqlt.agentConfig.${providerId}`;
+
+export const loadAgentConfigOptions = (
+  providerId: string,
+): SessionConfigOption[] =>
+  readJson<SessionConfigOption[]>(agentCfgKey(providerId)) ?? [];
+
+export function saveAgentConfigOptions(
+  providerId: string,
+  options: SessionConfigOption[],
+) {
+  writeJson(agentCfgKey(providerId), options);
 }
 
 // --- Agent chats (per profile, resumable from the panel) ----------------------

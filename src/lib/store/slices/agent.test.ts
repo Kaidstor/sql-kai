@@ -11,13 +11,25 @@ interface FakeAgentRecord {
   handlers: FakeHandlers;
   killed: boolean;
   prompts: string[];
+  configCalls: [string, string | boolean][];
   finish: (reason?: string) => void;
   emitExit: (code?: number | null) => void;
+}
+
+interface FakeConfigOption {
+  id: string;
+  name: string;
+  category?: string;
+  type: "select";
+  currentValue: string;
+  options: { value: string; name: string }[];
 }
 
 const mocks = vi.hoisted(() => ({
   agents: [] as FakeAgentRecord[],
   saveSettings: vi.fn(async () => {}),
+  /** Опции, которые фейковый агент отдаёт из session/new. */
+  configOptions: [] as FakeConfigOption[],
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
@@ -48,6 +60,7 @@ vi.mock("../../acp", () => {
     alive = true;
     killed = false;
     prompts: string[] = [];
+    configCalls: [string, string | boolean][] = [];
     private resolvePrompt?: (reason: string) => void;
     private rejectPrompt?: (error: Error) => void;
 
@@ -67,7 +80,24 @@ vi.mock("../../acp", () => {
     async initialize() {}
 
     async newSession() {
-      return `session-${mocks.agents.length}`;
+      return {
+        sessionId: `session-${mocks.agents.length}`,
+        configOptions: mocks.configOptions,
+      };
+    }
+
+    async setConfigOption(
+      _sessionId: string,
+      configId: string,
+      value: string | boolean,
+    ) {
+      this.configCalls.push([configId, value]);
+      mocks.configOptions = mocks.configOptions.map((o) =>
+        o.id === configId && typeof value === "string"
+          ? { ...o, currentValue: value }
+          : o,
+      );
+      return mocks.configOptions;
     }
 
     prompt(_sessionId: string, text: string) {
@@ -100,6 +130,7 @@ vi.mock("../../acp", () => {
     RpcError: FakeRpcError,
     AUTH_REQUIRED: -32000,
     withTimeout: <T,>(p: Promise<T>) => p,
+    configSelectValues: (o: FakeConfigOption) => o.options,
   };
 });
 
@@ -178,6 +209,7 @@ afterEach(() => {
   }
   currentState = undefined;
   mocks.agents.length = 0;
+  mocks.configOptions = [];
   mocks.saveSettings.mockClear();
 });
 
@@ -258,6 +290,62 @@ describe("saved chats", () => {
     mocks.agents[1].finish();
     await secondTurn;
     expect(state.agentChats.a.status).toBe("ready");
+  });
+});
+
+describe("session config options", () => {
+  const modelOption = (): FakeConfigOption => ({
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "opus",
+    options: [
+      { value: "opus", name: "Claude Opus 5" },
+      { value: "fable", name: "Claude Fable 5" },
+    ],
+  });
+
+  it("re-applies the saved per-provider choice when a session starts", async () => {
+    mocks.configOptions = [modelOption()];
+    const state = harness();
+    Object.assign(state, {
+      // stale-ключ (опции с таким id больше нет) молча пропускается
+      settings: { agentSessionConfig: { claude: { model: "fable", stale: "x" } } },
+    });
+
+    const turn = state.sendAgentPrompt("a", "hi");
+    await waitUntilRunning(state, "a");
+    expect(mocks.agents[0].configCalls).toEqual([["model", "fable"]]);
+    expect(state.agentChats.a.configOptions).toMatchObject([
+      { id: "model", currentValue: "fable" },
+    ]);
+    mocks.agents[0].finish();
+    await turn;
+  });
+
+  it("persists the user's choice and applies it to the live session", async () => {
+    mocks.configOptions = [modelOption()];
+    const state = harness();
+    const turn = state.sendAgentPrompt("a", "hi");
+    await waitUntilRunning(state, "a");
+
+    await state.setAgentConfigOption("a", "model", "fable");
+    expect(state.settings.agentSessionConfig?.claude?.model).toBe("fable");
+    expect(mocks.saveSettings).toHaveBeenCalled();
+    expect(mocks.agents[0].configCalls).toEqual([["model", "fable"]]);
+    expect(state.agentChats.a.configOptions).toMatchObject([
+      { id: "model", currentValue: "fable" },
+    ]);
+    mocks.agents[0].finish();
+    await turn;
+  });
+
+  it("only saves the preference when there is no live session yet", async () => {
+    const state = harness();
+    await state.setAgentConfigOption("a", "model", "fable");
+    expect(state.settings.agentSessionConfig?.claude?.model).toBe("fable");
+    expect(mocks.agents).toHaveLength(0);
   });
 });
 

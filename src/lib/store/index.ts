@@ -41,6 +41,7 @@ export { columnsKey, fkByColumn } from "./helpers";
 export {
   activeProvider,
   AGENT_PROVIDERS,
+  prefApplicable,
   type AgentChatItem,
   type AgentChatItemBody,
   type AgentPermission,
