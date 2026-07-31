@@ -455,7 +455,7 @@ function App() {
 
   return (
     <VaultGate>
-    <div className="h-screen flex flex-col bg-zinc-950 text-zinc-200 text-[13px] antialiased">
+    <div className="h-screen flex flex-col overflow-hidden bg-zinc-950 text-zinc-200 text-[13px] antialiased">
       <div className="flex flex-1 min-h-0">
         {showLauncher ? (
           <Launcher />

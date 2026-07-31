@@ -89,6 +89,7 @@ export function Popover({
   children,
   side = "bottom",
   align = "left",
+  className,
   panelClassName,
 }: {
   open: boolean;
@@ -98,6 +99,8 @@ export function Popover({
   side?: "bottom" | "top";
   /** Which trigger edge the panel sticks to; "right" for triggers near the window's right edge. */
   align?: "left" | "right";
+  /** Wrapper (the trigger's box) — `min-w-0` there lets a flex row shrink it. */
+  className?: string;
   panelClassName?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -119,7 +122,7 @@ export function Popover({
   }, [open, onClose]);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className={cn("relative", className)}>
       {trigger}
       {open && (
         <div

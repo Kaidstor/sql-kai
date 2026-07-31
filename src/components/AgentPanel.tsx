@@ -47,10 +47,24 @@ import { Button, cn, fmtTime, IconButton, Input, Popover, Select } from "./ui";
  *  Module-level, so the vault lock resets it like the rest of the session
  *  state (see lib/moduleCaches). */
 const DEFAULT_PANEL_WIDTH = 400;
+const MIN_PANEL_WIDTH = 300;
+const MAX_PANEL_WIDTH = 680;
+/** Слева от панели остаётся рабочая область (сайдбар w-64 + вкладки): панель
+ *  и сайдбар — shrink-0, так что панель шире доступного места распирает ряд
+ *  и уводит окно в горизонтальный скролл. */
+const MIN_WORKSPACE_WIDTH = 360;
 let savedWidth = DEFAULT_PANEL_WIDTH;
 resetOnVaultLock(() => {
   savedWidth = DEFAULT_PANEL_WIDTH;
 });
+
+function clampPanelWidth(w: number): number {
+  const max = Math.max(
+    MIN_PANEL_WIDTH,
+    Math.min(MAX_PANEL_WIDTH, window.innerWidth - MIN_WORKSPACE_WIDTH),
+  );
+  return Math.max(MIN_PANEL_WIDTH, Math.min(max, w));
+}
 
 /** mcp__sql-kai__query → «sql-kai · query» в permission-карточке. */
 function prettyPermTitle(title: string): string {
@@ -241,13 +255,18 @@ function ConfigTrigger({
       onClose={onClose}
       side="top"
       align={align}
+      // min-w-0: без него обёртка триггера держит ширину текста, ряд кнопок
+      // не сжимается на узкой панели и выпирает за окно
+      className="min-w-0"
       panelClassName={cn("max-h-80 overflow-y-auto p-1", panelClassName)}
       trigger={
         <button
           title={title}
           onClick={onToggle}
           className={cn(
-            "flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5",
+            // w-full: у кнопки width:auto — это fit-content, она не сузилась бы
+            // вслед за обёрткой и вылезла бы текстом на соседей
+            "flex w-full min-w-0 items-center gap-1 rounded px-1.5 py-0.5",
             "text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200",
           )}
         >
@@ -338,6 +357,18 @@ export function AgentPanel() {
     (chat?.status === "starting" && !chat.warming);
   const chatEmpty = !chat || chat.items.length === 0;
 
+  // ширина держится в границах окна: узкое окно (или сузили его при открытой
+  // панели) — панель поджимается, а не распирает ряд
+  useEffect(() => {
+    const clamp = () => {
+      savedWidth = clampPanelWidth(savedWidth);
+      setWidth(savedWidth);
+    };
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, []);
+
   // прогрев: процесс и сессия поднимаются при открытии панели, а не при
   // первом сообщении — опции (модель/режим) видны сразу
   useEffect(() => {
@@ -416,9 +447,8 @@ export function AgentPanel() {
   };
 
   const resizeTo = (clientX: number) => {
-    const w = Math.max(300, Math.min(680, window.innerWidth - clientX));
-    savedWidth = w;
-    setWidth(w);
+    savedWidth = clampPanelWidth(window.innerWidth - clientX);
+    setWidth(savedWidth);
   };
 
   return (
@@ -633,6 +663,7 @@ export function AgentPanel() {
               icon={<SlidersHorizontal size={10} className="shrink-0" />}
               label={restLabel}
               title="Reasoning effort and session options"
+              align="right"
               open={configOpen === "opts"}
               onToggle={() => setConfigOpen((v) => (v === "opts" ? null : "opts"))}
               onClose={() => setConfigOpen(null)}
