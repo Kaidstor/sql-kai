@@ -15,6 +15,7 @@ import {
 import { type CSSProperties, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { accentColor } from "../lib/colors";
 import { isKey } from "../lib/keys";
+import { switchLayout } from "../lib/layout";
 import { isMac } from "../lib/platform";
 import { lastConnectedOf, profileAddr, timeAgo } from "../lib/profile";
 import { UNDO_DELETE_MS, useApp } from "../lib/store";
@@ -342,18 +343,21 @@ export function Launcher() {
     return () => window.removeEventListener("keydown", handleKey);
   }, []);
 
-  const visible = useMemo(
-    () =>
-      needle
-        ? profiles.filter(
-            (p) =>
-              p.name.toLowerCase().includes(needle) ||
-              p.group?.trim().toLowerCase().includes(needle) ||
-              profileAddr(p).toLowerCase().includes(needle),
-          )
-        : profiles,
-    [profiles, needle],
-  );
+  const visible = useMemo(() => {
+    if (!needle) return profiles;
+    const match = (n: string) =>
+      profiles.filter(
+        (p) =>
+          p.name.toLowerCase().includes(n) ||
+          p.group?.trim().toLowerCase().includes(n) ||
+          profileAddr(p).toLowerCase().includes(n),
+      );
+    const hits = match(needle);
+    if (hits.length > 0) return hits;
+    // wrong-keyboard-layout rescue: "зкщв" finds "prod"
+    const switched = switchLayout(needle);
+    return switched === needle ? hits : match(switched);
+  }, [profiles, needle]);
 
   // Cluster connections by group so same-group cards sit together: named groups
   // (alphabetical) first, ungrouped last.
