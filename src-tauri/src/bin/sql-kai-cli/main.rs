@@ -32,8 +32,6 @@ use cmd::history::HistoryArgs;
 use cmd::holder::HolderCmd;
 use cmd::import::ImportArgs;
 use cmd::init::InitArgs;
-use cmd::table_info::{TableArgs, TableInfoKind};
-use cmd::tables::TablesArgs;
 use cmd::logs::LogsArgs;
 use cmd::mcp::McpArgs;
 use cmd::profiles::ProfilesCmd;
@@ -42,6 +40,8 @@ use cmd::rotate::RotateArgs;
 use cmd::saved::SavedCmd;
 use cmd::schema::SchemaArgs;
 use cmd::sessions::SessionsArgs;
+use cmd::table_info::{TableArgs, TableInfoKind};
+use cmd::tables::TablesArgs;
 use cmd::tunnel::TunnelCmd;
 use cmd::vault::VaultCmd;
 
@@ -123,6 +123,8 @@ enum Cmd {
     Feedback(FeedbackArgs),
     /// Живые сессии запущенного GUI: его собственные и cli-сессии брокера
     Sessions(SessionsArgs),
+    /// Агентский скилл sql-kai: установка в ~/.claude и ~/.codex (install/status)
+    Skills(cmd::skills::SkillsArgs),
     /// Персистентные ssh-туннели (ControlMaster), переиспользуемые между вызовами
     Tunnel {
         #[command(subcommand)]
@@ -150,8 +152,7 @@ fn subcommand_names() -> Vec<String> {
     Cli::command()
         .get_subcommands()
         .flat_map(|c| {
-            std::iter::once(c.get_name().to_string())
-                .chain(c.get_all_aliases().map(str::to_string))
+            std::iter::once(c.get_name().to_string()).chain(c.get_all_aliases().map(str::to_string))
         })
         .chain(std::iter::once("help".to_string()))
         .collect()
@@ -214,7 +215,12 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    match rt.block_on(dispatch(cli)) {
+    let res = rt.block_on(dispatch(cli));
+    // самолечение агентского скилла: апгрейд бинаря (brew, updater, cargo)
+    // догоняет разложенные копии первым же вызовом CLI. Только копии со
+    // стампом — симлинки и ручные не трогаются
+    sql_kai_lib::skills_sync::sync_all_stale();
+    match res {
         Ok(code) => code,
         Err(e) => {
             eprintln!("sql-kai: {e}");
@@ -248,6 +254,7 @@ async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
         Cmd::Doctor(a) => cmd::doctor::run(a).await,
         Cmd::Feedback(a) => cmd::feedback::run(a).await,
         Cmd::Sessions(a) => cmd::sessions::run(a).await,
+        Cmd::Skills(a) => cmd::skills::run(a).map_err(AppError::Msg),
         Cmd::Tunnel { cmd } => cmd::tunnel::run(cmd.unwrap_or(TunnelCmd::List)),
         Cmd::Vault { cmd } => cmd::vault::run(cmd).await,
         Cmd::Holder { cmd } => cmd::holder::run(cmd).await,

@@ -19,6 +19,7 @@ pub mod rotate;
 pub mod saved;
 pub mod schema;
 pub mod sessions;
+pub mod skills;
 pub mod table_info;
 pub mod tables;
 pub mod tunnel;

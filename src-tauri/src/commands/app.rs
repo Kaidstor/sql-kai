@@ -11,8 +11,7 @@ use super::AppState;
 /// so clipboard-history managers skip it.
 #[tauri::command]
 pub fn copy_text_concealed(text: String) -> Result<(), AppError> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| AppError::Msg(e.to_string()))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| AppError::Msg(e.to_string()))?;
     let set = clipboard.set();
     #[cfg(target_os = "macos")]
     let set = arboard::SetExtApple::exclude_from_history(set);
@@ -37,6 +36,16 @@ pub fn cli_bin_path() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     let src = exe.parent()?.join("sql-kai-cli");
     src.exists().then(|| src.display().to_string())
+}
+
+/// Вместе с CLI раскладывается и агентский скилл — Install CLI и есть
+/// «подключить sql-kai агентам». Бест-эффорт: симлинки скилла не трогаются,
+/// ошибки не валят установку самого CLI.
+#[cfg(target_os = "macos")]
+fn install_skills() {
+    for (_, dir) in crate::skills_sync::agent_dirs() {
+        let _ = crate::skills_sync::install(&dir, false);
+    }
 }
 
 /// Installs the `sql-kai` CLI into the system PATH, "big-company" style
@@ -72,6 +81,7 @@ pub fn install_cli() -> Result<String, AppError> {
         // writable (e.g. Homebrew) — no password prompt needed.
         let _ = std::fs::remove_file(target); // ignore "not found" / "denied"
         if symlink(&src, target).is_ok() {
+            install_skills();
             return Ok(target.display().to_string());
         }
 
@@ -94,6 +104,7 @@ pub fn install_cli() -> Result<String, AppError> {
             .arg(target)
             .output()?;
         if out.status.success() {
+            install_skills();
             return Ok(target.display().to_string());
         }
         let stderr = String::from_utf8_lossy(&out.stderr);

@@ -9,6 +9,7 @@ pub mod format;
 pub mod fsio;
 pub mod logging;
 pub mod prod;
+pub mod skills_sync;
 pub mod store;
 pub mod tunnel;
 pub mod vault;
@@ -30,10 +31,8 @@ fn set_app_menu(app: &tauri::App) -> tauri::Result<()> {
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(handle)?;
-    let log_viewer =
-        MenuItemBuilder::with_id("log-viewer", "Diagnostics Log…").build(handle)?;
-    let install_cli =
-        MenuItemBuilder::with_id("install-cli", "Install CLI…").build(handle)?;
+    let log_viewer = MenuItemBuilder::with_id("log-viewer", "Diagnostics Log…").build(handle)?;
+    let install_cli = MenuItemBuilder::with_id("install-cli", "Install CLI…").build(handle)?;
     let app_menu = SubmenuBuilder::new(handle, "sql-kai")
         .about(Some(AboutMetadata::default()))
         .item(&check_updates)
@@ -308,8 +307,7 @@ fn start_broker(app: &tauri::App, state: &std::sync::Arc<broker::BrokerState>) {
                     "agent://gui-request",
                     serde_json::json!({ "id": id, "kind": "selection", "profileId": profile_id }),
                 );
-                let res = match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await
-                {
+                let res = match tokio::time::timeout(std::time::Duration::from_secs(4), rx).await {
                     Ok(Ok(v)) => Ok(v),
                     Ok(Err(_)) => Err("the GUI cancelled the request".to_string()),
                     Err(_) => Err("the GUI did not answer the state request".to_string()),
@@ -364,6 +362,9 @@ pub fn run() {
             // Пинги, не дающие простаивающим GUI-сессиям пасть от внешних
             // idle-таймаутов — «вернулся через полчаса, а соединение живое».
             commands::spawn_keepalive(app.handle());
+            // Самолечение агентского скилла: старт GUI — единственная точка,
+            // куда гарантированно попадает обновление через updater
+            std::thread::spawn(skills_sync::sync_all_stale);
             // Окно создано скрытым (visible: false в tauri.conf.json), а
             // window-state уже восстановил его геометрию. Показ отдан фронтенду
             // (команда reveal_main_window, вызывается после первого кадра
