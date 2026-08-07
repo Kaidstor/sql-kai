@@ -46,7 +46,8 @@ pub fn available() -> Result<(), AppError> {
     let help = String::from_utf8_lossy(&out.stdout);
     if !help.contains("scan") {
         return Err(AppError::Msg(
-            "sec в PATH устарел (нет команды scan) — пересобери его (`just install` в sec/cli)".into(),
+            "sec в PATH устарел (нет команды scan) — пересобери его (`just install` в sec/cli)"
+                .into(),
         ));
     }
     Ok(())

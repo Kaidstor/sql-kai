@@ -104,7 +104,10 @@ fn vault_path() -> Result<PathBuf, AppError> {
 
 fn write_file(file: &VaultFile) -> Result<(), AppError> {
     let path = vault_path()?;
-    write_atomic(&path, serde_json::to_string_pretty(file).unwrap().as_bytes())?;
+    write_atomic(
+        &path,
+        serde_json::to_string_pretty(file).unwrap().as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -201,10 +204,7 @@ pub fn setup(password: &str) -> Result<(), AppError> {
 }
 
 /// Decrypts the secrets blob with a recovered DEK and installs the session.
-fn decrypt_secrets(
-    dek: &[u8; 32],
-    file: &VaultFile,
-) -> Result<BTreeMap<String, String>, AppError> {
+fn decrypt_secrets(dek: &[u8; 32], file: &VaultFile) -> Result<BTreeMap<String, String>, AppError> {
     let plain = decrypt(dek, &file.secrets)?;
     serde_json::from_slice(&plain).map_err(|e| AppError::Msg(format!("vault is corrupted: {e}")))
 }
@@ -278,7 +278,9 @@ pub fn disable_biometric() -> Result<(), AppError> {
 pub fn unlock_biometric() -> Result<(), AppError> {
     let file = read_file()?;
     if !file.biometric {
-        return Err(AppError::Msg("Touch ID is not set up for this vault".into()));
+        return Err(AppError::Msg(
+            "Touch ID is not set up for this vault".into(),
+        ));
     }
     let mut dek_vec = match biometric::read_dek() {
         Ok(v) => v,
@@ -441,8 +443,7 @@ fn mutate_vault(
     let v = guard
         .as_mut()
         .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
-    let mut file =
-        read_file().map_err(|e| AppError::Msg(format!("vault not updated — {e}")))?;
+    let mut file = read_file().map_err(|e| AppError::Msg(format!("vault not updated — {e}")))?;
     let plain = match decrypt(&v.dek, &file.secrets) {
         Ok(plain) => plain,
         Err(_) => {

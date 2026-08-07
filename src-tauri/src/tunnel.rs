@@ -31,7 +31,10 @@ fn ensure_askpass_script() -> Result<PathBuf, AppError> {
     let path = mux_dir()?.join("askpass.sh");
     fs::write(
         &path,
-        format!("#!/bin/sh\nprintf '%s\\n' \"${{{}}}\"\n", envvar::SSH_PASSPHRASE),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"${{{}}}\"\n",
+            envvar::SSH_PASSPHRASE
+        ),
     )?;
     #[cfg(unix)]
     {
@@ -311,7 +314,10 @@ pub fn list_masters() -> Vec<MasterInfo> {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             let alive = master_alive(&e.path(), &host_of(&name));
-            out.push(MasterInfo { target: name, alive });
+            out.push(MasterInfo {
+                target: name,
+                alive,
+            });
         }
     }
     out

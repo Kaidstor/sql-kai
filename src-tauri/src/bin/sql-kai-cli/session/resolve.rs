@@ -58,13 +58,21 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
     match by_group.len() {
         1 => Ok(by_group[0].clone()),
         0 => {
-            let known = all.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+            let known = all
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             Err(AppError::Msg(format!(
                 "профиль '{alias}' не найден (есть: {known}); для нового прод-хоста: sql-kai discover {alias}"
             )))
         }
         _ => {
-            let names = by_group.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+            let names = by_group
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             Err(AppError::Msg(format!(
                 "в группе '{alias}' несколько профилей — уточни: {names}"
             )))

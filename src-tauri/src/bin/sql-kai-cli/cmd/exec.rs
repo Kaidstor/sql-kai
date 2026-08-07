@@ -181,5 +181,7 @@ pub fn run(a: ExecArgs) -> Result<ExitCode, AppError> {
 
     let status = remote::run_via_stdin(&a.alias, &payload)
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;
-    Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
+    Ok(ExitCode::from(
+        status.code().unwrap_or(1).clamp(0, 255) as u8
+    ))
 }

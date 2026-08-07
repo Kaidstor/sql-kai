@@ -63,10 +63,7 @@ struct Discovered {
 
 fn discover_host(alias: &str, container: Option<&str>) -> Result<Discovered, AppError> {
     let script = format!("{CONTAINER_FIND}{CONTAINER_DB_ENV}{DISCOVER_TAIL}");
-    let env = [(
-        "KAI_CONTAINER",
-        container.unwrap_or_default().to_string(),
-    )];
+    let env = [("KAI_CONTAINER", container.unwrap_or_default().to_string())];
     let out = remote::output_via_stdin(alias, &remote::stdin_payload(&script, &env))
         .map_err(|e| AppError::Msg(format!("ssh: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -111,9 +108,7 @@ fn discover_host(alias: &str, container: Option<&str>) -> Result<Discovered, App
         let raw = B64
             .decode(&pw_b64)
             .map_err(|e| AppError::Msg(format!("не смог раскодировать пароль: {e}")))?;
-        String::from_utf8(raw)
-            .ok()
-            .filter(|p| !p.is_empty())
+        String::from_utf8(raw).ok().filter(|p| !p.is_empty())
     };
 
     let endpoint = if let Ok(p) = port.parse::<u16>() {
@@ -145,7 +140,11 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
         d.database,
         d.endpoint.0,
         d.endpoint.1,
-        if d.password.is_some() { "найден" } else { "нет" }
+        if d.password.is_some() {
+            "найден"
+        } else {
+            "нет"
+        }
     );
 
     let name = a.name.clone().unwrap_or_else(|| a.alias.clone());
@@ -195,7 +194,11 @@ pub async fn run(a: DiscoverArgs) -> Result<ExitCode, AppError> {
                         .clone()
                         .unwrap_or_else(|| sec::default_key(&profile));
                     sec::set(&key, pw)?;
-                    sec::meta(&key, Some("90d"), Some(&format!("DB пароль {}", profile.name)));
+                    sec::meta(
+                        &key,
+                        Some("90d"),
+                        Some(&format!("DB пароль {}", profile.name)),
+                    );
                     println!("пароль сохранён в sec: {key}");
                 }
                 None => eprintln!("sql-kai: --to-sec задан, но пароль в env контейнера не найден"),

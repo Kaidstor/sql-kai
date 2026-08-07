@@ -90,9 +90,7 @@ fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(Str
 
 /// (имя, oid) с провода → типы для print_exec_json; незнакомый oid (кастомный
 /// enum и т.п.) выводится как text — так же он выглядит и в автономном пути.
-fn wire_types(
-    wire: sql_kai_lib::broker::WireColumnTypes,
-) -> Vec<Option<Vec<(String, db::Type)>>> {
+fn wire_types(wire: sql_kai_lib::broker::WireColumnTypes) -> Vec<Option<Vec<(String, db::Type)>>> {
     wire.into_iter()
         .map(|cols| {
             cols.map(|cols| {
@@ -218,12 +216,7 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     // источники пароля (--password-env/--from-sec) — всегда автономно.
     // --no-mux тоже: сервер сессий держит mux-туннели, а флаг просит свежий
     // ssh без ControlMaster.
-    if !a.local
-        && !a.no_mux
-        && a.password_env.is_none()
-        && !a.from_sec
-        && a.sec_key.is_none()
-    {
+    if !a.local && !a.no_mux && a.password_env.is_none() && !a.from_sec && a.sec_key.is_none() {
         if let Some(code) = try_broker_query(&a, &sql).await? {
             return Ok(code);
         }

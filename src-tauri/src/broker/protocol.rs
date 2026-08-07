@@ -76,7 +76,11 @@ pub enum Method {
 /// Что открыть в интерфейсе по просьбе MCP-клиента (методы open_*).
 /// Сериализация — готовый payload события `agent://open` для webview.
 #[derive(Serialize, Clone)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GuiOpen {
     Table {
         profile_id: String,

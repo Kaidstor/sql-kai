@@ -54,7 +54,9 @@ pub struct RotateArgs {
 fn gen_password(len: usize) -> String {
     const CS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
-    (0..len).map(|_| CS[rng.gen_range(0..CS.len())] as char).collect()
+    (0..len)
+        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
+        .collect()
 }
 
 pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
@@ -82,7 +84,10 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
     .await?;
 
     let role = a.role.clone().unwrap_or_else(|| profile.user.clone());
-    let key = a.sec_key.clone().unwrap_or_else(|| sec::default_key(&profile));
+    let key = a
+        .sec_key
+        .clone()
+        .unwrap_or_else(|| sec::default_key(&profile));
 
     eprintln!(
         "⚠ ротация пароля роли '{role}' в {}/{}. Если этой ролью ходит сам сервис — \
@@ -133,7 +138,9 @@ pub async fn run(a: RotateArgs) -> Result<ExitCode, AppError> {
     .await;
     if let Err(e) = check {
         eprintln!("sql-kai: пароль сменён, но проверка коннекта не прошла: {e}");
-        eprintln!("новый пароль в sec ({key}); восстановить старый — sec undo {key} (и повторно ALTER)");
+        eprintln!(
+            "новый пароль в sec ({key}); восстановить старый — sec undo {key} (и повторно ALTER)"
+        );
         return Ok(ExitCode::FAILURE);
     }
 

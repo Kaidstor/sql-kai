@@ -108,7 +108,11 @@ async fn broker_state(gui: bool) -> String {
         Some(b) => format!(
             "запущен ({}, vault {})",
             b.hello.server_version,
-            if b.hello.vault_unlocked { "разблокирован" } else { "заперт" }
+            if b.hello.vault_unlocked {
+                "разблокирован"
+            } else {
+                "заперт"
+            }
         ),
         None => "не запущен".to_string(),
     }
@@ -132,9 +136,21 @@ async fn collect_diag() -> Vec<DiagRow> {
             "vault",
             format!(
                 "{}, cli trust {}, touch id {}",
-                if vault::exists() { "есть" } else { "нет" },
-                if vault::cli_trust_enrolled() { "вкл" } else { "выкл" },
-                if vault::biometric_enrolled() { "вкл" } else { "выкл" },
+                if vault::exists() {
+                    "есть"
+                } else {
+                    "нет"
+                },
+                if vault::cli_trust_enrolled() {
+                    "вкл"
+                } else {
+                    "выкл"
+                },
+                if vault::biometric_enrolled() {
+                    "вкл"
+                } else {
+                    "выкл"
+                },
             ),
         ),
         row("profiles", "профилей", profiles.to_string()),
@@ -177,7 +193,11 @@ fn issue_title(message: &str) -> String {
 /// Тело issue: текст пользователя + свёрнутый блок диагностики. Блок оформлен
 /// как код, чтобы GitHub не пытался разметить его содержимое.
 fn issue_body(message: &str, diag: &[DiagRow]) -> String {
-    let width = diag.iter().map(|r| r.label.chars().count()).max().unwrap_or(0);
+    let width = diag
+        .iter()
+        .map(|r| r.label.chars().count())
+        .max()
+        .unwrap_or(0);
     let lines: Vec<String> = diag
         .iter()
         .map(|r| format!("{:<width$} : {}", r.label, r.value, width = width))
@@ -250,7 +270,11 @@ fn read_message(arg: Option<String>) -> Result<String, AppError> {
 }
 
 fn open_in_browser(url: &str) -> Result<(), AppError> {
-    let bin = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let bin = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let mut cmd = Command::new(bin);
     vault::scrub_master_password_env(&mut cmd);
     let status = cmd
@@ -279,7 +303,10 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
     if fmt == Format::Json {
         let mut obj = serde_json::Map::new();
         for r in &diag {
-            obj.insert(r.key.to_string(), serde_json::Value::String(r.value.clone()));
+            obj.insert(
+                r.key.to_string(),
+                serde_json::Value::String(r.value.clone()),
+            );
         }
         let out = serde_json::json!({
             "url": url,
@@ -301,7 +328,11 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
 
     // Человеку сначала показываем, что именно уедет в публичный issue, и лишь
     // потом ссылку: согласие имеет смысл только осознанное.
-    let width = diag.iter().map(|r| r.label.chars().count()).max().unwrap_or(0);
+    let width = diag
+        .iter()
+        .map(|r| r.label.chars().count())
+        .max()
+        .unwrap_or(0);
     eprintln!("в issue уйдёт (кроме твоего текста):");
     for r in &diag {
         eprintln!("  {:<width$} : {}", r.label, r.value, width = width);
@@ -369,7 +400,10 @@ mod tests {
 
     #[test]
     fn issue_title_takes_the_first_meaningful_line() {
-        assert_eq!(issue_title("\n\nупал экспорт\nподробности ниже"), "упал экспорт");
+        assert_eq!(
+            issue_title("\n\nупал экспорт\nподробности ниже"),
+            "упал экспорт"
+        );
         let long = "я".repeat(200);
         let title = issue_title(&long);
         assert_eq!(title.chars().count(), super::TITLE_CAP);

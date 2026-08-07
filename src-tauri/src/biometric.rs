@@ -83,7 +83,9 @@ mod imp {
             Ok(Ok(())) => Ok(()),
             Ok(Err((code, _))) if LA_CANCEL_CODES.contains(&code) => Err(BioError::Cancelled),
             Ok(Err((_, msg))) => Err(BioError::Other(msg)),
-            Err(_) => Err(BioError::Other("authentication callback was dropped".into())),
+            Err(_) => Err(BioError::Other(
+                "authentication callback was dropped".into(),
+            )),
         }
     }
 

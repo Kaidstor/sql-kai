@@ -36,7 +36,11 @@ pub async fn run(a: TablesArgs) -> Result<ExitCode, AppError> {
         true,
     )
     .await?;
-    let sql = if a.counts { db::TABLES_COUNTS_SQL } else { db::TABLES_SQL };
+    let sql = if a.counts {
+        db::TABLES_COUNTS_SQL
+    } else {
+        db::TABLES_SQL
+    };
     let rows = db::query_rows(&connected.session.client, sql).await?;
     let mapped: Vec<Vec<Option<String>>> = rows
         .into_iter()

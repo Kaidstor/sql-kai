@@ -260,7 +260,10 @@ pub fn install(a: InstallArgs) -> Result<ExitCode, AppError> {
     // целиком) откатит нашу запись своей следующей — предупредить об этом
     // дешевле, чем разбираться, почему сервер «не прописался».
     if path.exists() {
-        println!("если {} сейчас запущен — закрой его: клиент может перезаписать конфиг своей копией", spec.title);
+        println!(
+            "если {} сейчас запущен — закрой его: клиент может перезаписать конфиг своей копией",
+            spec.title
+        );
     }
 
     let changed = match spec.layout {
@@ -369,7 +372,11 @@ fn install_json(
 /// вторая секция того же имени, наша проверка «секция ровно одна» этого не
 /// видела, а TOML-парсер отвергал файл целиком как дубль таблицы.
 fn is_server_header(line: &str, name: &str) -> bool {
-    let Some(inner) = line.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+    let Some(inner) = line
+        .trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+    else {
         return false;
     };
     let Some(rest) = inner.trim_start().strip_prefix("mcp_servers") else {
@@ -554,7 +561,10 @@ fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
 /// целиком. Гонку с ним не выиграть (после нашей записи он всё равно может
 /// записать свою копию), но писать поверх чужой правки и молча её терять мы не
 /// будем — окно между read и write закрывается этой проверкой.
-fn ensure_unchanged(path: &Path, before: Option<(std::time::SystemTime, u64)>) -> Result<(), AppError> {
+fn ensure_unchanged(
+    path: &Path,
+    before: Option<(std::time::SystemTime, u64)>,
+) -> Result<(), AppError> {
     if file_stamp(path) == before {
         return Ok(());
     }
@@ -578,7 +588,11 @@ fn backup_file(path: &Path, skip: bool) -> Result<Option<PathBuf>, AppError> {
     let backup = (0..100)
         .map(|n| {
             let mut name = path.file_name().unwrap_or_default().to_os_string();
-            name.push(if n == 0 { ".bak".to_string() } else { format!(".bak.{n}") });
+            name.push(if n == 0 {
+                ".bak".to_string()
+            } else {
+                format!(".bak.{n}")
+            });
             path.with_file_name(name)
         })
         .find(|candidate| !candidate.exists())
@@ -761,7 +775,10 @@ fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (ClientState, St
             .take_while(|(i, l)| !(code[*i] && l.trim_start().starts_with('[')))
             .find_map(|(_, l)| toml_command_value(l))
             .unwrap_or_default();
-        return (ClientState::Installed, command.trim_matches('"').to_string());
+        return (
+            ClientState::Installed,
+            command.trim_matches('"').to_string(),
+        );
     }
     let root: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
@@ -780,7 +797,10 @@ fn client_status(spec: &ClientSpec, path: &Path, name: &str) -> (ClientState, St
                         .join(" ")
                 })
                 .unwrap_or_default();
-            (ClientState::Installed, format!("{command} {args}").trim().to_string())
+            (
+                ClientState::Installed,
+                format!("{command} {args}").trim().to_string(),
+            )
         }
         None => (ClientState::Absent, path.display().to_string()),
     }
@@ -841,8 +861,7 @@ mod tests {
         let a = install_args("sql-kai", false);
         assert!(install_json(&spec, &path, &a, &entry()).unwrap());
 
-        let root: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // чужие ключи и чужой сервер на месте
         assert_eq!(root["numStartups"], 12);
         assert_eq!(root["mcpServers"]["other"]["command"], "/usr/bin/other");
@@ -860,9 +879,11 @@ mod tests {
         };
         assert!(install_json(&spec, &path, &a, &other).is_err());
         assert!(install_json(&spec, &path, &install_args("sql-kai", true), &other).unwrap());
-        let root: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["mcpServers"]["sql-kai"]["command"], "/usr/local/bin/sql-kai");
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            root["mcpServers"]["sql-kai"]["command"],
+            "/usr/local/bin/sql-kai"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -879,7 +900,9 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("model = \"gpt-5\""));
         assert!(text.contains("[mcp_servers.other]"));
-        assert!(text.contains("[mcp_servers.sql-kai]\ncommand = \"/opt/sql-kai\"\nargs = [\"mcp\"]\n"));
+        assert!(
+            text.contains("[mcp_servers.sql-kai]\ncommand = \"/opt/sql-kai\"\nargs = [\"mcp\"]\n")
+        );
 
         assert!(install_toml(&path, &a, &entry()).is_err()); // без --force
         let other = ServerEntry {
@@ -900,7 +923,10 @@ mod tests {
     fn toml_install_recognizes_a_quoted_key() {
         assert!(is_server_header("[mcp_servers.sql-kai]", "sql-kai"));
         assert!(is_server_header("[mcp_servers.\"sql-kai\"]", "sql-kai"));
-        assert!(is_server_header("  [mcp_servers . \"sql-kai\"]  ", "sql-kai"));
+        assert!(is_server_header(
+            "  [mcp_servers . \"sql-kai\"]  ",
+            "sql-kai"
+        ));
         assert!(!is_server_header("[mcp_servers.other]", "sql-kai"));
         assert!(!is_server_header("[mcp_servers_extra.sql-kai]", "sql-kai"));
         assert!(!is_server_header("command = \"x\"", "sql-kai"));
@@ -930,7 +956,10 @@ mod tests {
         let a = install_args("sql-kai", false);
         assert!(install_json(&spec(Layout::McpServers), &path, &a, &entry()).unwrap());
         let text = std::fs::read_to_string(&path).unwrap();
-        let at = |k: &str| text.find(k).unwrap_or_else(|| panic!("нет ключа {k}:\n{text}"));
+        let at = |k: &str| {
+            text.find(k)
+                .unwrap_or_else(|| panic!("нет ключа {k}:\n{text}"))
+        };
         assert!(
             at("\"zeta\"") < at("\"alpha\"")
                 && at("\"alpha\"") < at("\"mcpServers\"")
@@ -959,9 +988,14 @@ mod tests {
         // секции нет — установка проходит без --force и литерал остаётся цел
         assert!(install_toml(&path, &install_args("sql-kai", false), &entry()).unwrap());
         let out = std::fs::read_to_string(&path).unwrap();
-        assert!(out.contains("command = \"/evil\""), "литерал испорчен: {out}");
+        assert!(
+            out.contains("command = \"/evil\""),
+            "литерал испорчен: {out}"
+        );
         assert!(out.contains("[mcp_servers.other]"));
-        assert!(out.ends_with("[mcp_servers.sql-kai]\ncommand = \"/opt/sql-kai\"\nargs = [\"mcp\"]\n"));
+        assert!(
+            out.ends_with("[mcp_servers.sql-kai]\ncommand = \"/opt/sql-kai\"\nargs = [\"mcp\"]\n")
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -969,8 +1003,14 @@ mod tests {
     /// detail у `mcp status` уезжало `_timeout = 5`.
     #[test]
     fn toml_command_value_needs_the_separator() {
-        assert_eq!(toml_command_value("command = \"/opt/sql-kai\""), Some("\"/opt/sql-kai\"".into()));
-        assert_eq!(toml_command_value("  command=\"/x\""), Some("\"/x\"".into()));
+        assert_eq!(
+            toml_command_value("command = \"/opt/sql-kai\""),
+            Some("\"/opt/sql-kai\"".into())
+        );
+        assert_eq!(
+            toml_command_value("  command=\"/x\""),
+            Some("\"/x\"".into())
+        );
         assert_eq!(toml_command_value("command_timeout = 5"), None);
         assert_eq!(toml_command_value("args = [\"mcp\"]"), None);
     }
@@ -995,7 +1035,12 @@ mod tests {
     fn json_install_refuses_broken_config() {
         let path = tmp_path("broken.json");
         std::fs::write(&path, "{ /* jsonc */ }").unwrap();
-        let err = install_json(&spec(Layout::McpServers), &path, &install_args("sql-kai", false), &entry());
+        let err = install_json(
+            &spec(Layout::McpServers),
+            &path,
+            &install_args("sql-kai", false),
+            &entry(),
+        );
         assert!(err.is_err());
         // файл не тронут
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ /* jsonc */ }");
@@ -1013,8 +1058,12 @@ mod tests {
 
     #[test]
     fn toml_block_quotes_key_when_needed() {
-        assert!(entry().toml("sql-kai").starts_with("[mcp_servers.sql-kai]\n"));
-        assert!(entry().toml("sql kai").starts_with("[mcp_servers.\"sql kai\"]\n"));
+        assert!(entry()
+            .toml("sql-kai")
+            .starts_with("[mcp_servers.sql-kai]\n"));
+        assert!(entry()
+            .toml("sql kai")
+            .starts_with("[mcp_servers.\"sql kai\"]\n"));
         assert!(entry().toml("sql-kai").contains("args = [\"mcp\"]"));
     }
 

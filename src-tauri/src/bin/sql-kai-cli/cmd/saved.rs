@@ -57,7 +57,10 @@ pub enum SavedCmd {
 
 /// Ключ коллекции сохранёнок для профиля: группа, иначе id.
 fn saved_scope(p: &Profile) -> String {
-    p.group.clone().filter(|g| !g.trim().is_empty()).unwrap_or_else(|| p.id.clone())
+    p.group
+        .clone()
+        .filter(|g| !g.trim().is_empty())
+        .unwrap_or_else(|| p.id.clone())
 }
 
 pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {

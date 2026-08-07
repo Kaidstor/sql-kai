@@ -45,9 +45,7 @@ pub fn run(cmd: TunnelCmd) -> Result<ExitCode, AppError> {
         TunnelCmd::Close { target, all } => {
             let only = if all { None } else { target.as_deref() };
             if only.is_none() && !all {
-                return Err(AppError::Msg(
-                    "укажи хост/имя сокета или --all".into(),
-                ));
+                return Err(AppError::Msg("укажи хост/имя сокета или --all".into()));
             }
             let n = tunnel::close_masters(only);
             println!("закрыто мастеров: {n}");

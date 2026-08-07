@@ -24,14 +24,29 @@ pub enum VaultCmd {
 pub async fn run(cmd: VaultCmd) -> Result<ExitCode, AppError> {
     match cmd {
         VaultCmd::Status => {
-            println!("vault:     {}", if vault::exists() { "есть" } else { "нет" });
+            println!(
+                "vault:     {}",
+                if vault::exists() {
+                    "есть"
+                } else {
+                    "нет"
+                }
+            );
             println!(
                 "touch id:  {}",
-                if vault::biometric_enrolled() { "включён" } else { "выключен" }
+                if vault::biometric_enrolled() {
+                    "включён"
+                } else {
+                    "выключен"
+                }
             );
             println!(
                 "cli trust: {}",
-                if vault::cli_trust_enrolled() { "включён" } else { "выключен" }
+                if vault::cli_trust_enrolled() {
+                    "включён"
+                } else {
+                    "выключен"
+                }
             );
         }
         VaultCmd::Setup => {

@@ -743,8 +743,11 @@ pub async fn table_ddl(client: &Client, schema: &str, table: &str) -> Result<Str
         }
     }
 
-    if let Some(c) =
-        query_scalar(client, &format!("SELECT obj_description({rel}, 'pg_class')")).await?
+    if let Some(c) = query_scalar(
+        client,
+        &format!("SELECT obj_description({rel}, 'pg_class')"),
+    )
+    .await?
     {
         ddl.push_str(&format!(
             "\nCOMMENT ON TABLE {qualified} IS {};",

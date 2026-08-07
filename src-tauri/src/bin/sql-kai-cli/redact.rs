@@ -103,7 +103,14 @@ mod tests {
             assert!(is_sensitive_column(name), "{name} должен маскироваться");
         }
         for name in [
-            "id", "email", "name", "monkey", "token_count", "keyboard", "primary", "author",
+            "id",
+            "email",
+            "name",
+            "monkey",
+            "token_count",
+            "keyboard",
+            "primary",
+            "author",
         ] {
             assert!(!is_sensitive_column(name), "{name} не должен маскироваться");
         }

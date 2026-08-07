@@ -160,7 +160,10 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
         // Читаем всегда, даже с --no-passwords: в этом же файле лежит имя
         // пользователя, а оно не секрет и нужно профилю.
         let creds_path = sources.with_file_name("credentials-config.json");
-        let creds = creds_path.is_file().then(|| read_credentials(&creds_path)).flatten();
+        let creds = creds_path
+            .is_file()
+            .then(|| read_credentials(&creds_path))
+            .flatten();
         if creds.is_none() && creds_path.is_file() {
             out.notes.push(format!(
                 "не расшифрован {} — пользователя и пароль задай в профиле сам",
@@ -218,9 +221,14 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
                 .and_then(|_| cred?.get("network/ssh_tunnel")?.get("password")?.as_str())
                 .map(str::to_string);
 
-            if config.get("handlers").and_then(|h| h.get("ssl")).is_some_and(|h| flag(h, "enabled")) {
-                out.notes
-                    .push(format!("{name}: настройки SSL не переносятся, задай их в профиле"));
+            if config
+                .get("handlers")
+                .and_then(|h| h.get("ssl"))
+                .is_some_and(|h| flag(h, "enabled"))
+            {
+                out.notes.push(format!(
+                    "{name}: настройки SSL не переносятся, задай их в профиле"
+                ));
             }
 
             out.profiles.push(ImportProfile {
@@ -237,7 +245,9 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
                     .and_then(|c| s(c, "user"))
                     .or_else(|| s(config, "user"))
                     .unwrap_or_default(),
-                password: with_passwords.then(|| db_cred.and_then(|c| s(c, "password"))).flatten(),
+                password: with_passwords
+                    .then(|| db_cred.and_then(|c| s(c, "password")))
+                    .flatten(),
                 ssh,
                 ssh_passphrase,
                 group: s(conn, "folder"),

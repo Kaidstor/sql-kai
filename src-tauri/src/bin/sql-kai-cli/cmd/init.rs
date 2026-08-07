@@ -111,7 +111,10 @@ fn step_path(a: &InitArgs) -> Result<(), AppError> {
         println!("  каталог {} будет создан", dir.display());
     }
     match std::fs::read_link(&target) {
-        Ok(cur) => println!("  ⚠ существующий симлинк будет заменён (сейчас → {})", cur.display()),
+        Ok(cur) => println!(
+            "  ⚠ существующий симлинк будет заменён (сейчас → {})",
+            cur.display()
+        ),
         Err(_) if target.exists() => println!("  ⚠ существующий файл будет заменён"),
         Err(_) => {}
     }
@@ -223,7 +226,9 @@ fn step_mcp() -> Result<(), AppError> {
     let present = mcp_setup::present_clients(mcp_setup::default_name());
     if present.is_empty() {
         println!("  Не нашёл конфигов известных MCP-клиентов (claude-code, codex, cursor, …).");
-        println!("  Когда появятся: `sql-kai mcp install <клиент>` (список — `sql-kai mcp install`).");
+        println!(
+            "  Когда появятся: `sql-kai mcp install <клиент>` (список — `sql-kai mcp install`)."
+        );
         return Ok(());
     }
     let pending: Vec<&mcp_setup::PresentClient> =
@@ -252,7 +257,10 @@ fn step_mcp() -> Result<(), AppError> {
         cmd.args(["mcp", "install", client.key]);
         vault::scrub_master_password_env(&mut cmd);
         let status = cmd.status().map_err(|e| {
-            AppError::Msg(format!("не смог запустить {} mcp install: {e}", exe.display()))
+            AppError::Msg(format!(
+                "не смог запустить {} mcp install: {e}",
+                exe.display()
+            ))
         })?;
         if !status.success() {
             println!(
@@ -292,7 +300,8 @@ fn step_completion(shell: Option<CompletionShell>) -> Result<(), AppError> {
         if path.exists() {
             println!("  ⚠ существующий файл будет перезаписан");
         }
-        if !confirm(&format!("записать автодополнение для {}?", shell.as_str()))? {
+        if !confirm(&format!("записать автодополнение для {}?", shell.as_str()))?
+        {
             println!("  пропущено");
             return Ok(());
         }
@@ -428,7 +437,11 @@ fn print_manual(a: &InitArgs, shell: Option<CompletionShell>) {
     println!("sql-kai init: нет TTY — ничего не меняю. Запусти в терминале `sql-kai init` или сделай вручную:");
     match (bundle_cli(), link_target(a)) {
         (Some(src), Ok(target)) => {
-            println!("  ln -sf {} {}", shq(&src.to_string_lossy()), shq(&target.to_string_lossy()));
+            println!(
+                "  ln -sf {} {}",
+                shq(&src.to_string_lossy()),
+                shq(&target.to_string_lossy())
+            );
         }
         _ => println!("  # симлинк в PATH: нужен sql-kai.app ({APP_CLI})"),
     }

@@ -40,7 +40,9 @@ pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), AppE
             .filter(|(_, s)| s.profile_id == id)
             .map(|(k, _)| k.clone())
             .collect();
-        ids.into_iter().filter_map(|k| sessions.remove(&k)).collect()
+        ids.into_iter()
+            .filter_map(|k| sessions.remove(&k))
+            .collect()
     };
     drop(dropped); // teardown ssh-туннелей — вне лока
     store::delete_profile(&id)

@@ -94,7 +94,11 @@ struct MethodError {
 }
 
 fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
-    MethodError { code, message: message.into(), sqlstate: None }
+    MethodError {
+        code,
+        message: message.into(),
+        sqlstate: None,
+    }
 }
 
 async fn dispatch(
@@ -135,7 +139,10 @@ async fn dispatch(
                 f();
                 Ok(json!({}))
             }
-            None => Err(method_err("unsupported", "этот сервер нельзя погасить по сокету")),
+            None => Err(method_err(
+                "unsupported",
+                "этот сервер нельзя погасить по сокету",
+            )),
         },
         Method::Cancel { profile_id } => {
             let entry = state
@@ -150,7 +157,11 @@ async fn dispatch(
                 .map_err(|e| method_err("cancel", e.to_string()))?;
             Ok(json!({}))
         }
-        Method::Ddl { profile_id, schema, table } => {
+        Method::Ddl {
+            profile_id,
+            schema,
+            table,
+        } => {
             if !vault::is_unlocked() {
                 return Err(method_err("vault_locked", "vault заблокирован в GUI"));
             }
@@ -168,19 +179,33 @@ async fn dispatch(
                 })?;
             Ok(json!({ "ddl": ddl }))
         }
-        Method::OpenTable { profile_id, schema, table } => match &hooks.open_in_gui {
+        Method::OpenTable {
+            profile_id,
+            schema,
+            table,
+        } => match &hooks.open_in_gui {
             Some(open) => {
-                open(GuiOpen::Table { profile_id, schema, table });
+                open(GuiOpen::Table {
+                    profile_id,
+                    schema,
+                    table,
+                });
                 Ok(json!({}))
             }
-            None => Err(method_err("unsupported", "GUI не запущен — вкладку открыть некому")),
+            None => Err(method_err(
+                "unsupported",
+                "GUI не запущен — вкладку открыть некому",
+            )),
         },
         Method::OpenQuery { profile_id, sql } => match &hooks.open_in_gui {
             Some(open) => {
                 open(GuiOpen::Query { profile_id, sql });
                 Ok(json!({}))
             }
-            None => Err(method_err("unsupported", "GUI не запущен — вкладку открыть некому")),
+            None => Err(method_err(
+                "unsupported",
+                "GUI не запущен — вкладку открыть некому",
+            )),
         },
         Method::GuiSelection { profile_id } => match &hooks.gui_selection {
             // таймаут — внутри хука (webview может не ответить); брокер
@@ -231,14 +256,21 @@ fn guard_prod_write(profile_id: &str, client_authorized: bool) -> Result<(), Met
                 profile.host,
                 profile.port,
                 profile.database,
-                if client_authorized { "client-authorized" } else { "env allowlist" }
+                if client_authorized {
+                    "client-authorized"
+                } else {
+                    "env allowlist"
+                }
             ),
         );
         return Ok(());
     }
     logging::log(
         "broker",
-        &format!("prod write refused for \"{}\": no authorization", profile.name),
+        &format!(
+            "prod write refused for \"{}\": no authorization",
+            profile.name
+        ),
     );
     Err(MethodError {
         code: "prod_write",
@@ -334,11 +366,18 @@ async fn do_query(
         // (казалось бы) read-only сессии.
         db::execute(client, "SET default_transaction_read_only = off", 1)
             .await
-            .map_err(|e| method_err("write_setup", format!("не удалось включить режим записи: {e}")))?;
+            .map_err(|e| {
+                method_err(
+                    "write_setup",
+                    format!("не удалось включить режим записи: {e}"),
+                )
+            })?;
     }
 
     let result = if read_only_tx {
-        executor.execute_read_only(sql, max_rows.clamp(1, 100_000)).await
+        executor
+            .execute_read_only(sql, max_rows.clamp(1, 100_000))
+            .await
     } else {
         executor.execute(sql, max_rows.clamp(1, 100_000)).await
     };
@@ -439,9 +478,7 @@ async fn get_or_open(
     // окажется read-write (тот же принцип, что у write-SET'а в do_query).
     db::execute(&session.client, "SET default_transaction_read_only = on", 1)
         .await
-        .map_err(|e| {
-            AppError::Msg(format!("не удалось перевести cli-сессию в read-only: {e}"))
-        })?;
+        .map_err(|e| AppError::Msg(format!("не удалось перевести cli-сессию в read-only: {e}")))?;
     let entry = Arc::new(CliEntry::new(session));
     let (winner, ours_won) = {
         let mut map = state.cli.lock().unwrap();
@@ -462,7 +499,10 @@ async fn get_or_open(
     }
     logging::log(
         "broker",
-        &format!("\"{}\": cli session opened on sql-kai request", profile.name),
+        &format!(
+            "\"{}\": cli session opened on sql-kai request",
+            profile.name
+        ),
     );
     // отметка «подключались по cli» + profiles_changed, чтобы лаунчер
     // перечитал профили и обновил "last connected" сразу
@@ -522,8 +562,8 @@ mod tests {
     /// params валидны для unit-вариантов.
     #[tokio::test]
     async fn hello_and_sessions_over_socket() {
-        let path = std::env::temp_dir()
-            .join(format!("kai-broker-test-{}.sock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("kai-broker-test-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
         let state = Arc::new(BrokerState::default());
@@ -544,8 +584,7 @@ mod tests {
         w.write_all(b"{\"id\":1,\"method\":\"hello\",\"params\":{}}\n")
             .await
             .unwrap();
-        let v: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
         assert_eq!(v["id"], 1);
         assert_eq!(v["result"]["protocol"], PROTOCOL_VERSION);
 
@@ -568,8 +607,8 @@ mod tests {
     /// notify_profiles_changed() в sql-kai (discover/rm).
     #[tokio::test]
     async fn profiles_changed_fires_hook() {
-        let path = std::env::temp_dir()
-            .join(format!("kai-broker-test-pc-{}.sock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("kai-broker-test-pc-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).unwrap();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -590,8 +629,7 @@ mod tests {
         w.write_all(b"{\"id\":1,\"method\":\"profiles_changed\",\"params\":null}\n")
             .await
             .unwrap();
-        let v: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
         assert!(v.get("error").is_none(), "unexpected reply: {v}");
         assert!(fired.load(Ordering::Relaxed));
         let _ = std::fs::remove_file(&path);
@@ -674,7 +712,10 @@ mod tests {
             gui_selection: None,
         });
         let r = dispatch(
-            Method::OpenQuery { profile_id: "p1".into(), sql: "SELECT 1".into() },
+            Method::OpenQuery {
+                profile_id: "p1".into(),
+                sql: "SELECT 1".into(),
+            },
             &state,
             &without_hook,
         )
@@ -700,7 +741,9 @@ mod tests {
         });
         let state = Arc::new(BrokerState::default());
         let r = dispatch(
-            Method::GuiSelection { profile_id: "p1".into() },
+            Method::GuiSelection {
+                profile_id: "p1".into(),
+            },
             &state,
             &with_hook,
         )
@@ -719,7 +762,9 @@ mod tests {
             gui_selection: None,
         });
         let r = dispatch(
-            Method::GuiSelection { profile_id: "p1".into() },
+            Method::GuiSelection {
+                profile_id: "p1".into(),
+            },
             &state,
             &without_hook,
         )

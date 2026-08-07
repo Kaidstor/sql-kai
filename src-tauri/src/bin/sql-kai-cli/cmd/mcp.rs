@@ -30,9 +30,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
 
-use crate::cmd::table_info::split_table;
 use crate::cmd::mcp_setup::{self, InstallArgs, StatusArgs};
 use crate::cmd::schema as schema_cmd;
+use crate::cmd::table_info::split_table;
 use crate::{broker_client, redact, session};
 
 /// Ревизии MCP, которые сервер действительно обслуживает; первая —
@@ -308,8 +308,15 @@ impl Server {
                 if write {
                     session::guard_prod_write(&profile).map_err(|e| e.to_string())?;
                 }
-                let q =
-                    run_query(&profile, &sql.run, max_rows, write, Some(&sql.history), true).await?;
+                let q = run_query(
+                    &profile,
+                    &sql.run,
+                    max_rows,
+                    write,
+                    Some(&sql.history),
+                    true,
+                )
+                .await?;
                 let structured = query_structured(&sql.run, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
@@ -337,11 +344,18 @@ impl Server {
             "tables" => {
                 let profile = self.target(args)?;
                 let counts = args.get("counts").and_then(Value::as_bool).unwrap_or(false);
-                let sql = if counts { db::TABLES_COUNTS_SQL } else { db::TABLES_SQL };
+                let sql = if counts {
+                    db::TABLES_COUNTS_SQL
+                } else {
+                    db::TABLES_SQL
+                };
                 let q = run_query(&profile, sql, MAX_ROWS_CAP, false, None, false).await?;
-                let mut structured = rows_structured("tables", &q.exec, &[
-                    "schema", "name", "kind",
-                ], counts.then_some("approx_rows"));
+                let mut structured = rows_structured(
+                    "tables",
+                    &q.exec,
+                    &["schema", "name", "kind"],
+                    counts.then_some("approx_rows"),
+                );
                 mark_truncated(&mut structured, &q);
                 Ok(ToolOutput::new(q.text, structured))
             }
@@ -412,11 +426,17 @@ struct ToolOutput {
 
 impl ToolOutput {
     fn plain(text: String) -> Self {
-        ToolOutput { text, structured: None }
+        ToolOutput {
+            text,
+            structured: None,
+        }
     }
 
     fn new(text: String, structured: Value) -> Self {
-        ToolOutput { text, structured: Some(structured) }
+        ToolOutput {
+            text,
+            structured: Some(structured),
+        }
     }
 
     /// Ответ GUI-tool'ов: одно и то же сообщение в оба канала.
@@ -527,9 +547,11 @@ fn query_output_schema() -> Value {
 
 /// outputSchema tool'а `schema` — дерево `cmd::schema::SchemaDump` (camelCase).
 fn schema_output_schema() -> Value {
-    let obj = |props: Value, required: Value| json!({
-        "type": "object", "properties": props, "required": required,
-    });
+    let obj = |props: Value, required: Value| {
+        json!({
+            "type": "object", "properties": props, "required": required,
+        })
+    };
     let str_or_null = json!({ "type": ["string", "null"] });
     let relation = obj(
         json!({
@@ -591,11 +613,13 @@ fn schema_output_schema() -> Value {
     // она весит больше, чем весь остальной tools/list. Остальные три массива
     // ссылаются на неё словами — `$ref` тут стоил бы совместимости с
     // клиентами, которые не резолвят ссылки в outputSchema.
-    let same_as_tables = |what: &str| json!({
-        "type": "array",
-        "description": format!("{what}; same object shape as `tables`"),
-        "items": { "type": "object" },
-    });
+    let same_as_tables = |what: &str| {
+        json!({
+            "type": "array",
+            "description": format!("{what}; same object shape as `tables`"),
+            "items": { "type": "object" },
+        })
+    };
     json!({
         "type": "object",
         "properties": {
@@ -824,7 +848,10 @@ fn last_gui_profile() -> Option<Profile> {
         .iter()
         .filter_map(|(id, m)| m.gui.map(|at| (id.clone(), at)))
         .max_by_key(|(_, at)| *at)?;
-    store::load_profiles().ok()?.into_iter().find(|p| p.id == id)
+    store::load_profiles()
+        .ok()?
+        .into_iter()
+        .find(|p| p.id == id)
 }
 
 /// Булев аргумент tool'а; отсутствие и `null` — false.
@@ -963,7 +990,9 @@ fn read_sql_file(path: &str) -> Result<String, String> {
         .read_to_string(&mut sql)
         .map_err(|e| format!("cannot read file '{path}': {e}"))?;
     if sql.len() as u64 > SQL_FILE_CAP {
-        return Err(format!("'{path}' grew over the {SQL_FILE_CAP}-byte limit while reading"));
+        return Err(format!(
+            "'{path}' grew over the {SQL_FILE_CAP}-byte limit while reading"
+        ));
     }
     Ok(sql)
 }
@@ -1014,7 +1043,10 @@ fn sql_argument(args: &Value) -> Result<SqlArgs, String> {
         Some(other) => return Err(format!("`parameters` must be an array, got {other}")),
     };
     if params.is_empty() {
-        return Ok(SqlArgs { run: sql.clone(), history: sql });
+        return Ok(SqlArgs {
+            run: sql.clone(),
+            history: sql,
+        });
     }
     let statements = db::split_statements(&sql);
     match statements.len() {
@@ -1169,9 +1201,7 @@ fn query_structured(sql: &str, q: &QueryOutcome) -> Value {
                 .columns
                 .iter()
                 .enumerate()
-                .map(|(k, name)| {
-                    json!({ "name": name, "type": column_type(&q.types, i, k) })
-                })
+                .map(|(k, name)| json!({ "name": name, "type": column_type(&q.types, i, k) }))
                 .collect();
             json!({
                 "columns": columns,
@@ -1282,7 +1312,6 @@ fn rows_structured(key: &str, exec: &ExecResult, fields: &[&str], extra: Option<
 mod tests {
     use super::*;
 
-
     /// `file` — не способ прочитать произвольный файл: путь называет модель, а
     /// не-SQL вернулся бы ей фрагментами в тексте синтаксической ошибки. Плюс
     /// fifo (повесил бы stdio-цикл) и каталог отсекаются как не regular file.
@@ -1316,9 +1345,6 @@ mod tests {
     /// Значение с обратным слэшем уходит в E'…': при
     /// `standard_conforming_strings = off` обычный литерал прочитал бы `\` как
     /// escape, и значение поехало бы (а `'…\'` — сломало бы запрос).
-
-
-
 
     #[test]
     fn parameters_require_a_single_statement() {
@@ -1383,7 +1409,11 @@ mod tests {
         assert!(pinned[0]["inputSchema"]["properties"]
             .get("profile")
             .is_none());
-        assert!(pinned.as_array().unwrap().iter().all(|t| t["name"] != "profiles"));
+        assert!(pinned
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["name"] != "profiles"));
         let multi = tool_definitions(true);
         assert_eq!(multi[0]["name"], "profiles");
         let query = multi
@@ -1448,7 +1478,12 @@ mod tests {
         assert_eq!(v["tables"][0]["schema"], "public");
         assert_eq!(v["tables"][0]["kind"], "r");
         // при --counts появляется четвёртое поле, которого в строке нет
-        let v = rows_structured("tables", &exec, &["schema", "name", "kind"], Some("approx_rows"));
+        let v = rows_structured(
+            "tables",
+            &exec,
+            &["schema", "name", "kind"],
+            Some("approx_rows"),
+        );
         assert_eq!(v["tables"][0]["approx_rows"], Value::Null);
     }
 
@@ -1533,10 +1568,22 @@ mod tests {
 
     #[test]
     fn command_tag_reconstructs_postgres_tags() {
-        let r = StatementResult { rows_affected: Some(3), ..Default::default() };
-        assert_eq!(command_tag(Some("UPDATE t SET a = 1"), &r), json!("UPDATE 3"));
-        assert_eq!(command_tag(Some("INSERT INTO t VALUES (1)"), &r), json!("INSERT 0 3"));
-        assert_eq!(command_tag(Some("CREATE TABLE t ()"), &r), json!("CREATE TABLE"));
+        let r = StatementResult {
+            rows_affected: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            command_tag(Some("UPDATE t SET a = 1"), &r),
+            json!("UPDATE 3")
+        );
+        assert_eq!(
+            command_tag(Some("INSERT INTO t VALUES (1)"), &r),
+            json!("INSERT 0 3")
+        );
+        assert_eq!(
+            command_tag(Some("CREATE TABLE t ()"), &r),
+            json!("CREATE TABLE")
+        );
         assert_eq!(command_tag(None, &r), Value::Null);
     }
 }

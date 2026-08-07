@@ -51,8 +51,8 @@ pub fn unlock_vault() -> Result<(), AppError> {
         Ok(()) => Ok(()),
         Err(e) => {
             if vault::exists() && std::io::stdin().is_terminal() {
-                let pw = rpassword::prompt_password("vault master password: ")
-                    .map_err(AppError::Io)?;
+                let pw =
+                    rpassword::prompt_password("vault master password: ").map_err(AppError::Io)?;
                 return vault::unlock_password(&pw);
             }
             Err(e)
@@ -97,7 +97,10 @@ pub struct PwSource<'a> {
 }
 
 /// Разрешает пароль-override по приоритету: env → sec → (None = из vault).
-pub(super) fn resolve_override(profile: &Profile, src: &PwSource) -> Result<Option<String>, AppError> {
+pub(super) fn resolve_override(
+    profile: &Profile,
+    src: &PwSource,
+) -> Result<Option<String>, AppError> {
     if let Some(v) = src.env {
         return std::env::var(v)
             .map(Some)

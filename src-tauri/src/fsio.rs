@@ -162,7 +162,10 @@ mod tests {
 
         write_atomic(&link, b"new").unwrap();
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "симлинк заменён обычным файлом"
         );
         assert_eq!(fs::read(&real).unwrap(), b"new");

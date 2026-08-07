@@ -278,8 +278,14 @@ fn app_error_shape() {
     let err = to_json(&AppError::SessionGone);
     assert_eq!(err["code"], "session_gone");
     assert!(err["message"].is_string());
-    assert_eq!(to_json(&AppError::ConnectionLost)["code"], "connection_lost");
-    assert_eq!(to_json(&AppError::Msg("boom".into())), json!({ "code": "app", "message": "boom" }));
+    assert_eq!(
+        to_json(&AppError::ConnectionLost)["code"],
+        "connection_lost"
+    );
+    assert_eq!(
+        to_json(&AppError::Msg("boom".into())),
+        json!({ "code": "app", "message": "boom" })
+    );
     assert_eq!(
         to_json(&AppError::ReadOnlyRefused("needs write".into())),
         json!({ "code": "read_only", "message": "needs write" })

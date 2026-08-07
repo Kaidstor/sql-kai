@@ -139,11 +139,19 @@ fn ensure_docker() -> Result<(), AppError> {
 
 /// Состояние контейнера (`running`/`exited`/…), None — контейнера нет.
 fn container_state(name: &str) -> Result<Option<String>, AppError> {
-    let out = docker_out(&["container", "inspect", "--format", "{{.State.Status}}", name])?;
+    let out = docker_out(&[
+        "container",
+        "inspect",
+        "--format",
+        "{{.State.Status}}",
+        name,
+    ])?;
     if !out.status.success() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    ))
 }
 
 /// Публикует ли контейнер этот порт на хосте. Нужно, чтобы отличить «порт держит
@@ -165,9 +173,11 @@ fn container_publishes_port(name: &str, port: u16) -> Result<bool, AppError> {
 
 /// Образ есть локально? (иначе тянем явно, чтобы «docker run» не молчал минуту)
 fn image_present(image: &str) -> Result<bool, AppError> {
-    Ok(docker_out(&["image", "inspect", "--format", "{{.Id}}", image])?
-        .status
-        .success())
+    Ok(
+        docker_out(&["image", "inspect", "--format", "{{.Id}}", image])?
+            .status
+            .success(),
+    )
 }
 
 fn pull_image(image: &str) -> Result<(), AppError> {
@@ -193,14 +203,11 @@ fn image_for(server_version: &str) -> Result<String, AppError> {
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     let mut parts = digits.split('.').filter(|s| !s.is_empty());
-    let major: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| {
-            AppError::Msg(format!(
-                "не разобрал версию сервера '{server_version}' — задай образ через --image"
-            ))
-        })?;
+    let major: u32 = parts.next().and_then(|s| s.parse().ok()).ok_or_else(|| {
+        AppError::Msg(format!(
+            "не разобрал версию сервера '{server_version}' — задай образ через --image"
+        ))
+    })?;
     if major >= 10 {
         Ok(format!("postgres:{major}"))
     } else {
@@ -250,7 +257,9 @@ fn container_name(fork_name: &str) -> String {
 fn gen_password() -> String {
     const CS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
-    (0..24).map(|_| CS[rng.gen_range(0..CS.len())] as char).collect()
+    (0..24)
+        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
+        .collect()
 }
 
 /// Пароль источника для локального `pg_dump`: env → sec → vault. Тот же приоритет,
@@ -423,7 +432,11 @@ fn dump_local(
         .is_some_and(|s| s.enabled && s.reject_unauthorized);
     let via_forward = verifies && endpoint.0 != profile.host;
     cmd.arg("-h")
-        .arg(if via_forward { profile.host.as_str() } else { endpoint.0 })
+        .arg(if via_forward {
+            profile.host.as_str()
+        } else {
+            endpoint.0
+        })
         .arg("-p")
         .arg(endpoint.1.to_string())
         .arg("-U")
@@ -480,7 +493,16 @@ async fn wait_ready(cname: &str, user: &str, database: &str) -> Result<(), AppEr
             }
         }
         let ok = docker_out(&[
-            "exec", cname, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", user, "-d",
+            "exec",
+            cname,
+            "pg_isready",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "5432",
+            "-U",
+            user,
+            "-d",
             database,
         ])?
         .status
@@ -501,7 +523,13 @@ async fn wait_ready(cname: &str, user: &str, database: &str) -> Result<(), AppEr
 /// Заливка дампа в форк: psql внутри контейнера (unix-сокет, trust — пароль не
 /// нужен). Схему льём одной транзакцией (или вся, или ничего), данные — нет:
 /// на большом дампе одна транзакция раздувает WAL.
-fn restore(cname: &str, user: &str, database: &str, dump: &Path, schema_only: bool) -> Result<ExitStatus, AppError> {
+fn restore(
+    cname: &str,
+    user: &str,
+    database: &str,
+    dump: &Path,
+    schema_only: bool,
+) -> Result<ExitStatus, AppError> {
     let file = File::open(dump).map_err(AppError::Io)?;
     let mut cmd = docker();
     cmd.args(["exec", "-i", cname, "psql", "-U", user, "-d", database])
@@ -514,14 +542,19 @@ fn restore(cname: &str, user: &str, database: &str, dump: &Path, schema_only: bo
         cmd.arg("--single-transaction");
     }
     cmd.args(["-f", "-"]).stdin(Stdio::from(file));
-    cmd.status().map_err(|e| AppError::Msg(format!("docker exec psql: {e}")))
+    cmd.status()
+        .map_err(|e| AppError::Msg(format!("docker exec psql: {e}")))
 }
 
 /// Сколько обычных таблиц приехало — дешёвая проверка, что форк не пустой.
 fn count_tables(cname: &str, user: &str, database: &str) -> Option<String> {
-    const SQL: &str = "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+    const SQL: &str =
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
         WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')";
-    let out = docker_out(&["exec", cname, "psql", "-U", user, "-d", database, "-tAc", SQL]).ok()?;
+    let out = docker_out(&[
+        "exec", cname, "psql", "-U", user, "-d", database, "-tAc", SQL,
+    ])
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -625,22 +658,37 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
             "только схема (--data — вместе с данными)"
         },
         if via_ssh {
-            format!("через ssh {} + docker exec", profile.ssh.as_ref().map(|s| s.host.clone()).unwrap_or_default())
+            format!(
+                "через ssh {} + docker exec",
+                profile
+                    .ssh
+                    .as_ref()
+                    .map(|s| s.host.clone())
+                    .unwrap_or_default()
+            )
         } else {
             "локальным pg_dump".to_string()
         }
     );
     println!("  контейнер  docker run {image} -> {cname} на 127.0.0.1:{port}");
     if existing_container.is_some() {
-        println!("             (--replace: прежний контейнер {cname} будет удалён вместе с данными)");
+        println!(
+            "             (--replace: прежний контейнер {cname} будет удалён вместе с данными)"
+        );
     }
     println!(
         "  профиль    '{fork_name}'{} -> 127.0.0.1:{port}/{}, пароль в vault",
-        if existing_profile.is_some() { " (существующий обновится)" } else { "" },
+        if existing_profile.is_some() {
+            " (существующий обновится)"
+        } else {
+            ""
+        },
         profile.database
     );
     if a.data {
-        println!("  на источнике pg_dump держит ACCESS SHARE-локи: DDL/VACUUM FULL на нём подождут");
+        println!(
+            "  на источнике pg_dump держит ACCESS SHARE-локи: DDL/VACUUM FULL на нём подождут"
+        );
     }
 
     if a.dry_run {
@@ -667,7 +715,11 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     eprintln!("снимаю дамп…");
     let mut dumped = false;
     if via_ssh {
-        let alias = profile.ssh.as_ref().map(|s| s.host.clone()).unwrap_or_default();
+        let alias = profile
+            .ssh
+            .as_ref()
+            .map(|s| s.host.clone())
+            .unwrap_or_default();
         let status = dump_remote(
             &alias,
             a.container.as_deref(),
@@ -769,7 +821,13 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     wait_ready(&cname, &profile.user, &profile.database).await?;
 
     eprintln!("заливаю дамп…");
-    let status = restore(&cname, &profile.user, &profile.database, dump.path(), !a.data)?;
+    let status = restore(
+        &cname,
+        &profile.user,
+        &profile.database,
+        dump.path(),
+        !a.data,
+    )?;
     if !status.success() {
         eprintln!(
             "sql-kai: psql не залил дамп (код {})",
@@ -825,10 +883,16 @@ pub async fn run(a: ForkArgs) -> Result<ExitCode, AppError> {
     };
     if let Some(p) = &saved {
         crate::broker_client::notify_profiles_changed().await;
-        println!("готово: профиль '{}' -> 127.0.0.1:{}/{}", p.name, p.port, p.database);
+        println!(
+            "готово: профиль '{}' -> 127.0.0.1:{}/{}",
+            p.name, p.port, p.database
+        );
     }
     if let Some(n) = count_tables(&cname, &profile.user, &profile.database) {
-        println!("таблиц в форке: {n}{}", if a.data { "" } else { " (без данных)" });
+        println!(
+            "таблиц в форке: {n}{}",
+            if a.data { "" } else { " (без данных)" }
+        );
     }
     println!("  миграция на копии: sql-kai {fork_name} -f migration.sql --write");
     println!("  удалить форк:      docker rm -f {cname}");
@@ -841,7 +905,10 @@ mod tests {
 
     #[test]
     fn image_by_server_version() {
-        assert_eq!(image_for("16.4 (Debian 16.4-1.pgdg120+1)").unwrap(), "postgres:16");
+        assert_eq!(
+            image_for("16.4 (Debian 16.4-1.pgdg120+1)").unwrap(),
+            "postgres:16"
+        );
         assert_eq!(image_for("17.2").unwrap(), "postgres:17");
         assert_eq!(image_for("9.6.24").unwrap(), "postgres:9.6");
         assert!(image_for("").is_err());

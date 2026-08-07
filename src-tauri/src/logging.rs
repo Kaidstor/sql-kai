@@ -55,11 +55,7 @@ pub fn log(scope: &str, message: &str) {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let line = format!(
-        "[{}] [{scope}] {}\n",
-        format_utc(secs),
-        message.trim_end()
-    );
+    let line = format!("[{}] [{scope}] {}\n", format_utc(secs), message.trim_end());
     let mut opts = OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]

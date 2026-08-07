@@ -113,9 +113,12 @@ pub async fn export_statement(
         }
         match msg {
             SimpleQueryMessage::RowDescription(cols) if idx == statement_index => {
-                match writer
-                    .begin(&cols.iter().map(|c| c.name().to_string()).collect::<Vec<_>>())
-                {
+                match writer.begin(
+                    &cols
+                        .iter()
+                        .map(|c| c.name().to_string())
+                        .collect::<Vec<_>>(),
+                ) {
                     Ok(()) => columns_seen = true,
                     Err(e) => failure = Some(ExportError::Local(e)),
                 }
@@ -125,7 +128,10 @@ pub async fn export_statement(
                     // same tolerance as execute(): a Row without a preceding
                     // RowDescription still carries its column names
                     match writer.begin(
-                        &row.columns().iter().map(|c| c.name().to_string()).collect::<Vec<_>>(),
+                        &row.columns()
+                            .iter()
+                            .map(|c| c.name().to_string())
+                            .collect::<Vec<_>>(),
                     ) {
                         Ok(()) => columns_seen = true,
                         Err(e) => {
@@ -227,8 +233,11 @@ impl Writer {
     fn begin(&mut self, cols: &[String]) -> Result<(), AppError> {
         match self {
             Writer::Csv(out) => {
-                let line =
-                    cols.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(",");
+                let line = cols
+                    .iter()
+                    .map(|c| csv_field(c))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 out.write_all(line.as_bytes())?;
             }
             Writer::Json { columns, .. } => {
@@ -328,7 +337,9 @@ fn jstr(s: &str) -> String {
 }
 
 fn md_cell(v: &str) -> String {
-    v.replace('|', "\\|").replace("\r\n", "<br>").replace('\n', "<br>")
+    v.replace('|', "\\|")
+        .replace("\r\n", "<br>")
+        .replace('\n', "<br>")
 }
 
 fn md_line(cells: &[String]) -> String {
@@ -372,7 +383,10 @@ mod tests {
     #[test]
     fn json_matches_stringify_shape() {
         let text = write_all(ExportFormat::Json, &[vec![Some("1"), None]]);
-        assert_eq!(text, "[\n  {\n    \"id\": \"1\",\n    \"name\": null\n  }\n]");
+        assert_eq!(
+            text,
+            "[\n  {\n    \"id\": \"1\",\n    \"name\": null\n  }\n]"
+        );
         let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed[0]["name"], serde_json::Value::Null);
     }
@@ -385,15 +399,13 @@ mod tests {
     #[test]
     fn md_escapes_pipes_and_newlines() {
         let text = write_all(ExportFormat::Md, &[vec![Some("a|b"), Some("x\ny")]]);
-        assert_eq!(
-            text,
-            "| id | name |\n| --- | --- |\n| a\\|b | x<br>y |"
-        );
+        assert_eq!(text, "| id | name |\n| --- | --- |\n| a\\|b | x<br>y |");
     }
 
     #[test]
     fn xlsx_writes_a_zip_container() {
-        let path = std::env::temp_dir().join(format!("sql-kai-export-{}.xlsx", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("sql-kai-export-{}.xlsx", uuid::Uuid::new_v4()));
         let path = path.to_str().unwrap();
         let mut w = Writer::create(ExportFormat::Xlsx, path).unwrap();
         w.begin(&["id".into(), "name".into()]).unwrap();
@@ -407,8 +419,7 @@ mod tests {
 
     #[test]
     fn write_rows_xlsx_from_selection() {
-        let path =
-            std::env::temp_dir().join(format!("sql-kai-sel-{}.xlsx", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("sql-kai-sel-{}.xlsx", uuid::Uuid::new_v4()));
         let path = path.to_str().unwrap();
         let n = write_rows_xlsx(
             path,

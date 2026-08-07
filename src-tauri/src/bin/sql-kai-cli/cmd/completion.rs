@@ -258,9 +258,7 @@ mod tests {
     }
 
     fn lines_with<'a>(out: &'a str, prefix: &str) -> Vec<&'a str> {
-        out.lines()
-            .filter_map(|l| l.strip_prefix(prefix))
-            .collect()
+        out.lines().filter_map(|l| l.strip_prefix(prefix)).collect()
     }
 
     /// bash вставляет элемент COMPREPLY в командную строку как есть, а имя
@@ -289,7 +287,10 @@ mod tests {
         // кандидат уходит в строку заэкранированным…
         let raw = lines_with(&out, "raw ");
         assert_eq!(raw.len(), names.len(), "вывод: {out}");
-        assert!(!raw.contains(&hostile.as_str()), "метасимволы не заэкранированы: {out}");
+        assert!(
+            !raw.contains(&hostile.as_str()),
+            "метасимволы не заэкранированы: {out}"
+        );
         // …но после разбора шеллом это ровно исходное имя
         assert_eq!(lines_with(&out, "word "), names, "вывод: {out}");
         let _ = std::fs::remove_dir_all(&dir);

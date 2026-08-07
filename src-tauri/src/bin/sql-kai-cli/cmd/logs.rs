@@ -88,7 +88,10 @@ enum Target {
 }
 
 fn is_loopback(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]")
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]"
+    )
 }
 
 /// Профиль без ssh и не в петле — это либо managed-база, либо postgres не в
@@ -239,11 +242,10 @@ pub fn run(a: LogsArgs) -> Result<ExitCode, AppError> {
     }
 
     let status = match &target {
-        Target::Ssh(host) => remote::run_via_stdin(host, &payload)
-            .map_err(|e| AppError::Msg(format!("ssh: {e}")))?,
-        Target::Local => {
-            run_local(&payload).map_err(|e| AppError::Msg(format!("bash: {e}")))?
+        Target::Ssh(host) => {
+            remote::run_via_stdin(host, &payload).map_err(|e| AppError::Msg(format!("ssh: {e}")))?
         }
+        Target::Local => run_local(&payload).map_err(|e| AppError::Msg(format!("bash: {e}")))?,
     };
     let code = status.code().unwrap_or(1);
     print_hint(code, &a, &target);
@@ -302,7 +304,10 @@ mod tests {
         let p = profile("10.0.0.5", Some("bastion"));
         assert!(matches!(resolve_target(&p).unwrap(), Target::Ssh(h) if h == "bastion"));
         // ssh: Some с пустым host — «ssh выключен», как это читает db::connect
-        assert!(matches!(resolve_target(&profile("127.0.0.1", Some("  "))), Ok(Target::Local)));
+        assert!(matches!(
+            resolve_target(&profile("127.0.0.1", Some("  "))),
+            Ok(Target::Local)
+        ));
         assert!(resolve_target(&profile("10.0.0.5", Some(""))).is_err());
     }
 

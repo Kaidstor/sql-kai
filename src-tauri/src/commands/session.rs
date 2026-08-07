@@ -129,8 +129,7 @@ pub fn spawn_keepalive(app: &tauri::AppHandle) {
             // должен задерживать пинги остальных.
             for client in clients.into_iter().filter(|c| !c.is_closed()) {
                 tauri::async_runtime::spawn(async move {
-                    let _ =
-                        tokio::time::timeout(KEEPALIVE_TIMEOUT, client.simple_query("")).await;
+                    let _ = tokio::time::timeout(KEEPALIVE_TIMEOUT, client.simple_query("")).await;
                 });
             }
         }
@@ -144,9 +143,7 @@ fn with_session<T>(
     f: impl FnOnce(&Session) -> T,
 ) -> Result<T, AppError> {
     let sessions = state.sessions.lock().unwrap();
-    let session = sessions
-        .get(session_id)
-        .ok_or(AppError::SessionGone)?;
+    let session = sessions.get(session_id).ok_or(AppError::SessionGone)?;
     Ok(f(session))
 }
 
@@ -180,9 +177,7 @@ pub(super) fn client_and_tx(
     session_id: &str,
 ) -> Result<(Arc<Client>, Arc<AtomicU8>), AppError> {
     let mut sessions = state.sessions.lock().unwrap();
-    let session = sessions
-        .get(session_id)
-        .ok_or(AppError::SessionGone)?;
+    let session = sessions.get(session_id).ok_or(AppError::SessionGone)?;
     let client = session.client.clone();
     if client.is_closed() {
         let name = session.profile_name.clone();
@@ -356,7 +351,10 @@ pub async fn test_profile(
 /// Read after a run to refresh the status-bar badge (covers the error path,
 /// where `execute_sql` returns Err and carries no result).
 #[tauri::command]
-pub fn session_tx_status(state: State<'_, AppState>, session_id: String) -> Result<String, AppError> {
+pub fn session_tx_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, AppError> {
     with_session(&state, &session_id, |s| {
         TxStatus::label_from_u8(s.tx.load(Ordering::Relaxed)).into()
     })

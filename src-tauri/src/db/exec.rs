@@ -72,8 +72,11 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
                     )
                 });
                 if cur.rows.len() < max_rows {
-                    cur.rows
-                        .push((0..row.len()).map(|i| row.get(i).map(str::to_string)).collect());
+                    cur.rows.push(
+                        (0..row.len())
+                            .map(|i| row.get(i).map(str::to_string))
+                            .collect(),
+                    );
                 } else {
                     cur.truncated = true;
                 }
@@ -246,17 +249,17 @@ pub fn cell_bool(row: &[Option<String>], i: usize) -> bool {
 
 /// All rows of every result — for catalog queries. The 10k cap is a runaway
 /// guard, not a display limit (see [`execute`] on why the defaults differ).
-pub async fn query_rows(
-    client: &Client,
-    sql: &str,
-) -> Result<Vec<Vec<Option<String>>>, AppError> {
+pub async fn query_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Option<String>>>, AppError> {
     let exec = execute(client, sql, INTROSPECT_MAX_ROWS).await?;
     Ok(exec.results.into_iter().flat_map(|r| r.rows).collect())
 }
 
 /// First column of the first row — for single-value catalog lookups.
 pub async fn query_scalar(client: &Client, sql: &str) -> Result<Option<String>, AppError> {
-    Ok(query_rows(client, sql).await?.first().and_then(|r| r[0].clone()))
+    Ok(query_rows(client, sql)
+        .await?
+        .first()
+        .and_then(|r| r[0].clone()))
 }
 
 /// Column (name, type) per statement, obtained by preparing each one (Parse

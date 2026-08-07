@@ -224,8 +224,13 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
             continue;
         }
         let Some(host) = nonempty(s.host) else {
-            let hint = if s.url.is_some() { " (задан URL)" } else { "" };
-            out.notes.push(format!("{name}: не указан хост{hint}, пропущено"));
+            let hint = if s.url.is_some() {
+                " (задан URL)"
+            } else {
+                ""
+            };
+            out.notes
+                .push(format!("{name}: не указан хост{hint}, пропущено"));
             continue;
         };
 
@@ -246,7 +251,9 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
                     host: ssh_host,
                     user: nonempty(s.ssh_user),
                     port: s.ssh_port.and_then(|p| u16::try_from(p).ok()),
-                    key_path: (mode == "keyfile").then(|| nonempty(s.ssh_keyfile)).flatten(),
+                    key_path: (mode == "keyfile")
+                        .then(|| nonempty(s.ssh_keyfile))
+                        .flatten(),
                     keepalive_interval: s.ssh_keepalive.and_then(|k| u32::try_from(k).ok()),
                 })
             }
@@ -258,8 +265,9 @@ pub fn read(explicit: Option<&Path>, with_passwords: bool) -> Result<Imported, A
             let stored = s.password.filter(|v| !v.is_empty());
             let decrypted = decrypt_string(stored.clone(), key);
             if stored.is_some() && decrypted.is_none() {
-                out.notes
-                    .push(format!("{name}: пароль не расшифровался, введи его вручную"));
+                out.notes.push(format!(
+                    "{name}: пароль не расшифровался, введи его вручную"
+                ));
             }
             password = decrypted;
             ssh_passphrase = decrypt_string(s.ssh_keyfile_password, key);
@@ -323,7 +331,10 @@ mod tests {
     #[test]
     fn rejects_wrong_key_and_garbage() {
         assert_eq!(decrypt_string(Some(SECRET.into()), "other-key"), None);
-        assert_eq!(decrypt_string(Some("короткая строка".into()), "test-key"), None);
+        assert_eq!(
+            decrypt_string(Some("короткая строка".into()), "test-key"),
+            None
+        );
         assert_eq!(decrypt_string(Some(String::new()), "test-key"), None);
     }
 

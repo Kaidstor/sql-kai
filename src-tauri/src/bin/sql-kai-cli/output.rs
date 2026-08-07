@@ -185,7 +185,11 @@ pub fn print_rows(columns: &[&str], rows: &[Vec<Option<String>>], fmt: Format) {
         Format::Csv => {
             println!(
                 "{}",
-                columns.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(",")
+                columns
+                    .iter()
+                    .map(|c| csv_field(c))
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
             for row in rows {
                 let vals: Vec<String> = (0..columns.len())
@@ -211,8 +215,7 @@ pub fn print_rows(columns: &[&str], rows: &[Vec<Option<String>>], fmt: Format) {
 
 fn print_table(columns: &[String], rows: &[Vec<Option<String>>], truncated: bool) {
     // Управляющие символы ломают выравнивание — экранируем переводы строк.
-    let sanitize =
-        |s: &str| s.replace('\r', "").replace('\n', "\\n").replace('\t', " ");
+    let sanitize = |s: &str| s.replace('\r', "").replace('\n', "\\n").replace('\t', " ");
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -237,7 +240,11 @@ fn print_table(columns: &[String], rows: &[Vec<Option<String>>], truncated: bool
     println!("{}", render(columns).trim_end());
     println!(
         "{}",
-        widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>().join("-+-")
+        widths
+            .iter()
+            .map(|w| "-".repeat(*w))
+            .collect::<Vec<_>>()
+            .join("-+-")
     );
     for row in &cells {
         println!("{}", render(row).trim_end());
@@ -246,14 +253,22 @@ fn print_table(columns: &[String], rows: &[Vec<Option<String>>], truncated: bool
     println!(
         "({n} row{}{})",
         if n == 1 { "" } else { "s" },
-        if truncated { ", truncated — увеличь --max-rows" } else { "" }
+        if truncated {
+            ", truncated — увеличь --max-rows"
+        } else {
+            ""
+        }
     );
 }
 
 fn print_csv(r: &StatementResult) {
     println!(
         "{}",
-        r.columns.iter().map(|c| csv_field(c)).collect::<Vec<_>>().join(",")
+        r.columns
+            .iter()
+            .map(|c| csv_field(c))
+            .collect::<Vec<_>>()
+            .join(",")
     );
     for row in &r.rows {
         let vals: Vec<String> = row
@@ -278,10 +293,7 @@ mod tests {
         assert_eq!(typed_value("1.5", &Type::NUMERIC), json!(1.5));
         // целый numeric остаётся целым, не 42.0
         assert_eq!(typed_value("42", &Type::NUMERIC), json!(42));
-        assert_eq!(
-            typed_value("{\"a\": 1}", &Type::JSONB),
-            json!({"a": 1})
-        );
+        assert_eq!(typed_value("{\"a\": 1}", &Type::JSONB), json!({"a": 1}));
         // текстовая колонка с цифрами — строка, никакого угадывания
         assert_eq!(typed_value("3", &Type::TEXT), json!("3"));
     }
@@ -292,6 +304,9 @@ mod tests {
             typed_value("[redacted]", &Type::INT4),
             Value::String("[redacted]".into())
         );
-        assert_eq!(typed_value("NaN", &Type::NUMERIC), Value::String("NaN".into()));
+        assert_eq!(
+            typed_value("NaN", &Type::NUMERIC),
+            Value::String("NaN".into())
+        );
     }
 }

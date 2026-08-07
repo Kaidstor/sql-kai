@@ -60,7 +60,11 @@ pub async fn execute_sql(
     // Manual-commit mode: hold a transaction open across runs by opening one
     // when the connection is idle, so the user never has to type BEGIN.
     let prepended = auto_begin.unwrap_or(false) && executor.status() == TxStatus::Idle;
-    let sql = if prepended { format!("BEGIN;\n{sql}") } else { sql };
+    let sql = if prepended {
+        format!("BEGIN;\n{sql}")
+    } else {
+        sql
+    };
     let mut result = executor.execute(&sql, max_rows).await;
     // Hide the synthetic BEGIN's result: the frontend numbers result blocks by
     // the statements of the SQL it sent (per-statement export relies on it),

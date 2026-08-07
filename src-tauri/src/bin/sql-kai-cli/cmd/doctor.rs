@@ -95,7 +95,10 @@ fn caskroom_dir() -> Option<PathBuf> {
 fn in_target_dir(path: &Path) -> bool {
     path.ancestors().any(|p| {
         let profile = p.file_name().and_then(|n| n.to_str());
-        let parent = p.parent().and_then(Path::file_name).and_then(|n| n.to_str());
+        let parent = p
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str());
         matches!(profile, Some("debug") | Some("release")) && parent == Some("target")
     })
 }
@@ -270,7 +273,11 @@ impl InstallInfo {
 
 /// Человеческий блок про установку: что стоит, откуда запущено, чем обновлять.
 fn print_install_table(i: &InstallInfo) {
-    println!("установка:  {} (sql-kai {})", i.label(), env!("CARGO_PKG_VERSION"));
+    println!(
+        "установка:  {} (sql-kai {})",
+        i.label(),
+        env!("CARGO_PKG_VERSION")
+    );
     if i.real == i.invoked {
         println!("бинарь:     {}", i.invoked.display());
     } else {
@@ -365,7 +372,11 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
 
         // sec (по конвенционному ключу)
         let key = sec::default_key(p);
-        let sec_value = if sec_ok { sec::get(&key).ok().flatten() } else { None };
+        let sec_value = if sec_ok {
+            sec::get(&key).ok().flatten()
+        } else {
+            None
+        };
         let sec_state = match &sec_value {
             None => "absent".to_string(),
             Some(v) => probe_label(&can_connect(p, Some(v.clone())).await).to_string(),
@@ -407,7 +418,10 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
                     r["name"].as_str().map(str::to_string),
                     r["vault"].as_str().map(str::to_string),
                     r["sec"].as_str().map(str::to_string),
-                    r["note"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+                    r["note"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                 ]
             })
             .collect();
@@ -432,7 +446,9 @@ mod tests {
     #[test]
     fn bundle_of_finds_the_app() {
         assert_eq!(
-            bundle_of(Path::new("/Applications/sql-kai.app/Contents/MacOS/sql-kai-cli")),
+            bundle_of(Path::new(
+                "/Applications/sql-kai.app/Contents/MacOS/sql-kai-cli"
+            )),
             Some(PathBuf::from("/Applications/sql-kai.app"))
         );
         assert_eq!(bundle_of(Path::new("/opt/homebrew/bin/sql-kai")), None);
@@ -442,8 +458,12 @@ mod tests {
 
     #[test]
     fn in_target_dir_matches_cargo_layout() {
-        assert!(in_target_dir(Path::new("/repo/src-tauri/target/debug/sql-kai-cli")));
-        assert!(in_target_dir(Path::new("/repo/src-tauri/target/release/sql-kai-cli")));
+        assert!(in_target_dir(Path::new(
+            "/repo/src-tauri/target/debug/sql-kai-cli"
+        )));
+        assert!(in_target_dir(Path::new(
+            "/repo/src-tauri/target/release/sql-kai-cli"
+        )));
         // бандл tauri лежит глубже, но это всё та же сборка из исходников
         assert!(in_target_dir(Path::new(
             "/repo/src-tauri/target/release/bundle/macos/sql-kai.app/Contents/MacOS/sql-kai-cli"

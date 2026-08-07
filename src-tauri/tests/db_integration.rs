@@ -108,7 +108,11 @@ async fn connect_execute_paginate() {
     );
     assert_eq!(rows[1][2].as_deref(), Some("true"), "name is nullable");
     assert_eq!(rows[2][0].as_deref(), Some("meta"));
-    assert_eq!(rows[2][1].as_deref(), Some("jsonb"), "declared type comes through");
+    assert_eq!(
+        rows[2][1].as_deref(),
+        Some("jsonb"),
+        "declared type comes through"
+    );
 
     let idx = db::execute(&client, &db::indexes_sql(&regclass), 100)
         .await
@@ -296,7 +300,11 @@ async fn schema_dump_narrowed_to_one_table() {
     assert_eq!(names(4, 2), vec!["scoped_trg"], "triggers");
     // one row per label — the enum sits behind `scoped_state[]`, so matching
     // atttypid alone would have lost it entirely
-    assert_eq!(names(5, 1), vec!["scoped_state", "scoped_state"], "enum types");
+    assert_eq!(
+        names(5, 1),
+        vec!["scoped_state", "scoped_state"],
+        "enum types"
+    );
     assert_eq!(names(5, 2), vec!["new", "done"], "enum labels");
     assert_eq!(names(6, 1), vec!["scoped_touch"], "routines");
     // the whole-database dump prints sequences nobody owns; scoped to a table
@@ -317,7 +325,10 @@ async fn schema_dump_narrowed_to_one_table() {
         .map(|r| r[1].clone().unwrap_or_default())
         .collect();
     assert!(seqs.contains(&"lonely_seq".to_string()), "got: {seqs:?}");
-    assert!(!seqs.contains(&"scoped_id_seq".to_string()), "got: {seqs:?}");
+    assert!(
+        !seqs.contains(&"scoped_id_seq".to_string()),
+        "got: {seqs:?}"
+    );
 }
 
 /// Прод-барьер GUI: без write-intent батч идёт через `execute_read_only`, и
@@ -385,7 +396,10 @@ async fn read_only_block_refuses_what_the_regex_missed() {
     let err = db::execute_read_only(&client, "COMMIT; DELETE FROM guard_t", 10)
         .await
         .expect_err("escape refused");
-    assert!(err.is_read_only(), "gate refusal shares the read_only code: {err}");
+    assert!(
+        err.is_read_only(),
+        "gate refusal shares the read_only code: {err}"
+    );
 }
 
 /// Экспорт обязан дочитывать протокол до конца: ошибка стейтмента ПОСЛЕ
@@ -480,7 +494,11 @@ async fn export_drains_the_whole_script() {
     )
     .await
     .expect("never-ran check");
-    assert_eq!(never.as_deref(), Some("0"), "doomed export must not run the script");
+    assert_eq!(
+        never.as_deref(),
+        Some("0"),
+        "doomed export must not run the script"
+    );
 }
 
 /// Verifies the PostgreSQL semantics the broker's read-only gate defends

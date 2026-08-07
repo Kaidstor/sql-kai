@@ -70,8 +70,12 @@ pub async fn bind_holder() -> Result<Option<UnixListener>, AppError> {
 /// остаётся подключенным» — включая фоновый держатель cli-сессий.
 #[cfg(unix)]
 pub async fn shutdown_holder() {
-    let Ok(path) = holder_socket_path() else { return };
-    let Ok(stream) = UnixStream::connect(&path).await else { return };
+    let Ok(path) = holder_socket_path() else {
+        return;
+    };
+    let Ok(stream) = UnixStream::connect(&path).await else {
+        return;
+    };
     let (read, mut write) = stream.into_split();
     if write
         .write_all(b"{\"id\":1,\"method\":\"shutdown\",\"params\":null}\n")

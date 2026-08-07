@@ -157,7 +157,10 @@ fn load_list<T: serde::de::DeserializeOwned>(file: &str) -> Result<Vec<T>, AppEr
 
 fn save_list<T: Serialize>(file: &str, items: &[T]) -> Result<(), AppError> {
     let path = config_path(file)?;
-    write_atomic(&path, serde_json::to_string_pretty(items).unwrap().as_bytes())?;
+    write_atomic(
+        &path,
+        serde_json::to_string_pretty(items).unwrap().as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -444,7 +447,10 @@ pub fn save_settings(settings: &serde_json::Value) -> Result<(), AppError> {
         return Err(AppError::Msg("settings must be a JSON object".into()));
     }
     let path = settings_path()?;
-    write_atomic(&path, serde_json::to_string_pretty(settings).unwrap().as_bytes())?;
+    write_atomic(
+        &path,
+        serde_json::to_string_pretty(settings).unwrap().as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -751,7 +757,10 @@ mod tests {
             redact_secrets("SELECT password FROM users"),
             "SELECT password FROM users"
         );
-        assert_eq!(redact_secrets("ALTER ROLE app PASSWORD NULL"), "ALTER ROLE app PASSWORD NULL");
+        assert_eq!(
+            redact_secrets("ALTER ROLE app PASSWORD NULL"),
+            "ALTER ROLE app PASSWORD NULL"
+        );
     }
 
     #[test]

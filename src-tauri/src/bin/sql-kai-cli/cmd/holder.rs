@@ -99,7 +99,11 @@ async fn serve() -> Result<ExitCode, AppError> {
 
     logging::log(
         "holder",
-        &format!("started (pid {}, v{})", std::process::id(), env!("CARGO_PKG_VERSION")),
+        &format!(
+            "started (pid {}, v{})",
+            std::process::id(),
+            env!("CARGO_PKG_VERSION")
+        ),
     );
     broker::serve(listener, state, hooks).await;
     Ok(ExitCode::SUCCESS)

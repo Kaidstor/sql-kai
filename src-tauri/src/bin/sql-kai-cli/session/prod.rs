@@ -148,12 +148,19 @@ pub fn authorize_prod_dump(profile: &Profile, explicit: bool) -> Result<(), AppE
              • флагом — добавь в команду --prod-data;\n  \
              • неинтерактивно — {ALLOW_PROD_DUMP}={} в окружении процесса.\n  \
              Схему можно снять и без этого: то же самое без --data.",
-            profile.name, profile.user, profile.host, profile.port, profile.database, why,
+            profile.name,
+            profile.user,
+            profile.host,
+            profile.port,
+            profile.database,
+            why,
             profile.name,
         ))
     };
     if !input::is_interactive() {
-        return Err(deny("подтвердить некому (stdin занят протоколом или не терминал)"));
+        return Err(deny(
+            "подтвердить некому (stdin занят протоколом или не терминал)",
+        ));
     }
     eprintln!(
         "⚠ ВЫГРУЗКА БОЕВЫХ ДАННЫХ: профиль '{}' ({}@{}:{}/{})",
@@ -273,4 +280,3 @@ pub fn authorize_prod_write_ssh(alias: &str, explicit: bool) -> Result<(), AppEr
         None => Ok(()),
     }
 }
-

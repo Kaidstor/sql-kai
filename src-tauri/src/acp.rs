@@ -96,9 +96,10 @@ fn spawn_allowed(app: &AppHandle, cmd: &str) -> Result<(), AppError> {
     if let Ok(dir) = app.path().app_data_dir() {
         // canonicalize обеих сторон: `..` в присланном пути проходит голый
         // starts_with (компоненты сравниваются лексически, без нормализации)
-        if let (Ok(cmd_real), Ok(acp_real)) =
-            (std::fs::canonicalize(cmd), std::fs::canonicalize(dir.join("acp")))
-        {
+        if let (Ok(cmd_real), Ok(acp_real)) = (
+            std::fs::canonicalize(cmd),
+            std::fs::canonicalize(dir.join("acp")),
+        ) {
             if cmd_real.starts_with(&acp_real) {
                 return Ok(());
             }
@@ -135,8 +136,7 @@ pub async fn acp_spawn(
         let _ = old.child.lock().unwrap().start_kill();
     }
 
-    std::fs::create_dir_all(&cwd)
-        .map_err(|e| AppError::Msg(format!("agent cwd {cwd}: {e}")))?;
+    std::fs::create_dir_all(&cwd).map_err(|e| AppError::Msg(format!("agent cwd {cwd}: {e}")))?;
 
     let mut command = Command::new(&cmd);
     command
@@ -182,7 +182,10 @@ pub async fn acp_spawn(
             logging::log("acp", &format!("[{stderr_id}] stderr: {line}"));
             let _ = stderr_app.emit(
                 "acp://stderr",
-                AcpLineEvent { agent_id: &stderr_id, line: &line },
+                AcpLineEvent {
+                    agent_id: &stderr_id,
+                    line: &line,
+                },
             );
         }
     });
@@ -195,7 +198,10 @@ pub async fn acp_spawn(
         while let Ok(Some(line)) = lines.next_line().await {
             let _ = app.emit(
                 "acp://msg",
-                AcpLineEvent { agent_id: &agent_id, line: &line },
+                AcpLineEvent {
+                    agent_id: &agent_id,
+                    line: &line,
+                },
             );
         }
         // дать процессу дожать выход, чтобы забрать код (127 = не найден)
@@ -215,7 +221,13 @@ pub async fn acp_spawn(
             st.agents.lock().unwrap().remove(&agent_id);
         }
         logging::log("acp", &format!("[{agent_id}] exited, code {code:?}"));
-        let _ = app.emit("acp://exit", AcpExitEvent { agent_id: &agent_id, code });
+        let _ = app.emit(
+            "acp://exit",
+            AcpExitEvent {
+                agent_id: &agent_id,
+                code,
+            },
+        );
     });
 
     Ok(())

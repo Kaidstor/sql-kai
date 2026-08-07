@@ -132,7 +132,9 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             cfg.host(&host);
         }
     }
-    let password = opts.password_override.or_else(|| store::get_password(profile));
+    let password = opts
+        .password_override
+        .or_else(|| store::get_password(profile));
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
         cfg.password(&pw);
     }
@@ -244,7 +246,10 @@ fn read_pem(path: &str, what: &str) -> Result<Vec<u8>, AppError> {
 fn log_connect_fail(profile: &Profile, host: &str, port: u16, e: &tokio_postgres::Error) {
     logging::log(
         "connect",
-        &format!("\"{}\": pg connect to {host}:{port} failed: {e}", profile.name),
+        &format!(
+            "\"{}\": pg connect to {host}:{port} failed: {e}",
+            profile.name
+        ),
     );
 }
 

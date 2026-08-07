@@ -101,7 +101,8 @@ fn read_json(file: Option<&PathBuf>) -> Result<Vec<ImportProfile>, AppError> {
         None => {
             if std::io::stdin().is_terminal() {
                 return Err(AppError::Msg(
-                    "нет входных данных: передай JSON в stdin, через --file или укажи --from".into(),
+                    "нет входных данных: передай JSON в stdin, через --file или укажи --from"
+                        .into(),
                 ));
             }
             let mut buf = String::new();
@@ -109,7 +110,8 @@ fn read_json(file: Option<&PathBuf>) -> Result<Vec<ImportProfile>, AppError> {
             buf
         }
     };
-    serde_json::from_str(&raw).map_err(|e| AppError::Msg(format!("не разобрать JSON профилей: {e}")))
+    serde_json::from_str(&raw)
+        .map_err(|e| AppError::Msg(format!("не разобрать JSON профилей: {e}")))
 }
 
 pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
@@ -155,7 +157,10 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
     let (mut created, mut replaced, mut skipped) = (0u32, 0u32, 0u32);
 
     for imp in profiles {
-        let existing_id = existing.iter().find(|p| p.name == imp.name).map(|p| p.id.clone());
+        let existing_id = existing
+            .iter()
+            .find(|p| p.name == imp.name)
+            .map(|p| p.id.clone());
         let action = match (&existing_id, a.replace) {
             (Some(_), false) => {
                 println!("• пропуск (уже есть): {}", imp.name);
@@ -218,7 +223,11 @@ pub async fn run(a: ImportArgs) -> Result<ExitCode, AppError> {
 
     println!(
         "\n{}: создано {created}, заменено {replaced}, пропущено {skipped}",
-        if a.dry_run { "план (dry-run)" } else { "готово" }
+        if a.dry_run {
+            "план (dry-run)"
+        } else {
+            "готово"
+        }
     );
     if !a.dry_run && (created > 0 || replaced > 0) {
         crate::broker_client::notify_profiles_changed().await;

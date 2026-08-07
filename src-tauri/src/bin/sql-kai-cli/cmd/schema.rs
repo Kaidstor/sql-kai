@@ -558,7 +558,12 @@ pub(crate) fn build_dump(
         .map(|row| RoutineInfo {
             schema: db::cell(row, 0),
             name: db::cell(row, 1),
-            kind: if db::cell(row, 2) == "p" { "procedure" } else { "function" }.to_string(),
+            kind: if db::cell(row, 2) == "p" {
+                "procedure"
+            } else {
+                "function"
+            }
+            .to_string(),
             arguments: db::cell(row, 3),
             returns: cell_opt(row, 4),
             language: db::cell(row, 5),
@@ -571,7 +576,9 @@ pub(crate) fn build_dump(
     let mut by_schema: BTreeMap<String, SchemaInfo> = BTreeMap::new();
     for r in rels {
         let key = r.schema.clone();
-        let s = by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&r.schema));
+        let s = by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&r.schema));
         match r.kind.as_str() {
             "view" => s.views.push(r),
             "matview" => s.materialized_views.push(r),
@@ -581,15 +588,27 @@ pub(crate) fn build_dump(
     }
     for s in sequences {
         let key = s.schema.clone();
-        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&s.schema)).sequences.push(s);
+        by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&s.schema))
+            .sequences
+            .push(s);
     }
     for e in enums {
         let key = e.schema.clone();
-        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&e.schema)).enums.push(e);
+        by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&e.schema))
+            .enums
+            .push(e);
     }
     for d in domains {
         let key = d.schema.clone();
-        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&d.schema)).domains.push(d);
+        by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&d.schema))
+            .domains
+            .push(d);
     }
     for c in composites {
         let key = c.schema.clone();
@@ -601,7 +620,11 @@ pub(crate) fn build_dump(
     }
     for r in routines {
         let key = r.schema.clone();
-        by_schema.entry(key).or_insert_with(|| SchemaInfo::new(&r.schema)).routines.push(r);
+        by_schema
+            .entry(key)
+            .or_insert_with(|| SchemaInfo::new(&r.schema))
+            .routines
+            .push(r);
     }
 
     SchemaDump {
@@ -691,7 +714,9 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
     out.push_str(&format!("-- скрыто: {}\n", hidden.join("; ")));
 
     if dump.schemas.iter().all(SchemaInfo::is_empty) {
-        out.push_str("-- ничего не найдено (проверь --table / --schema / --internal и права роли)\n");
+        out.push_str(
+            "-- ничего не найдено (проверь --table / --schema / --internal и права роли)\n",
+        );
         return out;
     }
 
@@ -744,7 +769,10 @@ pub(crate) fn render_text(dump: &SchemaDump, o: &db::SchemaOptions) -> String {
             }
         }
         for d in &s.domains {
-            out.push_str(&format!("\ndomain {}.{} AS {}", d.schema, d.name, d.base_type));
+            out.push_str(&format!(
+                "\ndomain {}.{} AS {}",
+                d.schema, d.name, d.base_type
+            ));
             if let Some(c) = &d.constraints {
                 out.push_str(&format!(" {c}"));
             }
@@ -797,8 +825,18 @@ fn render_relation(out: &mut String, r: &RelationInfo) {
         out.push_str(&format!("  -- {}\n", one_line(c)));
     }
 
-    let w_name = r.columns.iter().map(|c| c.name.chars().count()).max().unwrap_or(0);
-    let w_type = r.columns.iter().map(|c| c.ty.chars().count()).max().unwrap_or(0);
+    let w_name = r
+        .columns
+        .iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let w_type = r
+        .columns
+        .iter()
+        .map(|c| c.ty.chars().count())
+        .max()
+        .unwrap_or(0);
     for c in &r.columns {
         let mut tail: Vec<String> = Vec::new();
         if !c.nullable {
@@ -896,7 +934,10 @@ fn summary(dump: &SchemaDump) -> String {
         ("вьюх", dump.schemas.iter().map(|s| s.views.len()).sum()),
         (
             "matview",
-            dump.schemas.iter().map(|s| s.materialized_views.len()).sum(),
+            dump.schemas
+                .iter()
+                .map(|s| s.materialized_views.len())
+                .sum(),
         ),
         (
             "foreign",
@@ -907,12 +948,18 @@ fn summary(dump: &SchemaDump) -> String {
             dump.schemas.iter().map(|s| s.sequences.len()).sum(),
         ),
         ("enum", dump.schemas.iter().map(|s| s.enums.len()).sum()),
-        ("доменов", dump.schemas.iter().map(|s| s.domains.len()).sum()),
+        (
+            "доменов",
+            dump.schemas.iter().map(|s| s.domains.len()).sum(),
+        ),
         (
             "composite-типов",
             dump.schemas.iter().map(|s| s.composite_types.len()).sum(),
         ),
-        ("функций", dump.schemas.iter().map(|s| s.routines.len()).sum()),
+        (
+            "функций",
+            dump.schemas.iter().map(|s| s.routines.len()).sum(),
+        ),
     ];
     counts.retain(|(_, n)| *n > 0);
     let body = counts
@@ -977,57 +1024,134 @@ mod tests {
         let res = vec![
             part(&[
                 &[
-                    Some("public"), Some("users"), Some("r"), None, None, None, None,
-                    Some("true"), Some("люди"), None,
+                    Some("public"),
+                    Some("users"),
+                    Some("r"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("true"),
+                    Some("люди"),
+                    None,
                 ],
                 &[
-                    Some("public"), Some("v_active"), Some("v"), None, None, None, None,
-                    Some("false"), None, Some("SELECT id\n  FROM users"),
+                    Some("public"),
+                    Some("v_active"),
+                    Some("v"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("false"),
+                    None,
+                    Some("SELECT id\n  FROM users"),
                 ],
                 &[
-                    Some("public"), Some("ev_2024"), Some("r"), None, Some("public.ev"),
-                    Some("FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')"), None,
-                    Some("false"), None, None,
+                    Some("public"),
+                    Some("ev_2024"),
+                    Some("r"),
+                    None,
+                    Some("public.ev"),
+                    Some("FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')"),
+                    None,
+                    Some("false"),
+                    None,
+                    None,
                 ],
                 &[
-                    Some("public"), Some("gen"), Some("r"), None, None, None, None,
-                    Some("false"), None, None,
+                    Some("public"),
+                    Some("gen"),
+                    Some("r"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("false"),
+                    None,
+                    None,
                 ],
             ]),
             part(&[
                 &[
-                    Some("public"), Some("users"), Some("id"), Some("bigint"), Some("true"),
-                    Some("nextval('users_id_seq'::regclass)"), Some(""), Some(""), None,
+                    Some("public"),
+                    Some("users"),
+                    Some("id"),
+                    Some("bigint"),
+                    Some("true"),
+                    Some("nextval('users_id_seq'::regclass)"),
+                    Some(""),
+                    Some(""),
+                    None,
                 ],
                 &[
-                    Some("public"), Some("users"), Some("email"), Some("text"), Some("true"),
-                    None, Some(""), Some(""), Some("почта\nсотрудника"),
+                    Some("public"),
+                    Some("users"),
+                    Some("email"),
+                    Some("text"),
+                    Some("true"),
+                    None,
+                    Some(""),
+                    Some(""),
+                    Some("почта\nсотрудника"),
                 ],
                 &[
-                    Some("public"), Some("users"), Some("org_id"), Some("bigint"), Some("false"),
-                    None, Some(""), Some(""), None,
+                    Some("public"),
+                    Some("users"),
+                    Some("org_id"),
+                    Some("bigint"),
+                    Some("false"),
+                    None,
+                    Some(""),
+                    Some(""),
+                    None,
                 ],
                 // stored и virtual (PG 18) — разные вещи, рендер обязан их различать
                 &[
-                    Some("public"), Some("gen"), Some("lo"), Some("text"), Some("false"),
-                    Some("lower(email)"), Some(""), Some("s"), None,
+                    Some("public"),
+                    Some("gen"),
+                    Some("lo"),
+                    Some("text"),
+                    Some("false"),
+                    Some("lower(email)"),
+                    Some(""),
+                    Some("s"),
+                    None,
                 ],
                 &[
-                    Some("public"), Some("gen"), Some("len"), Some("integer"), Some("false"),
-                    Some("length(email)"), Some(""), Some("v"), None,
+                    Some("public"),
+                    Some("gen"),
+                    Some("len"),
+                    Some("integer"),
+                    Some("false"),
+                    Some("length(email)"),
+                    Some(""),
+                    Some("v"),
+                    None,
                 ],
             ]),
             part(&[&[
-                Some("public"), Some("users"), Some("users_pkey"), Some("p"),
+                Some("public"),
+                Some("users"),
+                Some("users_pkey"),
+                Some("p"),
                 Some("PRIMARY KEY (id)"),
             ]]),
             part(&[&[
-                Some("public"), Some("users"), Some("users_email_idx"), Some("true"),
+                Some("public"),
+                Some("users"),
+                Some("users_email_idx"),
+                Some("true"),
                 Some("CREATE UNIQUE INDEX users_email_idx ON public.users USING btree (email)"),
             ]]),
             part(&[&[
-                Some("public"), Some("users"), Some("t_upd"), Some("BEFORE"), Some("UPDATE"),
-                Some("public.set_updated_at"), Some("true"),
+                Some("public"),
+                Some("users"),
+                Some("t_upd"),
+                Some("BEFORE"),
+                Some("UPDATE"),
+                Some("public.set_updated_at"),
+                Some("true"),
             ]]),
             part(&[
                 &[Some("public"), Some("status"), Some("new"), None],
@@ -1036,37 +1160,78 @@ mod tests {
                 &[Some("public"), Some("stage"), None, None],
             ]),
             part(&[&[
-                Some("public"), Some("calc"), Some("f"), Some("a integer"), Some("integer"),
-                Some("sql"), Some("immutable"), None, None,
+                Some("public"),
+                Some("calc"),
+                Some("f"),
+                Some("a integer"),
+                Some("integer"),
+                Some("sql"),
+                Some("immutable"),
+                None,
+                None,
             ]]),
             part(&[
                 &[
-                    Some("public"), Some("users"), Some("users_sel"), Some("SELECT"), Some("true"),
-                    Some("public"), Some("(org_id = current_org())"), None,
+                    Some("public"),
+                    Some("users"),
+                    Some("users_sel"),
+                    Some("SELECT"),
+                    Some("true"),
+                    Some("public"),
+                    Some("(org_id = current_org())"),
+                    None,
                 ],
                 &[
-                    Some("public"), Some("users"), Some("users_ins"), Some("INSERT"), Some("false"),
-                    Some("app"), None, Some("(org_id IS NOT NULL)"),
+                    Some("public"),
+                    Some("users"),
+                    Some("users_ins"),
+                    Some("INSERT"),
+                    Some("false"),
+                    Some("app"),
+                    None,
+                    Some("(org_id IS NOT NULL)"),
                 ],
             ]),
             part(&[
                 &[
-                    Some("public"), Some("invoice_seq"), Some("bigint"), Some("100"), Some("5"),
-                    Some("10"), Some("900"), Some("true"), Some("счётчик"),
+                    Some("public"),
+                    Some("invoice_seq"),
+                    Some("bigint"),
+                    Some("100"),
+                    Some("5"),
+                    Some("10"),
+                    Some("900"),
+                    Some("true"),
+                    Some("счётчик"),
                 ],
                 &[
-                    Some("public"), Some("plain_seq"), Some("bigint"), Some("1"), Some("1"),
-                    Some("1"), Some("9223372036854775807"), Some("false"), None,
+                    Some("public"),
+                    Some("plain_seq"),
+                    Some("bigint"),
+                    Some("1"),
+                    Some("1"),
+                    Some("1"),
+                    Some("9223372036854775807"),
+                    Some("false"),
+                    None,
                 ],
             ]),
             part(&[
                 &[
-                    Some("public"), Some("email"), Some("d"), Some("text"),
-                    Some("NOT NULL CHECK (VALUE ~ '@'::text)"), Some("адрес почты"),
+                    Some("public"),
+                    Some("email"),
+                    Some("d"),
+                    Some("text"),
+                    Some("NOT NULL CHECK (VALUE ~ '@'::text)"),
+                    Some("адрес почты"),
                 ],
                 &[
-                    Some("public"), Some("addr"), Some("c"), None,
-                    Some("street text, city text"), None,
+                    Some("public"),
+                    Some("addr"),
+                    Some("c"),
+                    None,
+                    Some("street text, city text"),
+                    None,
                 ],
             ]),
         ];
@@ -1081,7 +1246,9 @@ mod tests {
         assert!(text.contains("== схема public =="));
         assert!(text.contains("table public.users"));
         assert!(text.contains("  -- люди"));
-        assert!(text.contains("id      bigint  not null  default nextval('users_id_seq'::regclass)"));
+        assert!(
+            text.contains("id      bigint  not null  default nextval('users_id_seq'::regclass)")
+        );
         // многострочный COMMENT ON схлопывается в одну строку колонки
         assert!(text.contains("email   text    not null  -- почта сотрудника"));
         // nullable-колонка не тащит за собой хвост из пробелов
@@ -1103,14 +1270,17 @@ mod tests {
         assert!(text.contains("len  integer  generated (length(email)) virtual"));
         // RLS: сам факт бесполезен без политик
         assert!(text.contains("  row level security enabled\n"));
-        assert!(text.contains("  policy users_sel FOR SELECT TO public USING (org_id = current_org())\n"));
+        assert!(text
+            .contains("  policy users_sel FOR SELECT TO public USING (org_id = current_org())\n"));
         assert!(text.contains(
             "  policy users_ins restrictive FOR INSERT TO app WITH CHECK (org_id IS NOT NULL)\n"
         ));
         // enum без меток: тип есть, значений нет — и это видно
         assert!(text.contains("enum public.stage = (без меток)\n"));
         // границы секвенции печатаются, только если заданы руками
-        assert!(text.contains("sequence public.invoice_seq bigint  start 100 increment 5 min 10 max 900 cycle\n"));
+        assert!(text.contains(
+            "sequence public.invoice_seq bigint  start 100 increment 5 min 10 max 900 cycle\n"
+        ));
         assert!(text.contains("sequence public.plain_seq bigint  start 1 increment 1\n"));
         assert!(text.contains("domain public.email AS text NOT NULL CHECK (VALUE ~ '@'::text)\n"));
         assert!(text.contains("type public.addr = (street text, city text)\n"));
