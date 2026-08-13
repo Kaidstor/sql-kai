@@ -24,7 +24,11 @@ export interface CopyDeps {
   hiddenCols: ReadonlySet<number>;
   /** Source relation of the rows; enables "Copy as INSERT". */
   insertTarget?: { schema: string; table: string };
-  showToast: (message: string, kind?: "error" | "info" | "success") => void;
+  showToast: (
+    message: string,
+    kind?: "error" | "info" | "success",
+    revealPath?: string,
+  ) => void;
 }
 
 export type CopyActions = ReturnType<typeof makeCopyActions>;
@@ -214,7 +218,7 @@ export function makeCopyActions({
           kind === "csv" ? toCsv(columns, rows) : toJson(columns, rows),
         );
       }
-      toastCopied(exportedMessage(rows.length, path));
+      showToast(exportedMessage(rows.length, path), "info", path);
     } catch (e) {
       showToast(errText(e));
     }

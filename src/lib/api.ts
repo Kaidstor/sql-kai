@@ -75,6 +75,9 @@ export const api = {
   /** Показать главное окно (создаётся скрытым; фронтенд зовёт после отрисовки). */
   revealWindow: () => invoke<void>("reveal_main_window"),
 
+  /** Спрятать окно в трей — как красная кнопка: сессии и туннели живут дальше. */
+  hideToTray: () => invoke<void>("hide_to_tray"),
+
   logPath: () => invoke<string>("log_path"),
 
   /** Appends a UI-observed event to the backend diagnostics log. */

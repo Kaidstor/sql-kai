@@ -1,6 +1,8 @@
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Cable,
   ChevronUp,
+  FolderOpen,
   LayoutGrid,
   Lock,
   Plug,
@@ -11,6 +13,7 @@ import {
 } from "lucide-react";
 import { type MouseEvent, useRef, useState } from "react";
 import { copyTextConcealed } from "../lib/clipboard";
+import { isMac } from "../lib/platform";
 import { accentColor, PROD_RED, tint } from "../lib/colors";
 import { connectedProfiles, profileAddr } from "../lib/profile";
 import { useApp } from "../lib/store";
@@ -229,18 +232,34 @@ export function StatusBar() {
         </>
       )}
       {toast && (
-        <span
-          className={cn(
-            "ml-auto truncate max-w-[70%] pr-1.5",
-            toast.kind === "error"
-              ? "text-red-400"
-              : toast.kind === "success"
-                ? "text-emerald-400"
-                : "text-zinc-300",
+        <span className="ml-auto flex min-w-0 max-w-[70%] items-center gap-1.5 pr-1.5">
+          <span
+            className={cn(
+              "truncate",
+              toast.kind === "error"
+                ? "text-red-400"
+                : toast.kind === "success"
+                  ? "text-emerald-400"
+                  : "text-zinc-300",
+            )}
+            title={toast.message}
+          >
+            {toast.message.split("\n")[0]}
+          </span>
+          {toast.revealPath && (
+            <button
+              data-nocopy
+              onClick={() => void revealItemInDir(toast.revealPath!)}
+              className={cn(
+                "flex shrink-0 items-center gap-1 rounded border border-zinc-700",
+                "bg-zinc-800/80 px-1.5 py-px text-[10px] text-zinc-300",
+                "transition-colors hover:border-zinc-600 hover:text-zinc-100",
+              )}
+            >
+              <FolderOpen size={10} />
+              {isMac ? "Reveal in Finder" : "Show in folder"}
+            </button>
           )}
-          title={toast.message}
-        >
-          {toast.message.split("\n")[0]}
         </span>
       )}
       {copied && (

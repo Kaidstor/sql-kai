@@ -344,6 +344,7 @@ export function createQuerySlice(set: Set, get: Get, ctx: StoreContext): QuerySl
             ? `Exported first ${out.rows.toLocaleString()} rows — XLSX sheet limit`
             : exportedMessage(out.rows, path),
           out.truncated ? "info" : "success",
+          path,
         );
       } catch (e) {
         // Та же маршрутизация, что у runQuery: умершая изолированная сессия —

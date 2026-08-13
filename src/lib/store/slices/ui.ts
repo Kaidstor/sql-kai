@@ -1,6 +1,7 @@
 // UI chrome: overlays (palette, dialogs, viewers), toast, theme/settings,
 // sidebar and launcher visibility.
 import { api, errText } from "../../api";
+import type { HotkeyActionId } from "../../hotkeys";
 import { applyTheme } from "../../themes";
 import type { AppSettings, Profile } from "../../types";
 import type { Get, Set, StoreContext } from "../context";
@@ -33,8 +34,17 @@ export interface UiSlice {
   setLauncherOpen: (open: boolean) => void;
   /** Applies the theme immediately and persists it to settings.json. */
   setTheme: (id: string) => Promise<void>;
+  /** Перебиндить хоткей действия (null — вернуть дефолт); действует сразу
+   *  и сохраняется в settings.json. */
+  setHotkey: (id: HotkeyActionId, combo: string | null) => Promise<void>;
   setSaveDialogFor: (tabId: string | null) => void;
-  showToast: (message: string, kind?: Toast["kind"]) => void;
+  /** revealPath — путь сохранённого файла: тост получает кнопку «Reveal in
+   *  Finder» и живёт дольше, чтобы до неё успели дотянуться. */
+  showToast: (
+    message: string,
+    kind?: Toast["kind"],
+    revealPath?: string,
+  ) => void;
   /** Opens the in-app confirm dialog; resolves true on confirm, false on
    *  cancel/Esc/backdrop. Replaces window.confirm(), which doesn't block
    *  in the Tauri webview. */
@@ -44,6 +54,10 @@ export interface UiSlice {
   openDialog: (profile?: Profile) => void;
   closeDialog: () => void;
 }
+
+const TOAST_MS = 6000;
+// Тост с кнопкой «Reveal in Finder» — нажимать её нужно успеть.
+const REVEAL_TOAST_MS = 20000;
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 // Resolver of the open confirmDialog promise — lives outside the store so the
@@ -88,12 +102,29 @@ export function createUiSlice(set: Set, get: Get, _ctx: StoreContext): UiSlice {
       }
     },
 
+    setHotkey: async (id, combo) => {
+      const hotkeys = { ...get().settings.hotkeys };
+      if (combo) hotkeys[id] = combo;
+      else delete hotkeys[id];
+      const settings = { ...get().settings, hotkeys };
+      set({ settings });
+      try {
+        await api.saveSettings(settings);
+      } catch (e) {
+        // биндинг действует в этой сессии; не сохранилось только на диск
+        get().showToast(`Settings not saved: ${errText(e)}`);
+      }
+    },
+
     setSaveDialogFor: (tabId) => set({ saveDialogFor: tabId }),
 
-    showToast: (message, kind = "error") => {
-      set({ toast: { message, kind } });
+    showToast: (message, kind = "error", revealPath) => {
+      set({ toast: { message, kind, revealPath } });
       if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => set({ toast: null }), 6000);
+      toastTimer = setTimeout(
+        () => set({ toast: null }),
+        revealPath ? REVEAL_TOAST_MS : TOAST_MS,
+      );
     },
 
     confirmDialog: (req) => {

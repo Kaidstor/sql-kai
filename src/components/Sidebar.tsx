@@ -4,7 +4,7 @@ import {
   ChevronRight,
   Copy,
   FileCode2,
-  FilePlus2,
+  FileSearch2,
   KeyRound,
   LayoutGrid,
   Layers,
@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { copyText } from "../lib/clipboard";
+import { formatCombo, hotkeyOf } from "../lib/hotkeys";
 import { columnsKey, useApp, type RelRef } from "../lib/store";
 import { isViewKind, type TableInfo } from "../lib/types";
 import { dragWindow } from "../lib/window";
@@ -220,10 +221,11 @@ export function Sidebar() {
   const lost = useApp((s) => s.lost);
   const connecting = useApp((s) => s.connecting);
   const activeProfileId = useApp((s) => s.activeProfileId);
-  const openQueryTab = useApp((s) => s.openQueryTab);
   const openActivityTab = useApp((s) => s.openActivityTab);
   const refreshTables = useApp((s) => s.refreshTables);
   const setLauncherOpen = useApp((s) => s.setLauncherOpen);
+  const setPalette = useApp((s) => s.setPalette);
+  const paletteCombo = useApp((s) => hotkeyOf(s.settings, "queriesPalette"));
   const disconnect = useApp((s) => s.disconnect);
   const profile = profiles.find((p) => p.id === activeProfileId);
   const cliSession = activeProfileId ? cliSessions[activeProfileId] : undefined;
@@ -284,10 +286,10 @@ export function Sidebar() {
         </div>
         <div className="flex items-center gap-0.5">
           <IconButton
-            title="New SQL tab"
-            onClick={() => openQueryTab(activeProfileId)}
+            title={`Saved queries & tables (${formatCombo(paletteCombo)})`}
+            onClick={() => setPalette("queries")}
           >
-            <FilePlus2 size={13} />
+            <FileSearch2 size={13} />
           </IconButton>
           <IconButton
             title="Server activity (pg_stat_activity)"

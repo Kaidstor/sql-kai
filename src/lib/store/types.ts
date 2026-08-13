@@ -239,6 +239,9 @@ export function isQueryTabDirty(tab: Tab, queries: SavedQuery[]): boolean {
 export interface Toast {
   message: string;
   kind: "error" | "info" | "success";
+  /** Saved file the toast is about — the status bar offers "Reveal in Finder"
+   *  for it (opens the folder with the file selected). */
+  revealPath?: string;
 }
 
 /** In-app confirm dialog request — window.confirm() doesn't block in the

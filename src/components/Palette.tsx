@@ -40,6 +40,9 @@ interface PaletteItem {
   /** Deletable item: hover shows a trash button, Ctrl+X removes the selected
    *  one. The callback owns confirmation — the palette stays open. */
   onDelete?: () => void;
+  /** Only surfaces once the user starts typing — secondary items (tables in
+   *  the queries palette) don't crowd the initial list. */
+  typedOnly?: boolean;
 }
 
 /** Rows rendered at once — symbol lists reach thousands of items, and the
@@ -67,7 +70,7 @@ function PaletteModal({
           )
           .sort((a, b) => b.score - a.score)
           .map((x) => x.item)
-      : items;
+      : items.filter((item) => !item.typedOnly);
     return all.slice(0, RENDER_CAP);
   }, [query, items]);
 
@@ -304,7 +307,8 @@ export function Palette() {
     );
   }
 
-  // queries palette for the active profile's collection + global
+  // queries palette for the active profile's collection + global; typing also
+  // surfaces the connection's tables for quick opening
   const profile = profiles.find((p) => p.id === activeProfileId);
   const scopeKey = profile ? queryScopeOf(profile) : null;
   const scopeLabel = profile ? scopeLabelOf(profile) : "";
@@ -326,11 +330,27 @@ export function Palette() {
       if (ok) void deleteQuery(q.id);
     },
   }));
+  if (profile && sessions[profile.id]) {
+    const pid = profile.id;
+    items.push(
+      ...(tables[pid] ?? []).map(
+        (t): PaletteItem => ({
+          id: `t:${t.schema}.${t.name}`,
+          title: t.schema === "public" ? t.name : `${t.schema}.${t.name}`,
+          subtitle: t.kind,
+          keywords: `${t.schema} ${t.name}`,
+          hint: "⏎ open data",
+          typedOnly: true,
+          action: () => openTableTab(pid, t.schema, t.name),
+        }),
+      ),
+    );
+  }
   return (
     <PaletteModal
       placeholder={
         profile
-          ? `Saved queries — ${scopeLabel} + global…`
+          ? `Saved queries — ${scopeLabel} + global… (type to include tables)`
           : "No active connection"
       }
       items={items}

@@ -140,6 +140,26 @@ fn reveal_main_window(app: tauri::AppHandle) {
     reveal_window(&app);
 }
 
+/// Прячет окно в трей — то же, что красная кнопка (см. on_window_event):
+/// сессии и туннели живут дальше, Accessory убирает иконку из Dock и Cmd-Tab.
+#[cfg(target_os = "macos")]
+fn hide_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+}
+
+/// ⌘⇧W на экране всех подключений: закрывать нечего — прячем окно в трей.
+/// На платформах без трея это no-op: спрятанное окно оттуда не вернуть.
+#[tauri::command]
+fn hide_to_tray(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    hide_window(&app);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 /// Иконка в menu bar: приложение живёт в трее, даже когда окно закрыто
 /// (close прячет окно, см. on_window_event ниже).
 #[cfg(target_os = "macos")]
@@ -391,10 +411,7 @@ pub fn run() {
             // убирает иконку из Dock и Cmd-Tab, пока окно скрыто.
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                let _ = window
-                    .app_handle()
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                hide_window(window.app_handle());
                 api.prevent_close();
             }
             #[cfg(not(target_os = "macos"))]
@@ -459,6 +476,7 @@ pub fn run() {
             commands::agent_gui_reply,
             sync_tray_connections,
             reveal_main_window,
+            hide_to_tray,
             acp::acp_spawn,
             acp::acp_send,
             acp::acp_kill,

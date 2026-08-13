@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
+import { comboKeys, hotkeyOf } from "../lib/hotkeys";
 import { isMac } from "../lib/platform";
+import { useApp } from "../lib/store";
 import { cn, IconButton, Overlay } from "./ui";
 
 const MOD = isMac ? "⌘" : "Ctrl";
@@ -11,13 +13,15 @@ interface Shortcut {
   label: string;
 }
 
-const SECTIONS: { title: string; items: Shortcut[] }[] = [
+const sections = (
+  queriesCombo: string,
+): { title: string; items: Shortcut[] }[] => [
   {
     title: "General",
     items: [
       { keys: [MOD, ALT, "O"], label: "Connections palette" },
       { keys: [MOD, "F"], label: "Filter connections (launcher)" },
-      { keys: [MOD, "P"], label: "Saved queries palette" },
+      { keys: comboKeys(queriesCombo), label: "Saved queries / tables" },
       { keys: ["Ctrl", "X"], label: "Delete saved query (palette)" },
       { keys: [MOD, SHIFT, "O"], label: "Find table / column / function" },
       { keys: ["Ctrl", "1…9"], label: "Switch connection" },
@@ -27,8 +31,11 @@ const SECTIONS: { title: string; items: Shortcut[] }[] = [
       { keys: [MOD, "T / N"], label: "New query tab" },
       { keys: [MOD, "W"], label: "Close tab" },
       { keys: [MOD, SHIFT, "T"], label: "Reopen closed tab" },
-      { keys: [`${MOD}K`, `${MOD}W`], label: "Close all tabs" },
-      { keys: [MOD, SHIFT, "W"], label: "Close connection" },
+      // палитра на ⌘K затеняет чорд ⌘K⌘W — не показывать мёртвую строку
+      ...(queriesCombo === "mod+k"
+        ? []
+        : [{ keys: [`${MOD}K`, `${MOD}W`], label: "Close all tabs" }]),
+      { keys: [MOD, SHIFT, "W"], label: "Close connection / hide to tray" },
       { keys: [MOD, "R"], label: "Refresh table / structure" },
       { keys: [MOD, "B"], label: "Toggle sidebar" },
       { keys: [MOD, "J"], label: "AI agent panel" },
@@ -81,9 +88,10 @@ function Keys({ keys }: { keys: string[] }) {
 
 /** Shortcut cheat-sheet; lives on the empty screen and in the ⌘? overlay. */
 export function ShortcutSections({ className }: { className?: string }) {
+  const queriesCombo = useApp((s) => hotkeyOf(s.settings, "queriesPalette"));
   return (
     <div className={cn("flex flex-wrap justify-center gap-x-14 gap-y-6", className)}>
-      {SECTIONS.map((s) => (
+      {sections(queriesCombo).map((s) => (
         <div key={s.title} className="w-60">
           <div className="mb-2 text-[10px] font-semibold tracking-wider text-zinc-600">
             {s.title.toUpperCase()}

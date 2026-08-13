@@ -22,6 +22,7 @@ import { WhatsNewDialog } from "./components/WhatsNewDialog";
 import { VaultGate } from "./components/VaultGate";
 import { api } from "./lib/api";
 import { buildGuiContext } from "./lib/guiContext";
+import { hotkeyOf, matchesCombo } from "./lib/hotkeys";
 import { isKey, keyDigit } from "./lib/keys";
 import { isMac } from "./lib/platform";
 import { connectedProfiles } from "./lib/profile";
@@ -64,11 +65,26 @@ const closeAllVisibleTabs = (s: Store) =>
     s.tabs.filter((t) => t.profileId === s.activeProfileId).map((t) => t.id),
   );
 
+/** The connection behind the workspace (sidebar + tabs) — live, or lost but
+ *  still cached. Null means the launcher is what's on screen. */
+const workspaceProfileId = (
+  s: Pick<Store, "activeProfileId" | "sessions" | "lost">,
+) => {
+  const id = s.activeProfileId;
+  return id && (s.sessions[id] || s.lost[id]) ? id : null;
+};
+
 /** ⌘⇧W — disconnect the active connection (its tabs go with it; the workspace
- *  is snapshotted, so reconnecting restores them). */
+ *  is snapshotted, so reconnecting restores them). On the "all connections"
+ *  screen there is nothing to close, so it hides the window into the tray
+ *  instead — same as the red button; the app keeps running in the menu bar. */
 const closeActiveConnection = (s: Store) => {
-  if (!s.activeProfileId) return false;
-  void s.disconnect(s.activeProfileId);
+  const profileId = workspaceProfileId(s);
+  if (!profileId || s.launcherOpen) {
+    void api.hideToTray();
+    return;
+  }
+  void s.disconnect(profileId);
 };
 
 function App() {
@@ -205,8 +221,12 @@ function App() {
           s.setPalette(s.palette === "connections" ? null : "connections"),
       },
       {
-        combo: "⌘P",
-        match: (e) => mod(e) && !e.altKey && isKey(e, "p"),
+        // Настраивается в Settings → Hotkeys (settings.hotkeys.queriesPalette).
+        // Дефолт ⌘K затеняет чорд ⌘K⌘W ниже — тот оживает, если увести
+        // палитру на другое комбо.
+        combo: "Saved queries palette (default ⌘K)",
+        match: (e) =>
+          matchesCombo(e, hotkeyOf(useApp.getState().settings, "queriesPalette")),
         run: (s) => s.setPalette(s.palette === "queries" ? null : "queries"),
       },
       {
@@ -445,13 +465,11 @@ function App() {
   }, []);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
-  // The workspace (sidebar + tabs) needs an active connection behind it —
-  // live or lost-but-cached. Anything else shows the launcher; it also
-  // opens on demand over a live workspace ("All connections").
-  const hasWorkspace = Boolean(
-    activeProfileId && (sessions[activeProfileId] || lost[activeProfileId]),
-  );
-  const showLauncher = launcherOpen || !hasWorkspace;
+  // The workspace needs a connection behind it; anything else shows the
+  // launcher, and it also opens on demand over a live workspace
+  // ("All connections").
+  const showLauncher =
+    launcherOpen || !workspaceProfileId({ activeProfileId, sessions, lost });
 
   return (
     <VaultGate>

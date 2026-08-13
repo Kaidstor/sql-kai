@@ -80,6 +80,9 @@ export interface AppSettings {
    *  providerId → configId → значение (модель, режим, effort…).
    *  Переприменяется при старте каждой новой сессии. */
   agentSessionConfig?: Record<string, Record<string, string | boolean>>;
+  /** Пользовательские хоткеи: id действия → комбо "mod+shift+k"
+   *  (см. lib/hotkeys.ts). Отсутствие ключа — дефолтное комбо действия. */
+  hotkeys?: Record<string, string>;
   [key: string]: unknown;
 }
 

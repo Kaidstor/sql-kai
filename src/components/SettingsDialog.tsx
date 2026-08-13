@@ -1,6 +1,13 @@
 import { Check, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import {
+  HOTKEY_ACTIONS,
+  comboFromEvent,
+  formatCombo,
+  hotkeyOf,
+} from "../lib/hotkeys";
+import { isMac } from "../lib/platform";
 import { useApp } from "../lib/store";
 import { THEMES, themeById, type Theme } from "../lib/themes";
 import { IconButton, Overlay, cn } from "./ui";
@@ -49,12 +56,76 @@ function ThemeCard({
   );
 }
 
+/** Кнопка-рекордер: клик — «Press keys…», следующее нажатие с ⌘/Ctrl
+ *  становится биндингом. Esc отменяет запись, Reset возвращает дефолт. */
+function HotkeyRow({
+  label,
+  combo,
+  isDefault,
+  onChange,
+  onReset,
+}: {
+  label: string;
+  combo: string;
+  isDefault: boolean;
+  onChange: (combo: string) => void;
+  onReset: () => void;
+}) {
+  const [recording, setRecording] = useState(false);
+  return (
+    <div className="flex items-center justify-between gap-3 text-[12px]">
+      <span className="text-zinc-300">{label}</span>
+      <span className="flex items-center gap-1.5">
+        {!isDefault && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="text-[11px] text-zinc-500 hover:text-zinc-300"
+          >
+            reset
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setRecording(true)}
+          onBlur={() => setRecording(false)}
+          onKeyDown={(e) => {
+            if (!recording) return;
+            // не отдавать нажатие глобальным хоткеям и Esc оверлея
+            e.stopPropagation();
+            if (e.key === "Escape") {
+              setRecording(false);
+              return;
+            }
+            if (["Shift", "Alt", "Control", "Meta"].includes(e.key)) return;
+            e.preventDefault();
+            const next = comboFromEvent(e.nativeEvent);
+            if (next) {
+              onChange(next);
+              setRecording(false);
+            }
+          }}
+          className={cn(
+            "min-w-16 rounded border px-2 py-1 font-sans text-[11px] leading-none",
+            recording
+              ? "border-sky-600 bg-sky-950/40 text-sky-300"
+              : "border-zinc-700 bg-zinc-800/80 text-zinc-200 hover:border-zinc-600",
+          )}
+        >
+          {recording ? "Press keys…" : formatCombo(combo)}
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function SettingsDialog() {
   const settingsOpen = useApp((s) => s.settingsOpen);
   const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const setLogViewerOpen = useApp((s) => s.setLogViewerOpen);
   const settings = useApp((s) => s.settings);
   const setTheme = useApp((s) => s.setTheme);
+  const setHotkey = useApp((s) => s.setHotkey);
   const [path, setPath] = useState<string | null>(null);
   const [logPath, setLogPath] = useState<string | null>(null);
 
@@ -94,6 +165,26 @@ export function SettingsDialog() {
                 onPick={() => void setTheme(t.id)}
               />
             ))}
+          </div>
+        </div>
+
+        <div className="border-t border-zinc-800 p-4">
+          <div className="mb-2 text-[11px] text-zinc-400">Hotkeys</div>
+          <div className="flex flex-col gap-2">
+            {HOTKEY_ACTIONS.map((a) => (
+              <HotkeyRow
+                key={a.id}
+                label={a.label}
+                combo={hotkeyOf(settings, a.id)}
+                isDefault={hotkeyOf(settings, a.id) === a.default}
+                onChange={(combo) => void setHotkey(a.id, combo)}
+                onReset={() => void setHotkey(a.id, null)}
+              />
+            ))}
+          </div>
+          <div className="mt-2 text-[11px] text-zinc-600">
+            Click the binding, then press the new combination (must include{" "}
+            {isMac ? "⌘" : "Ctrl"}).
           </div>
         </div>
 
