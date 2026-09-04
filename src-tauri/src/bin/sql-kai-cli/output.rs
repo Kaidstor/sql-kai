@@ -254,7 +254,7 @@ fn pad(s: &str, width: usize) -> String {
     let fill = width.saturating_sub(s.chars().count());
     let mut out = String::with_capacity(s.len() + fill);
     out.push_str(s);
-    out.extend(std::iter::repeat(' ').take(fill));
+    out.extend(std::iter::repeat_n(' ', fill));
     out
 }
 
