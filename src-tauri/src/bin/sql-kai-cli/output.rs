@@ -214,17 +214,75 @@ pub fn print_rows(columns: &[&str], rows: &[Vec<Option<String>>], fmt: Format) {
 }
 
 fn print_table(columns: &[String], rows: &[Vec<Option<String>>], truncated: bool) {
+    print!(
+        "{}",
+        render_table(columns, rows, truncated, table_cell_cap())
+    );
+}
+
+/// Потолок ширины ячейки: `SQL_KAI_TABLE_WIDTH` (`0` — выключить), иначе ширина
+/// терминала. В пайпе/файле обрезки нет — табличный вывод там читают скрипты,
+/// молча потерянные данные хуже нечитаемой строки.
+fn table_cell_cap() -> Option<usize> {
+    if let Some(v) = crate::envvar::value(crate::envvar::TABLE_WIDTH) {
+        match v.parse::<usize>() {
+            Ok(0) => return None,
+            Ok(w) => return Some(w),
+            Err(_) => {}
+        }
+    }
+    // Именно stdout: terminal_size() без fd смотрит ещё stderr/stdin, и при
+    // `q ... > file` из терминала обрезка утекла бы в файл.
+    terminal_size::terminal_size_of(std::io::stdout()).map(|(w, _)| w.0 as usize)
+}
+
+/// Обрезка до `cap` символов; обрезанное помечается «…» в последней позиции.
+fn clip(s: String, cap: Option<usize>) -> String {
+    let Some(cap) = cap else { return s };
+    if s.chars().count() <= cap {
+        return s;
+    }
+    let mut out: String = s.chars().take(cap.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+// Ширину не отдавать в `format!("{:<w$}")`: внутри core::fmt она хранится как
+// u16, и ячейка длиннее 65535 символов роняет процесс паникой «Formatting
+// argument out of range». Пробелы набиваются вручную.
+fn pad(s: &str, width: usize) -> String {
+    let fill = width.saturating_sub(s.chars().count());
+    let mut out = String::with_capacity(s.len() + fill);
+    out.push_str(s);
+    out.extend(std::iter::repeat(' ').take(fill));
+    out
+}
+
+/// Табличный рендер; `cell_cap` — потолок ширины ячейки в символах (None — без
+/// обрезки). Машинные форматы (`-t`/`--json`/`--csv`) сюда не заходят.
+fn render_table(
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+    truncated: bool,
+    cell_cap: Option<usize>,
+) -> String {
     // Управляющие символы ломают выравнивание — экранируем переводы строк.
     let sanitize = |s: &str| s.replace('\r', "").replace('\n', "\\n").replace('\t', " ");
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
             (0..columns.len())
-                .map(|i| sanitize(row.get(i).and_then(|c| c.as_deref()).unwrap_or("")))
+                .map(|i| {
+                    clip(
+                        sanitize(row.get(i).and_then(|c| c.as_deref()).unwrap_or("")),
+                        cell_cap,
+                    )
+                })
                 .collect()
         })
         .collect();
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.chars().count()).collect();
+    let heads: Vec<String> = columns.iter().map(|c| clip(c.clone(), cell_cap)).collect();
+    let mut widths: Vec<usize> = heads.iter().map(|c| c.chars().count()).collect();
     for row in &cells {
         for (i, c) in row.iter().enumerate() {
             widths[i] = widths[i].max(c.chars().count());
@@ -233,32 +291,36 @@ fn print_table(columns: &[String], rows: &[Vec<Option<String>>], truncated: bool
     let render = |vals: &[String]| {
         vals.iter()
             .enumerate()
-            .map(|(i, v)| format!("{:<w$}", v, w = widths[i]))
+            .map(|(i, v)| pad(v, widths[i]))
             .collect::<Vec<_>>()
             .join(" | ")
     };
-    println!("{}", render(columns).trim_end());
-    println!(
-        "{}",
-        widths
+    let mut out = String::new();
+    out.push_str(render(&heads).trim_end());
+    out.push('\n');
+    out.push_str(
+        &widths
             .iter()
             .map(|w| "-".repeat(*w))
             .collect::<Vec<_>>()
-            .join("-+-")
+            .join("-+-"),
     );
+    out.push('\n');
     for row in &cells {
-        println!("{}", render(row).trim_end());
+        out.push_str(render(row).trim_end());
+        out.push('\n');
     }
     let n = rows.len();
-    println!(
-        "({n} row{}{})",
+    out.push_str(&format!(
+        "({n} row{}{})\n",
         if n == 1 { "" } else { "s" },
         if truncated {
             ", truncated — увеличь --max-rows"
         } else {
             ""
         }
-    );
+    ));
+    out
 }
 
 fn print_csv(r: &StatementResult) {
@@ -281,9 +343,42 @@ fn print_csv(r: &StatementResult) {
 
 #[cfg(test)]
 mod tests {
-    use super::typed_value;
+    use super::{render_table, typed_value};
     use serde_json::{json, Value};
     use sql_kai_lib::db::Type;
+
+    // Регрессия issue #1: ячейка длиннее 65535 символов роняла format!("{:<w$}").
+    #[test]
+    fn render_table_survives_huge_cell() {
+        let big = "x".repeat(70_000);
+        let out = render_table(&["plan".into()], &[vec![Some(big.clone())]], false, None);
+        // без потолка ячейка не обрезается
+        assert!(out.contains(&big));
+    }
+
+    #[test]
+    fn render_table_clips_wide_cells_with_marker() {
+        let big = "x".repeat(70_000);
+        let out = render_table(&["plan".into()], &[vec![Some(big)]], false, Some(80));
+        let row = out.lines().nth(2).unwrap();
+        assert_eq!(row.chars().count(), 80);
+        assert!(row.ends_with('…'));
+        assert!(out.lines().all(|l| l.chars().count() <= 80));
+    }
+
+    #[test]
+    fn render_table_short_output_unchanged() {
+        let out = render_table(
+            &["id".into(), "name".into()],
+            &[
+                vec![Some("1".into()), Some("ab".into())],
+                vec![Some("2".into()), None],
+            ],
+            false,
+            Some(120),
+        );
+        assert_eq!(out, "id | name\n---+-----\n1  | ab\n2  |\n(2 rows)\n");
+    }
 
     #[test]
     fn typed_value_converts_by_column_type() {

@@ -38,3 +38,8 @@ pub const ALLOW_PROD_WRITE: &str = "SQL_KAI_ALLOW_PROD_WRITE";
 /// То же для выгрузки боевых данных на эту машину (`fork --data` с
 /// production-профиля): значения разбираются так же, как у [`ALLOW_PROD_WRITE`].
 pub const ALLOW_PROD_DUMP: &str = "SQL_KAI_ALLOW_PROD_DUMP";
+
+/// Потолок ширины ячейки табличного вывода CLI, в символах. Не задана — авто:
+/// ширина терминала, когда stdout — tty, и без обрезки в пайпе/файле.
+/// `0` — выключить обрезку и в терминале. На `-t`/`--json`/`--csv` не влияет.
+pub const TABLE_WIDTH: &str = "SQL_KAI_TABLE_WIDTH";
