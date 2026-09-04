@@ -4337,6 +4337,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "terminal_size",
  "thiserror 2.0.18",
  "tokio",
  "tokio-postgres",
