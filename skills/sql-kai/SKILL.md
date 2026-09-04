@@ -118,9 +118,7 @@ sql-kai exec <ssh-alias> --dry-run       # показать команду, не
 
 ```bash
 sql-kai schema <alias>                   # ВСЯ структура базы одним вызовом
-sql-kai schema <alias> --schema billing  # только одна схема
-sql-kai schema <alias> --table domains   # только одна таблица ([schema.]table)
-sql-kai schema <alias> --json            # то же деревом, для парсинга
+sql-kai schema <alias> --table domains   # одна таблица целиком ([schema.]table)
 ```
 
 `schema` отдаёт таблицы (в т.ч. партиционированные и foreign), вьюхи и матвьюхи
@@ -130,34 +128,9 @@ sql-kai schema <alias> --json            # то же деревом, для па
 следом запрос на структуру каждой): это десятки round-trip, рваная картина и
 заметно больше токенов на тот же результат.
 
-```
--- база: domainator   сервер: 16.4
--- скрыто: системные схемы, объекты расширений, партиции (--internal); тела вьюх и функций (--definitions); комментарии (--comments)
-
-== схема public ==
-
-table public.domains
-  id          bigint        not null  identity always
-  name        text          not null
-  status      domain_state  not null  default 'new'::domain_state
-  created_at  timestamptz   not null  default now()
-  constraint domains_pkey PRIMARY KEY (id)
-  constraint domains_name_key UNIQUE (name)
-  index domains_status_idx USING btree (status)
-  trigger set_updated_at BEFORE UPDATE -> touch_updated_at()
-
-enum public.domain_state = new | ok | failed
-
--- итого: схем 1, таблиц 1, enum 1
-```
-
 Индексы за `PRIMARY KEY` и `UNIQUE` отдельной строкой `index` не печатаются —
-они и есть строки `constraint` выше.
-
-Флаги: `--schema <name>` (сузить до одной схемы), `--table [schema.]name` (одна
-таблица), `--definitions` (тела вьюх и исходники функций), `--comments` (тексты
-`COMMENT ON`), `--internal` (системные схемы, объекты расширений и листовые
-партиции — по умолчанию скрыты как шум).
+они и есть строки `constraint` выше. Системные схемы, объекты расширений и
+листовые партиции по умолчанию скрыты как шум, вернуть их — `--internal`.
 
 **Нужна одна таблица — это `schema --table`.** Один вызов отдаёт её колонки,
 констрейнты, индексы, триггеры и политики плюс то, чем она пользуется:
@@ -184,8 +157,7 @@ sql-kai sessions                         # живые сессии GUI-брок�
 
 `sql-kai logs` работает и тогда, когда сам postgres уже не отвечает (упал,
 перезапускается, забил диск) — это первое, что стоит посмотреть при «база
-недоступна», прежде чем гадать. Фильтры: `--since 10m`, `--until`,
-`--timestamps`, `--container <имя>`; строки идут в stdout, так что `| grep ERROR`
+недоступна», прежде чем гадать. Строки идут в stdout, так что `| grep ERROR`
 работает. `-f` стримит до Ctrl+C — не запускай его в блокирующем режиме.
 Для managed-базы без ssh команда честно откажет: журнал там только в панели
 провайдера.
