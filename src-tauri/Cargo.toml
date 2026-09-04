@@ -33,6 +33,7 @@ cli = [
     "dep:cbc",
     "dep:sha2",
     "dep:hex",
+    "dep:terminal_size",
 ]
 
 [build-dependencies]
@@ -71,6 +72,8 @@ clap = { version = "4", features = ["derive", "wrap_help"], optional = true }
 # unstable-dynamic не включаем — дополнение профилей сделано своим эпилогом
 clap_complete = { version = "4", optional = true }
 rpassword = { version = "7", optional = true }
+# ширина терминала для обрезки ячеек таблицы; уже в дереве через clap wrap_help
+terminal_size = { version = "0.4", optional = true }
 # `import --from beekeeper|dbeaver`: чужой клиент читается своим форматом —
 # Beekeeper держит подключения в sqlite (bundled: не зависеть от системной
 # libsqlite3), пароли в обоих — AES-CBC, ключ у Beekeeper = sha256 от строки.
