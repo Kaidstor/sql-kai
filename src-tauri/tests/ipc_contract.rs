@@ -82,6 +82,7 @@ fn exec_result_shape() {
             truncated: false,
         }],
         duration_ms: 5,
+        ..Default::default()
     };
     assert_eq!(
         to_json(&exec),

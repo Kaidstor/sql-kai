@@ -540,6 +540,26 @@ fn query_output_schema() -> Value {
                 "type": "boolean",
                 "description": "Response byte cap hit: long values were cut (marked inline) and/or rows dropped — the data is incomplete",
             },
+            "notices": {
+                "type": "array",
+                "description": "Server messages raised while the batch ran (RAISE NOTICE, WARNING, INFO), in order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": { "type": "string" },
+                        "message": { "type": "string" },
+                        "detail": { "type": "string" },
+                        "hint": { "type": "string" },
+                    },
+                    "required": ["severity", "message"],
+                },
+            },
+            "tx_rolled_back": {
+                "type": "string",
+                "enum": ["open", "aborted"],
+                "description": "The batch left its transaction open (BEGIN without COMMIT) or aborted; it was rolled back, so its changes were NOT applied",
+            },
+            "warning": { "type": "string", "description": "Human-readable note about tx_rolled_back" },
         },
         "required": ["result_sets", "execution_time"],
     })
@@ -1070,6 +1090,8 @@ struct QueryOutcome {
     masked: Vec<String>,
     /// Данные урезаны байтовым бюджетом ответа (см. [`cap_response_bytes`]).
     size_capped: bool,
+    /// Батч оставил транзакцию открытой, сервер её откатил — текст для модели.
+    warning: Option<String>,
 }
 
 /// SQL через сервер сессий; текст ответа — компактный JSON (все значения
@@ -1099,7 +1121,7 @@ async fn run_query(
             ok: outcome.is_ok(),
         });
     }
-    let res = outcome.map_err(|e| e.to_string())?;
+    let res = outcome.map_err(|e| e.describe(write))?;
     let mut exec = res.exec;
     let masked = redact::redact_exec(&mut exec);
     // порядок важен: сначала маскировка (она укорачивает значения), потом
@@ -1112,9 +1134,14 @@ async fn run_query(
     if size_capped {
         payload["truncatedBySize"] = json!(true);
     }
+    let warning = exec.tx_rolled_back.map(|left| left.warning(write));
+    if let Some(w) = &warning {
+        payload["warning"] = json!(w);
+    }
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     Ok(QueryOutcome {
         text,
+        warning,
         exec,
         types: res.column_types.unwrap_or_default(),
         masked,
@@ -1218,6 +1245,15 @@ fn query_structured(sql: &str, q: &QueryOutcome) -> Value {
     }
     if q.size_capped {
         out["truncated_by_size"] = json!(true);
+    }
+    if !q.exec.notices.is_empty() {
+        out["notices"] = json!(q.exec.notices);
+    }
+    if let Some(left) = q.exec.tx_rolled_back {
+        out["tx_rolled_back"] = json!(left);
+    }
+    if let Some(w) = &q.warning {
+        out["warning"] = json!(w);
     }
     out
 }
@@ -1439,6 +1475,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 7,
+            ..Default::default()
         };
         let q = QueryOutcome {
             text: String::new(),
@@ -1447,6 +1484,7 @@ mod tests {
             types: vec![Some(vec![("id".to_string(), 23), ("name".to_string(), 25)])],
             masked: vec!["name".to_string()],
             size_capped: false,
+            warning: None,
         };
         let v = query_structured("SELECT id, name FROM t", &q);
         assert_eq!(v["result_sets"][0]["columns"][0]["type"], "int4");
@@ -1473,6 +1511,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         let v = rows_structured("tables", &exec, &["schema", "name", "kind"], None);
         assert_eq!(v["tables"][0]["schema"], "public");
@@ -1520,6 +1559,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(cap_response_bytes(&mut exec));
         let r = &exec.results[0];
@@ -1544,6 +1584,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(!cap_response_bytes(&mut small));
         assert_eq!(small.results[0].rows[0][0].as_deref(), Some("1"));
@@ -1560,6 +1601,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(cap_response_bytes(&mut exec));
         let v = exec.results[0].rows[0][0].as_deref().unwrap();

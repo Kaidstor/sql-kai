@@ -1,7 +1,10 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::Serialize;
+use tokio_postgres::error::SqlState;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, SimpleQueryMessage};
 
@@ -29,11 +32,162 @@ impl StatementResult {
     }
 }
 
-#[derive(Serialize, serde::Deserialize, Debug)]
+#[derive(Serialize, serde::Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecResult {
     pub results: Vec<StatementResult>,
     pub duration_ms: u64,
+    /// Сообщения сервера (`RAISE NOTICE`, WARNING, INFO) за время батча.
+    /// Пустые поля не сериализуются: форма ответа для старых потребителей та
+    /// же, а старый брокер без них десериализуется в пустое значение.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<Notice>,
+    /// Батч оставил транзакцию открытой или прерванной, и её откатили.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_rolled_back: Option<TxLeftover>,
+}
+
+/// Асинхронное сообщение сервера — NoticeResponse протокола.
+#[derive(Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct Notice {
+    /// Нелокализованная severity (`NOTICE`, `WARNING`, `INFO`, …).
+    pub severity: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+impl Notice {
+    pub fn from_db(e: &tokio_postgres::error::DbError) -> Self {
+        Notice {
+            severity: e
+                .parsed_severity()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| e.severity().to_string()),
+            message: e.message().to_string(),
+            detail: e.detail().map(str::to_string),
+            hint: e.hint().map(str::to_string),
+        }
+    }
+
+    /// Строки как у psql: `NOTICE: …`, затем `DETAIL: …` / `HINT: …`.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = vec![format!("{}: {}", self.severity, self.message)];
+        if let Some(d) = &self.detail {
+            out.push(format!("DETAIL: {d}"));
+        }
+        if let Some(h) = &self.hint {
+            out.push(format!("HINT: {h}"));
+        }
+        out
+    }
+}
+
+/// Сюда драйвер соединения складывает notices, пока их не заберёт вызывающий.
+/// Порядок гарантирован протоколом: NoticeResponse приходит раньше
+/// ReadyForQuery своего запроса, а драйвер кладёт его в буфер до того, как
+/// отдаст клиенту ответ, — после `simple_query` notices батча уже здесь.
+#[derive(Clone, Default)]
+pub struct NoticeSink(Arc<Mutex<VecDeque<Notice>>>);
+
+/// Потолок буфера: GUI-вкладки notices не забирают, и без предела долгая
+/// сессия с шумной процедурой копила бы их бесконечно.
+const NOTICE_CAP: usize = 1000;
+
+impl NoticeSink {
+    pub fn push(&self, n: Notice) {
+        let mut q = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if q.len() >= NOTICE_CAP {
+            q.pop_front();
+        }
+        q.push_back(n);
+    }
+
+    pub fn take(&self) -> Vec<Notice> {
+        let mut q = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        q.drain(..).collect()
+    }
+}
+
+/// В каком состоянии батч оставил транзакцию, когда его пришлось откатить.
+#[derive(Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TxLeftover {
+    /// `BEGIN` без `COMMIT` — транзакция висела открытой.
+    Open,
+    /// Ошибка внутри явного `BEGIN … COMMIT`: `COMMIT` не выполнился, и
+    /// транзакция осталась прерванной (любой запрос в ней — 25P02).
+    Aborted,
+}
+
+impl TxLeftover {
+    /// Предупреждение для человека (stderr CLI, текст ошибки MCP).
+    pub fn warning(self, write: bool) -> String {
+        let what = match self {
+            TxLeftover::Open => "батч оставил транзакцию открытой (BEGIN без COMMIT)",
+            TxLeftover::Aborted => {
+                "батч упал внутри явной транзакции (BEGIN … COMMIT), COMMIT не выполнился"
+            }
+        };
+        let effect = if write {
+            " — выполнен ROLLBACK, изменения этой транзакции НЕ применены. \
+             Батч sql-kai и так одна транзакция: BEGIN/COMMIT в нём не нужны"
+        } else {
+            " — выполнен ROLLBACK"
+        };
+        format!("{what}{effect}; сессия снова свободна")
+    }
+}
+
+/// Точное состояние транзакции на соединении — в отличие от эвристики
+/// [`advance_tx`], которая не видит ни `COMMIT` внутри процедуры, ни ошибку,
+/// пришедшую не от того стейтмента.
+///
+/// ReadyForQuery tokio-postgres наружу не отдаёт, поэтому спрашиваем сервер:
+/// вне явного блока каждый запрос — своя неявная транзакция, и её начало
+/// совпадает с началом стейтмента (StartTransaction берёт stmtStartTimestamp);
+/// внутри открытого блока транзакция началась раньше. Прерванная отвечает
+/// 25P02 на любой запрос, кроме ROLLBACK.
+pub async fn probe_tx(client: &Client) -> Result<TxStatus, AppError> {
+    match execute(
+        client,
+        "SELECT pg_catalog.statement_timestamp() = pg_catalog.transaction_timestamp()",
+        1,
+    )
+    .await
+    {
+        Ok(exec) => {
+            let idle = exec
+                .results
+                .first()
+                .and_then(|r| r.rows.first())
+                .is_some_and(|row| cell_bool(row, 0) || cell(row, 0) == "t");
+            Ok(if idle {
+                TxStatus::Idle
+            } else {
+                TxStatus::Active
+            })
+        }
+        Err(e) if e.sqlstate() == Some(SqlState::IN_FAILED_SQL_TRANSACTION.code()) => {
+            Ok(TxStatus::Failed)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Возвращает соединение в idle: если транзакция открыта или прервана —
+/// ROLLBACK. `Some` — что именно пришлось откатить; `Err` — соединение в
+/// неизвестном состоянии, его надо выбросить.
+pub async fn settle_tx(client: &Client) -> Result<Option<TxLeftover>, AppError> {
+    let left = match probe_tx(client).await? {
+        TxStatus::Idle => return Ok(None),
+        TxStatus::Active => TxLeftover::Open,
+        TxStatus::Failed => TxLeftover::Aborted,
+    };
+    execute(client, "ROLLBACK", 1).await?;
+    Ok(Some(left))
 }
 
 /// Row cap for catalog introspection ([`query_rows`]) — a runaway guard rather
@@ -96,6 +250,7 @@ pub async fn execute(client: &Client, sql: &str, max_rows: usize) -> Result<Exec
     Ok(ExecResult {
         results,
         duration_ms: start.elapsed().as_millis() as u64,
+        ..Default::default()
     })
 }
 
@@ -235,6 +390,14 @@ impl<'a> QueryExecutor<'a> {
     pub fn mark_idle(&self) {
         self.tx.store(TxStatus::Idle as u8, Ordering::Relaxed);
     }
+
+    /// [`settle_tx`] + Idle в трекере: после него соединение гарантированно
+    /// вне транзакции (или `Err` — и тогда его надо выбросить).
+    pub async fn settle(&self) -> Result<Option<TxLeftover>, AppError> {
+        let left = settle_tx(self.client).await?;
+        self.mark_idle();
+        Ok(left)
+    }
 }
 
 /// Cell text at `i`; "" for NULL or a missing column.
@@ -280,4 +443,73 @@ pub async fn statement_column_types(
         out.push(cols);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notice(msg: &str) -> Notice {
+        Notice {
+            severity: "NOTICE".into(),
+            message: msg.into(),
+            detail: None,
+            hint: None,
+        }
+    }
+
+    #[test]
+    fn notice_lines_follow_psql() {
+        let n = Notice {
+            detail: Some("d".into()),
+            hint: Some("h".into()),
+            ..notice("hello 42")
+        };
+        assert_eq!(n.lines(), ["NOTICE: hello 42", "DETAIL: d", "HINT: h"]);
+    }
+
+    #[test]
+    fn notice_sink_drains_in_order_and_is_bounded() {
+        let sink = NoticeSink::default();
+        for i in 0..NOTICE_CAP + 5 {
+            sink.push(notice(&i.to_string()));
+        }
+        let got = sink.take();
+        assert_eq!(got.len(), NOTICE_CAP);
+        assert_eq!(got[0].message, "5", "the oldest are dropped first");
+        assert!(sink.take().is_empty());
+    }
+
+    /// Пустые notices и отсутствие отката не меняют форму ответа — старые
+    /// потребители брокера и `--json` видят ровно прежние поля; ответ старого
+    /// брокера без этих полей тоже читается.
+    #[test]
+    fn exec_result_new_fields_are_optional_on_the_wire() {
+        let v = serde_json::to_value(ExecResult::default()).unwrap();
+        assert_eq!(v, serde_json::json!({ "results": [], "durationMs": 0 }));
+        let old: ExecResult =
+            serde_json::from_value(serde_json::json!({ "results": [], "durationMs": 3 })).unwrap();
+        assert!(old.notices.is_empty() && old.tx_rolled_back.is_none());
+
+        let exec = ExecResult {
+            notices: vec![notice("hi")],
+            tx_rolled_back: Some(TxLeftover::Aborted),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&exec).unwrap();
+        assert_eq!(
+            v["notices"],
+            serde_json::json!([{ "severity": "NOTICE", "message": "hi" }])
+        );
+        assert_eq!(v["txRolledBack"], "aborted");
+    }
+
+    #[test]
+    fn rollback_warning_says_writes_were_not_applied() {
+        let w = TxLeftover::Aborted.warning(true);
+        assert!(w.contains("ROLLBACK") && w.contains("НЕ применены"), "{w}");
+        assert!(w.contains("BEGIN/COMMIT"), "{w}");
+        let r = TxLeftover::Open.warning(false);
+        assert!(r.contains("ROLLBACK") && !r.contains("НЕ применены"), "{r}");
+    }
 }

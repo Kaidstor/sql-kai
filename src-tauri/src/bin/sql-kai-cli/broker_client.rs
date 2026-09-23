@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 use sql_kai_lib::broker::{self, BrokerSessionInfo, HelloReply, WireColumnTypes};
-use sql_kai_lib::db::ExecResult;
+use sql_kai_lib::db::{ExecResult, Notice, TxLeftover};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -51,7 +51,48 @@ pub enum BrokerError {
     Query {
         message: String,
         sqlstate: Option<String>,
+        /// Notices, пришедшие до ошибки (старый сервер их не шлёт — пусто).
+        notices: Vec<Notice>,
+        /// Сервер откатил транзакцию, которую батч оставил прерванной.
+        tx_rolled_back: Option<TxLeftover>,
     },
+}
+
+impl BrokerError {
+    /// Отказ по существу запроса без notices — для отказов, которые клиент
+    /// выносит сам, до сервера.
+    pub fn refused(message: String) -> Self {
+        BrokerError::Query {
+            message,
+            sqlstate: None,
+            notices: Vec::new(),
+            tx_rolled_back: None,
+        }
+    }
+
+    /// Текст ошибки вместе с notices и предупреждением об откате — для
+    /// потребителей, у которых нет отдельного stderr (MCP).
+    pub fn describe(&self, write: bool) -> String {
+        let mut out = self.to_string();
+        if let BrokerError::Query {
+            notices,
+            tx_rolled_back,
+            ..
+        } = self
+        {
+            for n in notices {
+                for line in n.lines() {
+                    out.push('\n');
+                    out.push_str(&line);
+                }
+            }
+            if let Some(left) = tx_rolled_back {
+                out.push_str("\nsql-kai: ");
+                out.push_str(&left.warning(write));
+            }
+        }
+        out
+    }
 }
 
 impl std::fmt::Display for BrokerError {
@@ -225,12 +266,22 @@ impl BrokerClient {
                 // связи. Уехав в `_`, он выглядел бы как «брокер недоступен», и
                 // CLI молча повторил бы тот же SQL автономной сессией — то есть
                 // мимо только что вынесенного запрета.
-                "query" | "read_only_tx" | "prod_write" => BrokerError::Query {
+                // `write_setup` — сервер не смог снять read-only ДО батча, SQL
+                // не выполнялся. Как транспортная она печатала «запрос мог
+                // успеть выполниться», а на чтении ушла бы в автономный повтор.
+                "query" | "read_only_tx" | "prod_write" | "write_setup" => BrokerError::Query {
                     message: err.to_string(),
                     sqlstate: v
                         .get("sqlstate")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    notices: v
+                        .get("notices")
+                        .and_then(|n| serde_json::from_value(n.clone()).ok())
+                        .unwrap_or_default(),
+                    tx_rolled_back: v
+                        .get("txRolledBack")
+                        .and_then(|t| serde_json::from_value(t.clone()).ok()),
                 },
                 // cancel/no_session/protocol/unsupported — считаем
                 // транспортными: автономный путь либо решит проблему, либо
@@ -261,10 +312,8 @@ impl BrokerClient {
         // `sql-kai q` и MCP-tool query, а у сервера нет tty. Отказ отдаём как
         // Query — это финальный ответ, автономный путь его не переигрывает.
         if write {
-            session::guard_prod_write_by_id(profile_id).map_err(|e| BrokerError::Query {
-                message: e.to_string(),
-                sqlstate: None,
-            })?;
+            session::guard_prod_write_by_id(profile_id)
+                .map_err(|e| BrokerError::refused(e.to_string()))?;
         }
         let v = self
             .request(
@@ -361,5 +410,33 @@ impl BrokerClient {
 pub async fn notify_profiles_changed() {
     if let Some(mut b) = connect().await {
         let _ = b.request("profiles_changed", Value::Null).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// У MCP нет stderr: notices и предупреждение об откате должны уехать в
+    /// текст ошибки, иначе `RAISE NOTICE` перед `RAISE EXCEPTION` теряется.
+    #[test]
+    fn describe_carries_notices_and_rollback_warning() {
+        let e = BrokerError::Query {
+            message: "ERROR: stop".into(),
+            sqlstate: Some("P0001".into()),
+            notices: vec![Notice {
+                severity: "NOTICE".into(),
+                message: "id=7".into(),
+                detail: None,
+                hint: None,
+            }],
+            tx_rolled_back: Some(TxLeftover::Aborted),
+        };
+        let text = e.describe(true);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "ERROR: stop");
+        assert_eq!(lines[1], "NOTICE: id=7");
+        assert!(lines[2].contains("НЕ применены"), "{text}");
+        assert_eq!(BrokerError::refused("x".into()).describe(true), "x");
     }
 }

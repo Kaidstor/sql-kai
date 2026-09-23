@@ -74,7 +74,8 @@ pub fn print_exec(exec: &ExecResult, fmt: Format) {
     }
 }
 
-/// --json: {results:[{columns, rows, rowsAffected, truncated}], durationMs},
+/// --json: {results:[{columns, rows, rowsAffected, truncated}], durationMs,
+/// notices?, txRolledBack?} — два последних только когда непустые,
 /// значения приведены к JSON-типам по типам колонок из Parse
 /// (`db::statement_column_types`). `stmt_types` идёт в порядке стейтментов и
 /// сверяется с результатом по именам колонок; при несовпадении (или None)
@@ -119,7 +120,13 @@ pub fn print_exec_json(exec: &ExecResult, stmt_types: &[Option<Vec<(String, Type
             })
         })
         .collect();
-    let out = json!({ "results": results, "durationMs": exec.duration_ms });
+    let mut out = json!({ "results": results, "durationMs": exec.duration_ms });
+    if !exec.notices.is_empty() {
+        out["notices"] = json!(exec.notices);
+    }
+    if let Some(left) = exec.tx_rolled_back {
+        out["txRolledBack"] = json!(left);
+    }
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
     untyped
 }
