@@ -124,6 +124,9 @@ pub fn print_exec_json(exec: &ExecResult, stmt_types: &[Option<Vec<(String, Type
     if !exec.notices.is_empty() {
         out["notices"] = json!(exec.notices);
     }
+    if exec.notices_dropped > 0 {
+        out["noticesDropped"] = json!(exec.notices_dropped);
+    }
     if let Some(left) = exec.tx_rolled_back {
         out["txRolledBack"] = json!(left);
     }

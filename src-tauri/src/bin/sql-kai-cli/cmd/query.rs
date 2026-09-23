@@ -62,14 +62,15 @@ pub struct QueryArgs {
 
 /// Notices сервера и предупреждение об откате — в stderr, как у psql. Идут до
 /// результата: сервер присылает их раньше, чем строки.
-fn report_server_messages(notices: &[db::Notice], left: Option<db::TxLeftover>, write: bool) {
-    for n in notices {
-        for line in n.lines() {
-            eprintln!("{line}");
-        }
-    }
-    if let Some(left) = left {
-        eprintln!("⚠ sql-kai: {}", left.warning(write));
+fn report_server_messages(
+    notices: &[db::Notice],
+    dropped: u64,
+    left: Option<db::TxLeftover>,
+    write: bool,
+    error: Option<&str>,
+) {
+    for line in db::server_message_lines(notices, dropped, left, write, error) {
+        eprintln!("{line}");
     }
 }
 
@@ -82,7 +83,13 @@ fn write_lost(a: &QueryArgs, exec: &db::ExecResult) -> bool {
 /// Общий рендер результата: маскирование, формат (+типизированный json),
 /// verbose-времена. `types` пустой, когда формат не json.
 fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(String, db::Type)>>]) {
-    report_server_messages(&exec.notices, exec.tx_rolled_back, a.write);
+    report_server_messages(
+        &exec.notices,
+        exec.notices_dropped,
+        exec.tx_rolled_back,
+        a.write,
+        None,
+    );
     if !a.no_redact {
         let masked = redact::redact_exec(&mut exec);
         if !masked.is_empty() {
@@ -183,10 +190,17 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             message,
             sqlstate,
             notices,
+            notices_dropped,
             tx_rolled_back,
         }) => {
             record(false);
-            report_server_messages(&notices, tx_rolled_back, a.write);
+            report_server_messages(
+                &notices,
+                notices_dropped,
+                tx_rolled_back,
+                a.write,
+                Some(&message),
+            );
             eprintln!("sql-kai: {message}");
             // 25006 read_only_sql_transaction — код, а не поиск по тексту
             if sqlstate.as_deref() == Some("25006") {
@@ -308,8 +322,23 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
         });
     }
     match outcome {
+        // Как у сервера сессий: откаченная запись — отказ, а не результат
+        // с флагом, чтобы режимы не расходились.
+        Ok(_) if a.write && tx_rolled_back.is_some() => {
+            let warning = tx_rolled_back.map(|l| l.warning(true)).unwrap_or_default();
+            report_server_messages(
+                &notices.notices,
+                notices.dropped,
+                tx_rolled_back,
+                a.write,
+                Some(&warning),
+            );
+            eprintln!("sql-kai: {warning}");
+            Ok(ExitCode::FAILURE)
+        }
         Ok(mut exec) => {
-            exec.notices = notices;
+            exec.notices = notices.notices;
+            exec.notices_dropped = notices.dropped;
             exec.tx_rolled_back = tx_rolled_back;
             let types = if a.fmt.pick() == Format::Json {
                 db::statement_column_types(&connected.session.client, &sql).await
@@ -325,7 +354,13 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             })
         }
         Err(e) => {
-            report_server_messages(&notices, tx_rolled_back, a.write);
+            report_server_messages(
+                &notices.notices,
+                notices.dropped,
+                tx_rolled_back,
+                a.write,
+                None,
+            );
             eprintln!("sql-kai: {e}");
             if e.is_read_only() {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");

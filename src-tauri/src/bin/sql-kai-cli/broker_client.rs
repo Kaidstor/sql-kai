@@ -15,6 +15,12 @@ use tokio::net::UnixStream;
 
 use crate::session;
 
+/// Потолки notices в ответе MCP — одно поле и все вместе. Ответ tool'а
+/// ложится в контекст модели, так что notices идут в тот же бюджет, что и
+/// строки (см. `cmd::mcp::cap_response_bytes`), а не мимо него.
+pub const MCP_NOTICE_FIELD_BYTES: usize = 4 * 1024;
+pub const MCP_NOTICES_BYTES: usize = 32 * 1024;
+
 /// Какой сервер сессий обслуживает это соединение.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Via {
@@ -53,6 +59,7 @@ pub enum BrokerError {
         sqlstate: Option<String>,
         /// Notices, пришедшие до ошибки (старый сервер их не шлёт — пусто).
         notices: Vec<Notice>,
+        notices_dropped: u64,
         /// Сервер откатил транзакцию, которую батч оставил прерванной.
         tx_rolled_back: Option<TxLeftover>,
     },
@@ -66,6 +73,7 @@ impl BrokerError {
             message,
             sqlstate: None,
             notices: Vec::new(),
+            notices_dropped: 0,
             tx_rolled_back: None,
         }
     }
@@ -75,20 +83,29 @@ impl BrokerError {
     pub fn describe(&self, write: bool) -> String {
         let mut out = self.to_string();
         if let BrokerError::Query {
+            message,
             notices,
+            notices_dropped,
             tx_rolled_back,
             ..
         } = self
         {
-            for n in notices {
-                for line in n.lines() {
-                    out.push('\n');
-                    out.push_str(&line);
-                }
-            }
-            if let Some(left) = tx_rolled_back {
-                out.push_str("\nsql-kai: ");
-                out.push_str(&left.warning(write));
+            let mut notices = notices.clone();
+            let (_, cut_off) = sql_kai_lib::db::cap_notices(
+                &mut notices,
+                MCP_NOTICE_FIELD_BYTES,
+                MCP_NOTICES_BYTES,
+            );
+            let lines = sql_kai_lib::db::server_message_lines(
+                &notices,
+                notices_dropped + cut_off,
+                *tx_rolled_back,
+                write,
+                Some(message),
+            );
+            for line in lines {
+                out.push('\n');
+                out.push_str(&line);
             }
         }
         out
@@ -279,6 +296,7 @@ impl BrokerClient {
                         .get("notices")
                         .and_then(|n| serde_json::from_value(n.clone()).ok())
                         .unwrap_or_default(),
+                    notices_dropped: v.get("noticesDropped").and_then(Value::as_u64).unwrap_or(0),
                     tx_rolled_back: v
                         .get("txRolledBack")
                         .and_then(|t| serde_json::from_value(t.clone()).ok()),
@@ -430,6 +448,7 @@ mod tests {
                 detail: None,
                 hint: None,
             }],
+            notices_dropped: 0,
             tx_rolled_back: Some(TxLeftover::Aborted),
         };
         let text = e.describe(true);
@@ -437,6 +456,23 @@ mod tests {
         assert_eq!(lines[0], "ERROR: stop");
         assert_eq!(lines[1], "NOTICE: id=7");
         assert!(lines[2].contains("НЕ применены"), "{text}");
+
+        // огромный NOTICE в ошибке режется тем же бюджетом, что и в ответе
+        let huge = BrokerError::Query {
+            message: "ERROR: stop".into(),
+            sqlstate: None,
+            notices: vec![Notice {
+                severity: "NOTICE".into(),
+                message: "y".repeat(300_000),
+                detail: None,
+                hint: None,
+            }],
+            notices_dropped: 0,
+            tx_rolled_back: None,
+        };
+        let text = huge.describe(true);
+        assert!(text.len() < MCP_NOTICES_BYTES, "{}", text.len());
+        assert!(text.contains("more bytes cut"));
         assert_eq!(BrokerError::refused("x".into()).describe(true), "x");
     }
 }

@@ -572,6 +572,7 @@ async fn connect_test() -> db::Connected {
         &test_profile(),
         db::ConnectOptions {
             password_override: Some("testpw".into()),
+            collect_notices: true,
             ..Default::default()
         },
     )
@@ -594,7 +595,7 @@ async fn notices_reach_the_session_sink() {
     db::execute(&client, "DO $$ BEGIN RAISE NOTICE 'hello %', 42; END $$", 1)
         .await
         .expect("do");
-    let got = sink.take();
+    let got = sink.take().notices;
     assert_eq!(got.len(), 1, "got: {got:?}");
     assert_eq!(got[0].severity, "NOTICE");
     assert_eq!(got[0].message, "hello 42");
@@ -607,7 +608,7 @@ async fn notices_reach_the_session_sink() {
     )
     .await
     .expect("read-only do");
-    let got = sink.take();
+    let got = sink.take().notices;
     let flat: Vec<(String, String)> = got
         .iter()
         .map(|n| (n.severity.clone(), n.message.clone()))
@@ -629,7 +630,7 @@ async fn notices_reach_the_session_sink() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("boom"), "got: {err}");
-    let got = sink.take();
+    let got = sink.take().notices;
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].message, "id=7");
 }

@@ -30,6 +30,7 @@ async fn open(
         db::ConnectOptions {
             password_override,
             ssh_mux_ttl: if mux { Some(mux_ttl()) } else { None },
+            collect_notices: true,
             ..Default::default()
         },
     )

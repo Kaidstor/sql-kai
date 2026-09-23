@@ -78,6 +78,9 @@ async fn handle_conn(
                         if !e.notices.is_empty() {
                             v["notices"] = json!(e.notices);
                         }
+                        if e.notices_dropped > 0 {
+                            v["noticesDropped"] = json!(e.notices_dropped);
+                        }
                         if let Some(left) = e.tx_rolled_back {
                             v["txRolledBack"] = json!(left);
                         }
@@ -103,6 +106,7 @@ struct MethodError {
     /// Notices, пришедшие до ошибки, — `RAISE NOTICE` перед `RAISE EXCEPTION`
     /// нужен как раз тогда, когда батч упал.
     notices: Vec<db::Notice>,
+    notices_dropped: u64,
     tx_rolled_back: Option<db::TxLeftover>,
 }
 
@@ -119,7 +123,29 @@ fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
         message: message.into(),
         sqlstate: None,
         notices: Vec::new(),
+        notices_dropped: 0,
         tx_rolled_back: None,
+    }
+}
+
+/// Отказ для батча, который сам прошёл, но итог которого не лёг или не
+/// проверен. Ok с флагом тут не годится: клиент, не знающий флага (sql-kai
+/// 1.30.1 и раньше), напечатал бы `-- 1 row(s) affected` с кодом 0 при
+/// откаченных данных. Ошибку видит любой клиент.
+fn settle_refusal(
+    write: bool,
+    left: Option<db::TxLeftover>,
+    settle_err: Option<&str>,
+) -> Option<String> {
+    if let Some(e) = settle_err {
+        return Some(format!(
+            "не удалось проверить состояние транзакции после батча ({e}); сессия \
+             закрыта, незакоммиченное откатит сервер — проверь, легли ли изменения"
+        ));
+    }
+    match left {
+        Some(left) if write => Some(left.warning(true)),
+        _ => None,
     }
 }
 
@@ -382,7 +408,7 @@ async fn do_query(
     }
 
     // Хвост notices от прошлого вызова (или от служебных SET) — не наш.
-    entry.session.notices.take();
+    let _ = entry.session.notices.take();
 
     // Батчу из одних COMMIT/ROLLBACK режим записи не нужен, а SET внутри
     // прерванной транзакции упал бы с 25P02 — и команда восстановления
@@ -417,10 +443,12 @@ async fn do_query(
     // вызов, включая ROLLBACK --write, падал на 25P02. Читающая обёртка свой
     // блок закрывает сама — там лишний round-trip не нужен.
     let mut tx_rolled_back = None;
+    let mut settle_err = None;
     if !read_only_tx {
         match executor.settle().await {
             Ok(left) => tx_rolled_back = left,
             Err(e) => {
+                settle_err = Some(e.to_string());
                 logging::log(
                     "broker",
                     &format!("\"{profile_id}\": could not return the session to idle ({e}); dropping session"),
@@ -458,8 +486,19 @@ async fn do_query(
     *entry.last_used.lock().unwrap() = Instant::now();
 
     match result {
+        Ok(_) if settle_refusal(write, tx_rolled_back, settle_err.as_deref()).is_some() => {
+            let message =
+                settle_refusal(write, tx_rolled_back, settle_err.as_deref()).unwrap_or_default();
+            Err(MethodError {
+                notices: notices.notices,
+                notices_dropped: notices.dropped,
+                tx_rolled_back,
+                ..method_err("query", message)
+            })
+        }
         Ok(mut exec) => {
-            exec.notices = notices;
+            exec.notices = notices.notices;
+            exec.notices_dropped = notices.dropped;
             exec.tx_rolled_back = tx_rolled_back;
             let column_types: Option<WireColumnTypes> = if with_types {
                 Some(
@@ -487,10 +526,17 @@ async fn do_query(
                 state.remove_entry(profile_id);
                 (hooks.changed)();
             }
+            let mut err = query_err(&e);
+            if let Some(se) = settle_err {
+                err.message.push_str(&format!(
+                    "\n(состояние транзакции после ошибки не проверено: {se}; сессия закрыта)"
+                ));
+            }
             Err(MethodError {
-                notices,
+                notices: notices.notices,
+                notices_dropped: notices.dropped,
                 tx_rolled_back,
-                ..query_err(&e)
+                ..err
             })
         }
     }
@@ -524,6 +570,7 @@ async fn get_or_open(
         &profile,
         db::ConnectOptions {
             ssh_mux_ttl: Some(crate::tunnel::DEFAULT_MUX_TTL),
+            collect_notices: true,
             ..Default::default()
         },
     )
@@ -612,6 +659,21 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// --write, чью транзакцию пришлось откатить, — ошибка, а не Ok с флагом:
+    /// иначе старый клиент печатал `-- 1 row(s) affected` с кодом 0.
+    #[test]
+    fn rolled_back_write_is_refused_for_any_client() {
+        let open = Some(db::TxLeftover::Open);
+        let msg = settle_refusal(true, open, None).expect("write + rollback → error");
+        assert!(msg.contains("НЕ применены"), "{msg}");
+        assert_eq!(settle_refusal(true, None, None), None);
+        // чтение (батч из одного ROLLBACK/COMMIT): откат без записи не отказ
+        assert_eq!(settle_refusal(false, open, None), None);
+        let unknown = settle_refusal(false, None, Some("connection closed"))
+            .expect("unverified state → error");
+        assert!(unknown.contains("connection closed"), "{unknown}");
+    }
 
     /// Живой round-trip через настоящий unix-сокет: hello и sessions (пустое
     /// состояние, без БД). Также фиксирует, что params: null и отсутствующий

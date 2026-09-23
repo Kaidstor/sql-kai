@@ -74,12 +74,20 @@ pub struct ConnectOptions {
     /// of our own (a secondary/isolated connection reusing the primary session's
     /// tunnel). None → normal behavior.
     pub endpoint_override: Option<(String, u16)>,
+    /// Копить notices сервера в [`Session::notices`]. Включают те, кто их
+    /// забирает после каждого запроса (CLI, брокер); GUI-вкладкам не нужно.
+    pub collect_notices: bool,
 }
 
 pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connected, AppError> {
     // A secondary (isolated) connection reuses an existing tunnel's local
     // endpoint instead of opening its own ssh child.
     let isolated = opts.endpoint_override.is_some();
+    let notices = if opts.collect_notices {
+        NoticeSink::enabled()
+    } else {
+        NoticeSink::default()
+    };
     let (host, port, tunnel) = if let Some((host, port)) = opts.endpoint_override {
         (host, port, None)
     } else {
@@ -158,13 +166,13 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             .connect(tls)
             .await
             .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
-        build_session(profile, conn.0, conn.1, tunnel, isolated).await
+        build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     } else {
         let conn = cfg
             .connect(NoTls)
             .await
             .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
-        build_session(profile, conn.0, conn.1, tunnel, isolated).await
+        build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     }
 }
 
@@ -266,6 +274,7 @@ async fn build_session<S, T>(
     mut connection: tokio_postgres::Connection<S, T>,
     tunnel: Option<Tunnel>,
     isolated: bool,
+    notices: NoticeSink,
 ) -> Result<Connected, AppError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -276,7 +285,6 @@ where
     // that moment to the session's host (see Session::closed_rx).
     let log_name = profile.name.clone();
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
-    let notices = NoticeSink::default();
     let sink = notices.clone();
     let conn_task = tokio::spawn(async move {
         // Не `connection.await`: Future-реализация Connection отправляет
