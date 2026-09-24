@@ -60,9 +60,23 @@ pub struct QueryArgs {
     pub(crate) verbose: bool,
 }
 
+/// Notices сервера и предупреждение об откате — в stderr, как у psql. Идут до
+/// результата: сервер присылает их раньше, чем строки.
+fn report_server_messages(
+    notices: &[db::Notice],
+    dropped: u64,
+    left: Option<db::TxLeftover>,
+    error: Option<&str>,
+) {
+    for line in db::server_message_lines(notices, dropped, 0, left, error) {
+        eprintln!("{line}");
+    }
+}
+
 /// Общий рендер результата: маскирование, формат (+типизированный json),
 /// verbose-времена. `types` пустой, когда формат не json.
 fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(String, db::Type)>>]) {
+    report_server_messages(&exec.notices, exec.notices_dropped, None, None);
     if !a.no_redact {
         let masked = redact::redact_exec(&mut exec);
         if !masked.is_empty() {
@@ -154,12 +168,30 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             render_exec(a, res.exec, &types);
             Ok(Some(ExitCode::SUCCESS))
         }
-        Err(broker_client::BrokerError::Query { message, sqlstate }) => {
+        Err(broker_client::BrokerError::Query {
+            message,
+            sqlstate,
+            notices,
+            notices_dropped,
+            tx_rolled_back,
+        }) => {
             record(false);
+            report_server_messages(&notices, notices_dropped, tx_rolled_back, Some(&message));
             eprintln!("sql-kai: {message}");
             // 25006 read_only_sql_transaction — код, а не поиск по тексту
             if sqlstate.as_deref() == Some("25006") {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
+            }
+            // Сессию сервера оставил в aborted прошлый батч, а сервер старый и
+            // сам её не чистит. ROLLBACK без --write проходит и на нём.
+            if sqlstate.as_deref() == Some("25P02")
+                || message.contains("current transaction is aborted")
+            {
+                eprintln!(
+                    "hint: сессия сервера осталась в прерванной транзакции (старая версия GUI/holder) — \
+                     `sql-kai {} -c ROLLBACK` без --write, либо `sql-kai holder stop`, либо --local",
+                    a.alias
+                );
             }
             Ok(Some(ExitCode::FAILURE))
         }
@@ -237,11 +269,25 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     // Автономная сессия (--local/--no-mux) идёт мимо брокера, поэтому read-only
     // тут обеспечивает та же обёртка BEGIN READ ONLY, что и там: одного
     // default_transaction_read_only мало — батч снимает его сам.
+    let client = &connected.session.client;
     let outcome = if a.write {
-        db::execute(&connected.session.client, &sql, a.max_rows.max(1)).await
+        db::execute(client, &sql, a.max_rows.max(1)).await
     } else {
-        db::execute_read_only(&connected.session.client, &sql, a.max_rows.max(1)).await
+        db::execute_read_only(client, &sql, a.max_rows.max(1)).await
     };
+    let notices = connected.session.notices.take();
+    // Сессия одноразовая, и оставленную транзакцию сервер откатил бы сам при
+    // закрытии соединения — но молча: «UPDATE 5» без COMMIT выглядел бы
+    // применённым. Проверяем явно, чтобы сказать об этом так же, как брокер.
+    let (tx_rolled_back, settle_err) = if a.write {
+        match db::settle_tx(client).await {
+            Ok(left) => (left, None),
+            Err(e) => (None, Some(e.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let refusal = db::settle_refusal(tx_rolled_back, settle_err.as_deref());
     if !a.no_history {
         let _ = store::record_history(HistoryEntry {
             id: uuid::Uuid::new_v4().to_string(),
@@ -249,11 +295,26 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             profile_name: profile.name.clone(),
             sql: sql.clone(),
             at: store::now_ms(),
-            ok: outcome.is_ok(),
+            ok: outcome.is_ok() && refusal.is_none(),
         });
     }
     match outcome {
-        Ok(exec) => {
+        // Как у сервера сессий: откаченная запись — отказ, а не результат
+        // с флагом, чтобы режимы не расходились.
+        Ok(_) if refusal.is_some() => {
+            let message = refusal.unwrap_or_default();
+            report_server_messages(
+                &notices.notices,
+                notices.dropped,
+                tx_rolled_back,
+                Some(&message),
+            );
+            eprintln!("sql-kai: {message}");
+            Ok(ExitCode::FAILURE)
+        }
+        Ok(mut exec) => {
+            exec.notices = notices.notices;
+            exec.notices_dropped = notices.dropped;
             let types = if a.fmt.pick() == Format::Json {
                 db::statement_column_types(&connected.session.client, &sql).await
             } else {
@@ -263,7 +324,11 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
+            report_server_messages(&notices.notices, notices.dropped, tx_rolled_back, None);
             eprintln!("sql-kai: {e}");
+            if let Some(se) = &settle_err {
+                eprintln!("sql-kai: состояние транзакции после ошибки не проверено: {se}");
+            }
             if e.is_read_only() {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
             }

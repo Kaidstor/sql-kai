@@ -71,9 +71,21 @@ async fn handle_conn(
                 let id = req.id;
                 match dispatch(req.method, &state, &hooks).await {
                     Ok(result) => json!({ "id": id, "result": result }),
-                    Err(e) => json!({
-                        "id": id, "error": e.message, "code": e.code, "sqlstate": e.sqlstate,
-                    }),
+                    Err(e) => {
+                        let mut v = json!({
+                            "id": id, "error": e.message, "code": e.code, "sqlstate": e.sqlstate,
+                        });
+                        if !e.notices.is_empty() {
+                            v["notices"] = json!(e.notices);
+                        }
+                        if e.notices_dropped > 0 {
+                            v["noticesDropped"] = json!(e.notices_dropped);
+                        }
+                        if let Some(left) = e.tx_rolled_back {
+                            v["txRolledBack"] = json!(left);
+                        }
+                        v
+                    }
                 }
             }
             Err(e) => json!({ "id": 0, "error": format!("bad request: {e}"), "code": "protocol" }),
@@ -91,6 +103,18 @@ struct MethodError {
     /// SQLSTATE серверной ошибки (например 25006 read-only) — sql-kai по нему
     /// показывает hint, не разбирая текст. Старые клиенты поле игнорируют.
     sqlstate: Option<String>,
+    /// Notices, пришедшие до ошибки, — `RAISE NOTICE` перед `RAISE EXCEPTION`
+    /// нужен как раз тогда, когда батч упал.
+    notices: Vec<db::Notice>,
+    notices_dropped: u64,
+    tx_rolled_back: Option<db::TxLeftover>,
+}
+
+fn query_err(e: &AppError) -> MethodError {
+    MethodError {
+        sqlstate: e.sqlstate().map(str::to_string),
+        ..method_err("query", e.to_string())
+    }
 }
 
 fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
@@ -98,6 +122,9 @@ fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
         code,
         message: message.into(),
         sqlstate: None,
+        notices: Vec::new(),
+        notices_dropped: 0,
+        tx_rolled_back: None,
     }
 }
 
@@ -172,11 +199,7 @@ async fn dispatch(
             *entry.last_used.lock().unwrap() = Instant::now();
             let ddl = db::table_ddl(&entry.session.client, &schema, &table)
                 .await
-                .map_err(|e| MethodError {
-                    code: "query",
-                    message: e.to_string(),
-                    sqlstate: e.sqlstate().map(str::to_string),
-                })?;
+                .map_err(|e| query_err(&e))?;
             Ok(json!({ "ddl": ddl }))
         }
         Method::OpenTable {
@@ -272,17 +295,16 @@ fn guard_prod_write(profile_id: &str, client_authorized: bool) -> Result<(), Met
             profile.name
         ),
     );
-    Err(MethodError {
-        code: "prod_write",
-        message: format!(
+    Err(method_err(
+        "prod_write",
+        format!(
             "запись в production-профиль '{}' заблокирована сервером сессий: запрос пришёл \
              без подтверждения прод-барьера. Обнови sql-kai (старый клиент барьер не \
              проходит) либо задай SQL_KAI_ALLOW_PROD_WRITE={} в окружении процесса, \
              который держит сессии (GUI или holder).",
             profile.name, profile.name
         ),
-        sqlstate: None,
-    })
+    ))
 }
 
 async fn do_query(
@@ -317,7 +339,9 @@ async fn do_query(
     //
     // Отдельно трекаем режим открытой транзакции: если --write оставил
     // read-write транзакцию (BEGIN без COMMIT), читающий вызов продолжил бы её
-    // и смог писать, поэтому внутрь такой транзакции его не пускаем.
+    // и смог писать, поэтому внутрь такой транзакции его не пускаем. Сейчас
+    // каждый вызов закрывается settle (ниже), и транзакция между вызовами не
+    // живёт; гейты оставлены вторым слоем на случай, если settle не сработал.
     let before = executor.status();
     let before_write = entry.session.tx_write.load(Ordering::Relaxed);
     // Читающий вызов идёт внутри явной read-only транзакции: снять с себя
@@ -329,24 +353,26 @@ async fn do_query(
     let read_only_tx = !write && !tx_control_only;
     if read_only_tx && db::escapes_read_only_tx(sql) {
         return Err(MethodError {
-            code: "read_only_tx",
-            message: "read-only сессия: батч вышел бы из read-only транзакции, в которой \
+            sqlstate: Some("25006".into()),
+            ..method_err(
+                "read_only_tx",
+                "read-only сессия: батч вышел бы из read-only транзакции, в которой \
                       выполняется, или снял бы с неё read-only (COMMIT/ROLLBACK/END/ABORT/\
                       PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only, \
                       включая форму set_config()). Повтори с --write, если он действительно \
-                      должен менять данные."
-                .into(),
-            sqlstate: Some("25006".into()),
+                      должен менять данные.",
+            )
         });
     }
     if !write && before != TxStatus::Idle && before_write && !tx_control_only {
         return Err(MethodError {
-            code: "read_only_tx",
-            message: "открыта read-write транзакция (её начал вызов с --write). \
-                      Заверши её COMMIT/ROLLBACK или повтори запрос с --write."
-                .into(),
             // read_only_sql_transaction — ближайший по смыслу SQLSTATE
             sqlstate: Some("25006".into()),
+            ..method_err(
+                "read_only_tx",
+                "открыта read-write транзакция (её начал вызов с --write). \
+                 Заверши её COMMIT/ROLLBACK или повтори запрос с --write.",
+            )
         });
     }
 
@@ -360,14 +386,21 @@ async fn do_query(
         guard_prod_write(profile_id, q.prod_write_authorized)?;
     }
 
-    if write {
+    // Хвост notices от прошлого вызова (или от служебных SET) — не наш.
+    let _ = entry.session.notices.take();
+
+    // Батчу из одних COMMIT/ROLLBACK режим записи не нужен, а SET внутри
+    // прерванной транзакции упал бы с 25P02 — и команда восстановления
+    // заблокировалась бы тем самым состоянием, из которого выводит.
+    if write && !tx_control_only {
         // Ошибку снятия read-only больше не игнорируем: если флаг не снят,
         // выполнять write-запрос нельзя — вернём ошибку вместо тихой записи в
         // (казалось бы) read-only сессии.
         db::execute(client, "SET default_transaction_read_only = off", 1)
             .await
-            .map_err(|e| {
-                method_err(
+            .map_err(|e| MethodError {
+                sqlstate: e.sqlstate().map(str::to_string),
+                ..method_err(
                     "write_setup",
                     format!("не удалось включить режим записи: {e}"),
                 )
@@ -381,14 +414,42 @@ async fn do_query(
     } else {
         executor.execute(sql, max_rows.clamp(1, 100_000)).await
     };
+    let notices = entry.session.notices.take();
+
+    // Сессия живёт между вызовами, поэтому вызов обязан вернуть её в idle.
+    // Иначе явный BEGIN … COMMIT с ошибкой посередине оставлял её в aborted:
+    // COMMIT не выполнялся, блокировки строк держались, а каждый следующий
+    // вызов, включая ROLLBACK --write, падал на 25P02. Читающая обёртка свой
+    // блок закрывает сама — там лишний round-trip не нужен.
+    let mut tx_rolled_back = None;
+    let mut settle_err = None;
+    if !read_only_tx {
+        match executor.settle().await {
+            Ok(left) => tx_rolled_back = left,
+            Err(e) => {
+                settle_err = Some(e.to_string());
+                logging::log(
+                    "broker",
+                    &format!("\"{profile_id}\": could not return the session to idle ({e}); dropping session"),
+                );
+                state.remove_entry(profile_id);
+                (hooks.changed)();
+            }
+        }
+        if let Some(left) = tx_rolled_back {
+            logging::log(
+                "broker",
+                &format!("\"{profile_id}\": batch left the transaction {left:?}; rolled back"),
+            );
+        }
+    }
     let after = executor.status();
     // Открытая транзакция read-write, если её открыл (или продолжил) --write.
     let after_write = after != TxStatus::Idle && (write || before_write);
     entry.session.tx_write.store(after_write, Ordering::Relaxed);
 
     // Возвращаем read-only default, как только вернулись в чистый idle — тогда
-    // следующая неявная транзакция снова read-only. Внутри открытой/aborted
-    // транзакции SET бессмыслен (упал бы с 25P02), там охраняет gate выше.
+    // следующая неявная транзакция снова read-only.
     if after == TxStatus::Idle && (write || before_write) {
         if let Err(e) = db::execute(client, "SET default_transaction_read_only = on", 1).await {
             // Не удалось восстановить read-only на живой сессии — не рискуем:
@@ -404,7 +465,19 @@ async fn do_query(
     *entry.last_used.lock().unwrap() = Instant::now();
 
     match result {
-        Ok(exec) => {
+        Ok(_) if db::settle_refusal(tx_rolled_back, settle_err.as_deref()).is_some() => {
+            let message =
+                db::settle_refusal(tx_rolled_back, settle_err.as_deref()).unwrap_or_default();
+            Err(MethodError {
+                notices: notices.notices,
+                notices_dropped: notices.dropped,
+                tx_rolled_back,
+                ..method_err("query", message)
+            })
+        }
+        Ok(mut exec) => {
+            exec.notices = notices.notices;
+            exec.notices_dropped = notices.dropped;
             let column_types: Option<WireColumnTypes> = if with_types {
                 Some(
                     db::statement_column_types(client, sql)
@@ -431,10 +504,17 @@ async fn do_query(
                 state.remove_entry(profile_id);
                 (hooks.changed)();
             }
+            let mut err = query_err(&e);
+            if let Some(se) = settle_err {
+                err.message.push_str(&format!(
+                    "\n(состояние транзакции после ошибки не проверено: {se}; сессия закрыта)"
+                ));
+            }
             Err(MethodError {
-                code: "query",
-                message: e.to_string(),
-                sqlstate: e.sqlstate().map(str::to_string),
+                notices: notices.notices,
+                notices_dropped: notices.dropped,
+                tx_rolled_back,
+                ..err
             })
         }
     }
@@ -468,6 +548,7 @@ async fn get_or_open(
         &profile,
         db::ConnectOptions {
             ssh_mux_ttl: Some(crate::tunnel::DEFAULT_MUX_TTL),
+            collect_notices: true,
             ..Default::default()
         },
     )
@@ -556,6 +637,19 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// --write, чью транзакцию пришлось откатить, — ошибка, а не Ok с флагом:
+    /// иначе старый клиент печатал `-- 1 row(s) affected` с кодом 0.
+    #[test]
+    fn rolled_back_write_is_refused_for_any_client() {
+        let open = Some(db::TxLeftover::Open);
+        let msg = db::settle_refusal(open, None).expect("rollback → error");
+        assert!(msg.contains("НЕ применены"), "{msg}");
+        assert_eq!(db::settle_refusal(None, None), None);
+        let unknown =
+            db::settle_refusal(None, Some("connection closed")).expect("unverified state → error");
+        assert!(unknown.contains("connection closed"), "{unknown}");
+    }
 
     /// Живой round-trip через настоящий unix-сокет: hello и sessions (пустое
     /// состояние, без БД). Также фиксирует, что params: null и отсутствующий

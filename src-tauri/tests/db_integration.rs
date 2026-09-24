@@ -566,3 +566,188 @@ async fn read_only_default_does_not_cover_open_transaction() {
         .expect("delete slips through the leftover read-write tx");
     db::execute(&client, "ROLLBACK", 1).await.expect("rollback");
 }
+
+async fn connect_test() -> db::Connected {
+    db::connect(
+        &test_profile(),
+        db::ConnectOptions {
+            password_override: Some("testpw".into()),
+            collect_notices: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect")
+}
+
+/// `RAISE NOTICE` доходит до вызывающего и в записи, и в read-only обёртке, а
+/// notices перед `RAISE EXCEPTION` не теряются вместе с ошибкой. Раньше
+/// драйвер соединения отправлял их в `log::info!`, и sql-kai печатал только
+/// `-- 0 row(s) affected`.
+#[tokio::test]
+#[ignore]
+async fn notices_reach_the_session_sink() {
+    let connected = connect_test().await;
+    let client = connected.session.client.clone();
+    let sink = connected.session.notices.clone();
+    sink.take();
+
+    db::execute(&client, "DO $$ BEGIN RAISE NOTICE 'hello %', 42; END $$", 1)
+        .await
+        .expect("do");
+    let got = sink.take().notices;
+    assert_eq!(got.len(), 1, "got: {got:?}");
+    assert_eq!(got[0].severity, "NOTICE");
+    assert_eq!(got[0].message, "hello 42");
+    assert_eq!(got[0].lines(), vec!["NOTICE: hello 42".to_string()]);
+
+    db::execute_read_only(
+        &client,
+        "DO $$ BEGIN RAISE WARNING 'w1' USING HINT = 'h1'; RAISE INFO 'i1'; END $$",
+        1,
+    )
+    .await
+    .expect("read-only do");
+    let got = sink.take().notices;
+    let flat: Vec<(String, String)> = got
+        .iter()
+        .map(|n| (n.severity.clone(), n.message.clone()))
+        .collect();
+    assert_eq!(
+        flat,
+        vec![
+            ("WARNING".into(), "w1".into()),
+            ("INFO".into(), "i1".into())
+        ]
+    );
+    assert_eq!(got[0].hint.as_deref(), Some("h1"));
+
+    let err = db::execute(
+        &client,
+        "DO $$ BEGIN RAISE NOTICE 'id=%', 7; RAISE EXCEPTION 'boom'; END $$",
+        1,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("boom"), "got: {err}");
+    let got = sink.take().notices;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].message, "id=7");
+}
+
+/// Сценарий прод-миграции 23.09.2026: явные BEGIN … COMMIT в батче и ошибка
+/// посередине. COMMIT не выполняется, соединение остаётся в aborted и
+/// отвечает 25P02 на всё, кроме ROLLBACK. settle_tx обязан это увидеть,
+/// откатить и вернуть idle.
+#[tokio::test]
+#[ignore]
+async fn settle_rolls_back_an_aborted_explicit_transaction() {
+    let connected = connect_test().await;
+    let client = connected.session.client.clone();
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS settle_probe; CREATE TABLE settle_probe (id int PRIMARY KEY, v text);
+         INSERT INTO settle_probe VALUES (1, 'orig')",
+        10,
+    )
+    .await
+    .expect("setup");
+
+    assert_eq!(db::probe_tx(&client).await.unwrap(), db::TxStatus::Idle);
+    assert_eq!(db::settle_tx(&client).await.unwrap(), None);
+
+    let err = db::execute(
+        &client,
+        "BEGIN;
+         UPDATE settle_probe SET v = 'changed' WHERE id = 1;
+         DO $$ BEGIN RAISE EXCEPTION 'stop'; END $$;
+         COMMIT;",
+        10,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("stop"), "got: {err}");
+    assert_eq!(db::probe_tx(&client).await.unwrap(), db::TxStatus::Failed);
+    // ровно то, что видел пользователь: сессия глотает всё, кроме ROLLBACK
+    let stuck = db::execute(&client, "SELECT 1", 1).await.unwrap_err();
+    assert_eq!(stuck.sqlstate(), Some("25P02"));
+
+    assert_eq!(
+        db::settle_tx(&client).await.unwrap(),
+        Some(db::TxLeftover::Aborted)
+    );
+    assert_eq!(db::probe_tx(&client).await.unwrap(), db::TxStatus::Idle);
+    db::execute(&client, "SELECT 1", 1)
+        .await
+        .expect("session usable again");
+    let v = db::query_scalar(&client, "SELECT v FROM settle_probe WHERE id = 1")
+        .await
+        .unwrap();
+    assert_eq!(
+        v.as_deref(),
+        Some("orig"),
+        "the aborted batch applied nothing"
+    );
+}
+
+/// BEGIN без COMMIT: батч «успешен», но транзакция висит открытой и держит
+/// блокировки строк — settle её откатывает, и изменения не остаются. Обычный батч без BEGIN коммитится сам,
+/// и settle его не трогает.
+#[tokio::test]
+#[ignore]
+async fn settle_rolls_back_an_open_transaction_and_leaves_autocommit_alone() {
+    let connected = connect_test().await;
+    let client = connected.session.client.clone();
+    db::execute(
+        &client,
+        "DROP TABLE IF EXISTS settle_open; CREATE TABLE settle_open (id int PRIMARY KEY);
+         INSERT INTO settle_open VALUES (0)",
+        10,
+    )
+    .await
+    .expect("setup");
+
+    db::execute(
+        &client,
+        "BEGIN; INSERT INTO settle_open VALUES (1); UPDATE settle_open SET id = 0 WHERE id = 0",
+        10,
+    )
+    .await
+    .expect("open tx");
+    assert_eq!(db::probe_tx(&client).await.unwrap(), db::TxStatus::Active);
+
+    let other = connect_test().await;
+    let lock_row0 = "SELECT id FROM settle_open WHERE id = 0 FOR UPDATE NOWAIT";
+    let locked = db::execute(&other.session.client, lock_row0, 1)
+        .await
+        .unwrap_err();
+    assert_eq!(locked.sqlstate(), Some("55P03"), "got: {locked}");
+
+    assert_eq!(
+        db::settle_tx(&client).await.unwrap(),
+        Some(db::TxLeftover::Open)
+    );
+    db::execute(&other.session.client, lock_row0, 1)
+        .await
+        .expect("row lock released after settle");
+
+    db::execute(&client, "INSERT INTO settle_open VALUES (2)", 10)
+        .await
+        .expect("autocommit");
+    assert_eq!(db::settle_tx(&client).await.unwrap(), None);
+
+    db::execute(
+        &client,
+        "BEGIN; INSERT INTO settle_open VALUES (3); COMMIT;",
+        10,
+    )
+    .await
+    .expect("explicit tx");
+    assert_eq!(db::settle_tx(&client).await.unwrap(), None);
+
+    let ids = db::query_rows(&client, "SELECT id FROM settle_open ORDER BY id")
+        .await
+        .unwrap();
+    let ids: Vec<String> = ids.iter().map(|r| db::cell(r, 0)).collect();
+    assert_eq!(ids, vec!["0", "2", "3"]);
+}

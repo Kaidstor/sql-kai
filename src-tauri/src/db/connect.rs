@@ -2,8 +2,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_postgres::{AsyncMessage, Client, NoTls, SimpleQueryMessage};
 
+use super::exec::{Notice, NoticeSink};
 use super::sqltext::TxStatus;
 use crate::error::AppError;
 use crate::logging;
@@ -19,6 +21,8 @@ pub struct Session {
     pub tunnel_port: Option<u16>,
     pub client: Arc<Client>,
     pub cancel: tokio_postgres::CancelToken,
+    /// NOTICE/WARNING/INFO сервера; забирает тот, кто показывает результат.
+    pub notices: NoticeSink,
     /// Heuristic transaction state (a [`TxStatus`] as u8), advanced after every
     /// `execute` on this connection. Arc so `execute_sql` can update it after
     /// the await without re-locking the session map.
@@ -70,12 +74,20 @@ pub struct ConnectOptions {
     /// of our own (a secondary/isolated connection reusing the primary session's
     /// tunnel). None → normal behavior.
     pub endpoint_override: Option<(String, u16)>,
+    /// Копить notices сервера в [`Session::notices`]. Включают те, кто их
+    /// забирает после каждого запроса (CLI, брокер); GUI-вкладкам не нужно.
+    pub collect_notices: bool,
 }
 
 pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connected, AppError> {
     // A secondary (isolated) connection reuses an existing tunnel's local
     // endpoint instead of opening its own ssh child.
     let isolated = opts.endpoint_override.is_some();
+    let notices = if opts.collect_notices {
+        NoticeSink::enabled()
+    } else {
+        NoticeSink::default()
+    };
     let (host, port, tunnel) = if let Some((host, port)) = opts.endpoint_override {
         (host, port, None)
     } else {
@@ -154,13 +166,13 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
             .connect(tls)
             .await
             .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
-        build_session(profile, conn.0, conn.1, tunnel, isolated).await
+        build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     } else {
         let conn = cfg
             .connect(NoTls)
             .await
             .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
-        build_session(profile, conn.0, conn.1, tunnel, isolated).await
+        build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     }
 }
 
@@ -256,20 +268,37 @@ fn log_connect_fail(profile: &Profile, host: &str, port: u16, e: &tokio_postgres
 /// Spawns the connection driver task and assembles the live [`Session`].
 /// Generic over the connection future so the NoTls and TLS paths share it — the
 /// future is the only thing that differs between them.
-async fn build_session(
+async fn build_session<S, T>(
     profile: &Profile,
     client: Client,
-    connection: impl std::future::Future<Output = Result<(), tokio_postgres::Error>> + Send + 'static,
+    mut connection: tokio_postgres::Connection<S, T>,
     tunnel: Option<Tunnel>,
     isolated: bool,
-) -> Result<Connected, AppError> {
+    notices: NoticeSink,
+) -> Result<Connected, AppError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     // The connection future resolves when the wire dies — its resolution is
     // the ground truth for "why did this session drop". The oneshot carries
     // that moment to the session's host (see Session::closed_rx).
     let log_name = profile.name.clone();
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let sink = notices.clone();
     let conn_task = tokio::spawn(async move {
-        let reason = match connection.await {
+        // Не `connection.await`: Future-реализация Connection отправляет
+        // notices в `log::info!` и выбрасывает — RAISE NOTICE не доходил бы
+        // до пользователя ни в одном режиме.
+        let outcome = loop {
+            match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                Some(Ok(AsyncMessage::Notice(n))) => sink.push(Notice::from_db(&n)),
+                Some(Ok(_)) => {}
+                Some(Err(e)) => break Err(e),
+                None => break Ok(()),
+            }
+        };
+        let reason = match outcome {
             Ok(()) => "connection closed by server or tunnel".to_string(),
             Err(e) => format!("connection terminated: {e}"),
         };
@@ -311,6 +340,7 @@ async fn build_session(
             tunnel_port,
             client,
             cancel,
+            notices,
             tx: Arc::new(AtomicU8::new(TxStatus::Idle as u8)),
             tx_write: Arc::new(AtomicBool::new(false)),
             isolated,

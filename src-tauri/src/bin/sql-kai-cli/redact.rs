@@ -129,6 +129,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 0,
+            ..Default::default()
         };
         let masked = redact_exec(&mut exec);
         assert_eq!(masked, vec!["password_hash".to_string()]);
@@ -147,6 +148,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 0,
+            ..Default::default()
         };
         assert!(redact_exec(&mut exec).is_empty());
     }

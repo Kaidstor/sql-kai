@@ -540,6 +540,24 @@ fn query_output_schema() -> Value {
                 "type": "boolean",
                 "description": "Response byte cap hit: long values were cut (marked inline) and/or rows dropped — the data is incomplete",
             },
+            "notices": {
+                "type": "array",
+                "description": "Server messages raised while the batch ran (RAISE NOTICE, WARNING, INFO), in order. Free text: column masking does not apply. Long messages are cut (marked inline) and share the response byte budget",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": { "type": "string" },
+                        "message": { "type": "string" },
+                        "detail": { "type": "string" },
+                        "hint": { "type": "string" },
+                    },
+                    "required": ["severity", "message"],
+                },
+            },
+            "notices_dropped": {
+                "type": "integer",
+                "description": "Server messages not included: the session buffer or the response budget overflowed",
+            },
         },
         "required": ["result_sets", "execution_time"],
     })
@@ -704,7 +722,7 @@ fn tool_definitions(multi: bool) -> Value {
     let mut tools = vec![
         json!({
             "name": "query",
-            "description": "Run SQL in a PostgreSQL database of sql-kai. Unless `write` is set the batch runs inside a READ ONLY transaction — set `write` only when the user explicitly asked to modify data. Because of that transaction, a read call also refuses statements that would leave it or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only); that refusal means the batch needs `write`, not a cleverer rewrite. Databases marked `production` (see the `profiles` tool) reject `write` from here no matter what: the user has to allow it out-of-band via SQL_KAI_ALLOW_PROD_WRITE in this server's environment, so do not retry a refusal — report it and let the user decide. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output.",
+            "description": "Run SQL in a PostgreSQL database of sql-kai. Unless `write` is set the batch runs inside a READ ONLY transaction — set `write` only when the user explicitly asked to modify data. Because of that transaction, a read call also refuses statements that would leave it or lift its read-only mode (COMMIT/ROLLBACK/END/ABORT/PREPARE TRANSACTION/DISCARD/SET TRANSACTION/SET …transaction_read_only); that refusal means the batch needs `write`, not a cleverer rewrite. Databases marked `production` (see the `profiles` tool) reject `write` from here no matter what: the user has to allow it out-of-band via SQL_KAI_ALLOW_PROD_WRITE in this server's environment, so do not retry a refusal — report it and let the user decide. Prefer `parameters` over string interpolation for user values. Sensitive-looking columns (password/secret/*_token/*_key) are masked in the output — by result column name only: a value the batch prints itself (RAISE NOTICE, a column alias) is not masked, so do not route such values through them. Server messages (RAISE NOTICE/WARNING/INFO) come back in `notices`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1099,7 +1117,7 @@ async fn run_query(
             ok: outcome.is_ok(),
         });
     }
-    let res = outcome.map_err(|e| e.to_string())?;
+    let res = outcome.map_err(|e| e.describe())?;
     let mut exec = res.exec;
     let masked = redact::redact_exec(&mut exec);
     // порядок важен: сначала маскировка (она укорачивает значения), потом
@@ -1143,8 +1161,17 @@ fn char_boundary(s: &str, max: usize) -> usize {
 /// Первая строка остаётся всегда: пустой ответ на широкую таблицу модель
 /// прочитала бы как «данных нет».
 fn cap_response_bytes(exec: &mut ExecResult) -> bool {
-    let mut budget = MAX_RESPONSE_BYTES;
-    let mut capped = false;
+    // Notices — первыми и из того же бюджета: `RAISE NOTICE '%', repeat(…)`
+    // иначе проносил сотни килобайт мимо лимита, причём дважды (текст и
+    // structuredContent).
+    let (mut capped, cut_off) = db::cap_notices(
+        &mut exec.notices,
+        broker_client::MCP_NOTICE_FIELD_BYTES,
+        broker_client::MCP_NOTICES_BYTES,
+    );
+    exec.notices_dropped += cut_off;
+    let notices_bytes: usize = exec.notices.iter().map(db::Notice::size).sum();
+    let mut budget = MAX_RESPONSE_BYTES.saturating_sub(notices_bytes);
     let mut kept_any = false;
     for r in &mut exec.results {
         let mut keep = r.rows.len();
@@ -1218,6 +1245,12 @@ fn query_structured(sql: &str, q: &QueryOutcome) -> Value {
     }
     if q.size_capped {
         out["truncated_by_size"] = json!(true);
+    }
+    if !q.exec.notices.is_empty() {
+        out["notices"] = json!(q.exec.notices);
+    }
+    if q.exec.notices_dropped > 0 {
+        out["notices_dropped"] = json!(q.exec.notices_dropped);
     }
     out
 }
@@ -1439,6 +1472,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 7,
+            ..Default::default()
         };
         let q = QueryOutcome {
             text: String::new(),
@@ -1473,6 +1507,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         let v = rows_structured("tables", &exec, &["schema", "name", "kind"], None);
         assert_eq!(v["tables"][0]["schema"], "public");
@@ -1508,6 +1543,29 @@ mod tests {
     /// Построчного лимита мало: 200 строк с многомегабайтными значениями — это
     /// сотни МБ в одном кадре JSON-RPC. Длинные значения режутся с пометкой,
     /// лишние строки отбрасываются, флаг truncated ставится.
+    /// `RAISE NOTICE '%', repeat('y', 300000)` давал ответ в 300 КБ мимо
+    /// бюджета: notices режутся и занимают место в нём же.
+    #[test]
+    fn notices_share_the_response_budget() {
+        let mut exec = ExecResult {
+            notices: vec![
+                db::Notice {
+                    severity: "NOTICE".into(),
+                    message: "y".repeat(300_000),
+                    detail: None,
+                    hint: None,
+                };
+                20
+            ],
+            ..Default::default()
+        };
+        assert!(cap_response_bytes(&mut exec));
+        let bytes: usize = exec.notices.iter().map(db::Notice::size).sum();
+        assert!(bytes <= broker_client::MCP_NOTICES_BYTES + 64, "{bytes}");
+        assert!(exec.notices_dropped > 0);
+        assert!(exec.notices[0].message.contains("more bytes cut"));
+    }
+
     #[test]
     fn response_bytes_are_capped_with_an_explicit_flag() {
         let wide = "x".repeat(MAX_CELL_BYTES * 2);
@@ -1520,6 +1578,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(cap_response_bytes(&mut exec));
         let r = &exec.results[0];
@@ -1544,6 +1603,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(!cap_response_bytes(&mut small));
         assert_eq!(small.results[0].rows[0][0].as_deref(), Some("1"));
@@ -1560,6 +1620,7 @@ mod tests {
                 truncated: false,
             }],
             duration_ms: 1,
+            ..Default::default()
         };
         assert!(cap_response_bytes(&mut exec));
         let v = exec.results[0].rows[0][0].as_deref().unwrap();

@@ -16,8 +16,10 @@ pub use catalog::{
 };
 pub use connect::{connect, libpq_ssl_env, ConnectOptions, Connected, Session};
 pub use exec::{
-    begin_read_only, cell, cell_bool, end_read_only, execute, execute_read_only, query_rows,
-    query_scalar, statement_column_types, ExecResult, QueryExecutor, StatementResult,
+    begin_read_only, cap_notices, cell, cell_bool, end_read_only, execute, execute_read_only,
+    probe_tx, query_rows, query_scalar, server_message_lines, settle_refusal, settle_tx,
+    statement_column_types, ExecResult, Notice, NoticeBatch, NoticeSink, QueryExecutor,
+    StatementResult, TxLeftover,
 };
 pub use export::{export_statement, write_rows_xlsx, ExportError, ExportFormat, ExportResult};
 pub use sqltext::{

@@ -527,13 +527,21 @@ sql-kai q ──► брокер GUI        (GUI запущен: сессию д
 </pre></div>
 <p>Holder — тот же broker-протокол, что у GUI, но фоновым процессом: pg-сессии и
 ssh-туннели живут между запусками sql-kai, повторные запросы идут в уже открытую сессию
-(быстрее даже mux-пути), а транзакция одного вызова доживает до следующего —
-<code>BEGIN</code> в одном <code>sql-kai q</code>, <code>COMMIT</code> в следующем.</p>
+(быстрее даже mux-пути). Транзакция при этом между вызовами <strong>не</strong> живёт:
+каждый вызов заканчивается проверкой состояния транзакции, и если батч оставил её
+открытой (<code>BEGIN</code> без <code>COMMIT</code>) или прерванной (ошибка до
+<code>COMMIT</code>), она откатывается. С <code>--write</code> это ошибка
+(<code>sql-kai: … изменения этой транзакции НЕ применены</code>, код выхода 1) —
+её видит и клиент старой версии. Стейтменты до последнего <code>COMMIT</code> в батче,
+если он был, при этом уже зафиксированы. Батч и так одна транзакция — явные
+<code>BEGIN</code>/<code>COMMIT</code> в нём не нужны.</p>
+<p>Сообщения сервера (<code>RAISE NOTICE</code>, WARNING, INFO) печатаются в stderr как у
+psql — <code>NOTICE: hello 42</code> — во всех режимах (брокер, holder, <code>--local</code>,
+<code>--no-mux</code>); в <code>--json</code> они же лежат полем <code>notices</code>.</p>
 <ul>
   <li><strong>Жизненный цикл:</strong> спавнится первым <code>sql-kai q</code>, только если vault
       разлочивается тихо (keychain-trust / <code>SQL_KAI_VAULT_PASSWORD</code>) — иначе sql-kai молча
-      работает автономно. Сессии живут 15&nbsp;мин простоя (с открытой транзакцией — 180&nbsp;с:
-      висящий BEGIN держит блокировки); сам holder гаснет через ~2&nbsp;мин без сессий и
+      работает автономно. Сессии живут 15&nbsp;мин простоя; сам holder гаснет через ~2&nbsp;мин без сессий и
       обращений.</li>
   <li><strong>Погасить немедленно:</strong> <code>sql-kai holder stop</code>; vault lock в GUI и
       <code>sql-kai vault revoke</code> гасят его автоматически (DEK не должен переживать отзыв).</li>
