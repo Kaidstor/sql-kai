@@ -46,9 +46,6 @@ pub struct ExecResult {
     /// байтам) и выбросил самые старые.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub notices_dropped: u64,
-    /// Батч оставил транзакцию открытой или прерванной, и её откатили.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tx_rolled_back: Option<TxLeftover>,
 }
 
 /// Асинхронное сообщение сервера — NoticeResponse протокола.
@@ -226,33 +223,34 @@ pub enum TxLeftover {
 }
 
 impl TxLeftover {
-    /// Предупреждение для человека (stderr CLI, текст ошибки MCP).
-    pub fn warning(self, write: bool) -> String {
+    /// Текст отказа. Оставить транзакцию может только пишущий батч: читающий
+    /// идёт в обёртке, которая свой блок закрывает сама, а батч из одних
+    /// COMMIT/ROLLBACK транзакцию только закрывает.
+    pub fn warning(self) -> String {
         let what = match self {
             TxLeftover::Open => "батч оставил транзакцию открытой (BEGIN без COMMIT)",
             TxLeftover::Aborted => {
                 "батч упал внутри явной транзакции (BEGIN … COMMIT), COMMIT не выполнился"
             }
         };
-        let effect = if write {
-            " — выполнен ROLLBACK, изменения этой транзакции НЕ применены. \
-             Батч sql-kai и так одна транзакция: BEGIN/COMMIT в нём не нужны"
-        } else {
-            " — выполнен ROLLBACK"
-        };
-        format!("{what}{effect}; сессия снова свободна")
+        format!(
+            "{what} — выполнен ROLLBACK, изменения этой транзакции НЕ применены; \
+             стейтменты до последнего COMMIT в батче, если он был, уже зафиксированы. \
+             Батч sql-kai и так одна транзакция: BEGIN/COMMIT в нём не нужны; сессия снова свободна"
+        )
     }
 }
 
-/// Строки для человека после батча: маркер выброшенных notices, сами notices,
+/// Строки для человека после батча: маркер выброшенных буфером (ранних)
+/// notices, сами notices, маркер отрезанных лимитом ответа (поздних),
 /// предупреждение об откате. `error` — текст ошибки, которую покажут рядом:
 /// если это и есть предупреждение (сервер отказал из-за отката), второй раз
 /// его не печатаем.
 pub fn server_message_lines(
     notices: &[Notice],
     dropped: u64,
+    cut_off: u64,
     left: Option<TxLeftover>,
-    write: bool,
     error: Option<&str>,
 ) -> Vec<String> {
     let mut out = Vec::new();
@@ -265,13 +263,32 @@ pub fn server_message_lines(
     for n in notices {
         out.extend(n.lines());
     }
+    if cut_off > 0 {
+        out.push(format!(
+            "⚠ sql-kai: не показаны последние {cut_off} сообщений сервера — лимит размера ответа"
+        ));
+    }
     if let Some(left) = left {
-        let w = left.warning(write);
+        let w = left.warning();
         if error != Some(w.as_str()) {
             out.push(format!("⚠ sql-kai: {w}"));
         }
     }
     out
+}
+
+/// Отказ для батча, который сам прошёл, но итог которого не лёг или не
+/// проверен. Ok с флагом тут не годится: клиент, не знающий флага (sql-kai
+/// 1.30.1 и раньше), напечатал бы `-- 1 row(s) affected` с кодом 0 при
+/// откаченных данных. Ошибку видит любой клиент.
+pub fn settle_refusal(left: Option<TxLeftover>, settle_err: Option<&str>) -> Option<String> {
+    if let Some(e) = settle_err {
+        return Some(format!(
+            "не удалось проверить состояние транзакции после батча ({e}); сессия \
+             закрыта, незакоммиченное откатит сервер — проверь, легли ли изменения"
+        ));
+    }
+    left.map(TxLeftover::warning)
 }
 
 /// Точное состояние транзакции на соединении — в отличие от эвристики
@@ -655,13 +672,29 @@ mod tests {
     /// раз его не печатаем; маркер пропущенных идёт первым.
     #[test]
     fn server_message_lines_dedupe_and_mark_drops() {
-        let w = TxLeftover::Open.warning(true);
-        let lines = server_message_lines(&[notice("n")], 3, Some(TxLeftover::Open), true, Some(&w));
+        let w = TxLeftover::Open.warning();
+        let lines = server_message_lines(&[notice("n")], 3, 0, Some(TxLeftover::Open), Some(&w));
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].contains("пропущено 3"));
+        assert!(lines[0].contains("пропущено 3") && lines[0].contains("ранние"));
         assert_eq!(lines[1], "NOTICE: n");
-        let lines = server_message_lines(&[], 0, Some(TxLeftover::Open), true, Some("ERROR: x"));
+        let lines = server_message_lines(&[], 0, 0, Some(TxLeftover::Open), Some("ERROR: x"));
         assert_eq!(lines, vec![format!("⚠ sql-kai: {w}")]);
+    }
+
+    /// Выброшенные буфером (ранние) и отрезанные лимитом ответа (поздние) —
+    /// разные маркеры по разные стороны списка.
+    #[test]
+    fn early_and_late_losses_are_reported_separately() {
+        let lines = server_message_lines(&[notice("n11")], 10, 9, None, None);
+        assert!(
+            lines[0].contains("пропущено 10") && lines[0].contains("ранние"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "NOTICE: n11");
+        assert!(
+            lines[2].contains("последние 9") && lines[2].contains("лимит"),
+            "{lines:?}"
+        );
     }
 
     /// Пустые notices и отсутствие отката не меняют форму ответа — старые
@@ -673,11 +706,11 @@ mod tests {
         assert_eq!(v, serde_json::json!({ "results": [], "durationMs": 0 }));
         let old: ExecResult =
             serde_json::from_value(serde_json::json!({ "results": [], "durationMs": 3 })).unwrap();
-        assert!(old.notices.is_empty() && old.tx_rolled_back.is_none());
+        assert!(old.notices.is_empty() && old.notices_dropped == 0);
 
         let exec = ExecResult {
             notices: vec![notice("hi")],
-            tx_rolled_back: Some(TxLeftover::Aborted),
+            notices_dropped: 2,
             ..Default::default()
         };
         let v = serde_json::to_value(&exec).unwrap();
@@ -685,15 +718,15 @@ mod tests {
             v["notices"],
             serde_json::json!([{ "severity": "NOTICE", "message": "hi" }])
         );
-        assert_eq!(v["txRolledBack"], "aborted");
+        assert_eq!(v["noticesDropped"], 2);
     }
 
     #[test]
     fn rollback_warning_says_writes_were_not_applied() {
-        let w = TxLeftover::Aborted.warning(true);
+        let w = TxLeftover::Aborted.warning();
         assert!(w.contains("ROLLBACK") && w.contains("НЕ применены"), "{w}");
         assert!(w.contains("BEGIN/COMMIT"), "{w}");
-        let r = TxLeftover::Open.warning(false);
-        assert!(r.contains("ROLLBACK") && !r.contains("НЕ применены"), "{r}");
+        // `BEGIN; A; COMMIT; BEGIN; B;` — A уже зафиксирован, это надо сказать
+        assert!(w.contains("до последнего COMMIT"), "{w}");
     }
 }

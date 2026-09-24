@@ -80,7 +80,7 @@ impl BrokerError {
 
     /// Текст ошибки вместе с notices и предупреждением об откате — для
     /// потребителей, у которых нет отдельного stderr (MCP).
-    pub fn describe(&self, write: bool) -> String {
+    pub fn describe(&self) -> String {
         let mut out = self.to_string();
         if let BrokerError::Query {
             message,
@@ -98,9 +98,9 @@ impl BrokerError {
             );
             let lines = sql_kai_lib::db::server_message_lines(
                 &notices,
-                notices_dropped + cut_off,
+                *notices_dropped,
+                cut_off,
                 *tx_rolled_back,
-                write,
                 Some(message),
             );
             for line in lines {
@@ -451,7 +451,7 @@ mod tests {
             notices_dropped: 0,
             tx_rolled_back: Some(TxLeftover::Aborted),
         };
-        let text = e.describe(true);
+        let text = e.describe();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "ERROR: stop");
         assert_eq!(lines[1], "NOTICE: id=7");
@@ -470,9 +470,9 @@ mod tests {
             notices_dropped: 0,
             tx_rolled_back: None,
         };
-        let text = huge.describe(true);
+        let text = huge.describe();
         assert!(text.len() < MCP_NOTICES_BYTES, "{}", text.len());
         assert!(text.contains("more bytes cut"));
-        assert_eq!(BrokerError::refused("x".into()).describe(true), "x");
+        assert_eq!(BrokerError::refused("x".into()).describe(), "x");
     }
 }

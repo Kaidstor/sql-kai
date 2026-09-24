@@ -66,30 +66,17 @@ fn report_server_messages(
     notices: &[db::Notice],
     dropped: u64,
     left: Option<db::TxLeftover>,
-    write: bool,
     error: Option<&str>,
 ) {
-    for line in db::server_message_lines(notices, dropped, left, write, error) {
+    for line in db::server_message_lines(notices, dropped, 0, left, error) {
         eprintln!("{line}");
     }
-}
-
-/// `--write`, чья транзакция откачена, — неуспех: SQL прошёл, но изменения
-/// не легли, и скрипт по коду выхода должен это увидеть.
-fn write_lost(a: &QueryArgs, exec: &db::ExecResult) -> bool {
-    a.write && exec.tx_rolled_back.is_some()
 }
 
 /// Общий рендер результата: маскирование, формат (+типизированный json),
 /// verbose-времена. `types` пустой, когда формат не json.
 fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(String, db::Type)>>]) {
-    report_server_messages(
-        &exec.notices,
-        exec.notices_dropped,
-        exec.tx_rolled_back,
-        a.write,
-        None,
-    );
+    report_server_messages(&exec.notices, exec.notices_dropped, None, None);
     if !a.no_redact {
         let masked = redact::redact_exec(&mut exec);
         if !masked.is_empty() {
@@ -176,15 +163,10 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
     };
     match outcome {
         Ok(res) => {
-            let lost = write_lost(a, &res.exec);
-            record(!lost);
+            record(true);
             let types = res.column_types.map(wire_types).unwrap_or_default();
             render_exec(a, res.exec, &types);
-            Ok(Some(if lost {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }))
+            Ok(Some(ExitCode::SUCCESS))
         }
         Err(broker_client::BrokerError::Query {
             message,
@@ -194,13 +176,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             tx_rolled_back,
         }) => {
             record(false);
-            report_server_messages(
-                &notices,
-                notices_dropped,
-                tx_rolled_back,
-                a.write,
-                Some(&message),
-            );
+            report_server_messages(&notices, notices_dropped, tx_rolled_back, Some(&message));
             eprintln!("sql-kai: {message}");
             // 25006 read_only_sql_transaction — код, а не поиск по тексту
             if sqlstate.as_deref() == Some("25006") {
@@ -303,14 +279,15 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
     // Сессия одноразовая, и оставленную транзакцию сервер откатил бы сам при
     // закрытии соединения — но молча: «UPDATE 5» без COMMIT выглядел бы
     // применённым. Проверяем явно, чтобы сказать об этом так же, как брокер.
-    let tx_rolled_back = if a.write {
-        db::settle_tx(client).await.unwrap_or_else(|e| {
-            eprintln!("⚠ sql-kai: не удалось проверить состояние транзакции ({e}); соединение закрывается — незакоммиченное откатит сервер");
-            None
-        })
+    let (tx_rolled_back, settle_err) = if a.write {
+        match db::settle_tx(client).await {
+            Ok(left) => (left, None),
+            Err(e) => (None, Some(e.to_string())),
+        }
     } else {
-        None
+        (None, None)
     };
+    let refusal = db::settle_refusal(tx_rolled_back, settle_err.as_deref());
     if !a.no_history {
         let _ = store::record_history(HistoryEntry {
             id: uuid::Uuid::new_v4().to_string(),
@@ -318,50 +295,40 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
             profile_name: profile.name.clone(),
             sql: sql.clone(),
             at: store::now_ms(),
-            ok: outcome.is_ok() && !(a.write && tx_rolled_back.is_some()),
+            ok: outcome.is_ok() && refusal.is_none(),
         });
     }
     match outcome {
         // Как у сервера сессий: откаченная запись — отказ, а не результат
         // с флагом, чтобы режимы не расходились.
-        Ok(_) if a.write && tx_rolled_back.is_some() => {
-            let warning = tx_rolled_back.map(|l| l.warning(true)).unwrap_or_default();
+        Ok(_) if refusal.is_some() => {
+            let message = refusal.unwrap_or_default();
             report_server_messages(
                 &notices.notices,
                 notices.dropped,
                 tx_rolled_back,
-                a.write,
-                Some(&warning),
+                Some(&message),
             );
-            eprintln!("sql-kai: {warning}");
+            eprintln!("sql-kai: {message}");
             Ok(ExitCode::FAILURE)
         }
         Ok(mut exec) => {
             exec.notices = notices.notices;
             exec.notices_dropped = notices.dropped;
-            exec.tx_rolled_back = tx_rolled_back;
             let types = if a.fmt.pick() == Format::Json {
                 db::statement_column_types(&connected.session.client, &sql).await
             } else {
                 Vec::new()
             };
-            let lost = write_lost(&a, &exec);
             render_exec(&a, exec, &types);
-            Ok(if lost {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+            Ok(ExitCode::SUCCESS)
         }
         Err(e) => {
-            report_server_messages(
-                &notices.notices,
-                notices.dropped,
-                tx_rolled_back,
-                a.write,
-                None,
-            );
+            report_server_messages(&notices.notices, notices.dropped, tx_rolled_back, None);
             eprintln!("sql-kai: {e}");
+            if let Some(se) = &settle_err {
+                eprintln!("sql-kai: состояние транзакции после ошибки не проверено: {se}");
+            }
             if e.is_read_only() {
                 eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
             }

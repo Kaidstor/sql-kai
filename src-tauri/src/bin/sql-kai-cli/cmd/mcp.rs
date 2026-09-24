@@ -558,12 +558,6 @@ fn query_output_schema() -> Value {
                 "type": "integer",
                 "description": "Server messages not included: the session buffer or the response budget overflowed",
             },
-            "tx_rolled_back": {
-                "type": "string",
-                "enum": ["open", "aborted"],
-                "description": "The batch left its transaction open (BEGIN without COMMIT) or aborted; it was rolled back, so its changes were NOT applied",
-            },
-            "warning": { "type": "string", "description": "Human-readable note about tx_rolled_back" },
         },
         "required": ["result_sets", "execution_time"],
     })
@@ -1094,8 +1088,6 @@ struct QueryOutcome {
     masked: Vec<String>,
     /// Данные урезаны байтовым бюджетом ответа (см. [`cap_response_bytes`]).
     size_capped: bool,
-    /// Батч оставил транзакцию открытой, сервер её откатил — текст для модели.
-    warning: Option<String>,
 }
 
 /// SQL через сервер сессий; текст ответа — компактный JSON (все значения
@@ -1125,7 +1117,7 @@ async fn run_query(
             ok: outcome.is_ok(),
         });
     }
-    let res = outcome.map_err(|e| e.describe(write))?;
+    let res = outcome.map_err(|e| e.describe())?;
     let mut exec = res.exec;
     let masked = redact::redact_exec(&mut exec);
     // порядок важен: сначала маскировка (она укорачивает значения), потом
@@ -1138,14 +1130,9 @@ async fn run_query(
     if size_capped {
         payload["truncatedBySize"] = json!(true);
     }
-    let warning = exec.tx_rolled_back.map(|left| left.warning(write));
-    if let Some(w) = &warning {
-        payload["warning"] = json!(w);
-    }
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     Ok(QueryOutcome {
         text,
-        warning,
         exec,
         types: res.column_types.unwrap_or_default(),
         masked,
@@ -1264,12 +1251,6 @@ fn query_structured(sql: &str, q: &QueryOutcome) -> Value {
     }
     if q.exec.notices_dropped > 0 {
         out["notices_dropped"] = json!(q.exec.notices_dropped);
-    }
-    if let Some(left) = q.exec.tx_rolled_back {
-        out["tx_rolled_back"] = json!(left);
-    }
-    if let Some(w) = &q.warning {
-        out["warning"] = json!(w);
     }
     out
 }
@@ -1500,7 +1481,6 @@ mod tests {
             types: vec![Some(vec![("id".to_string(), 23), ("name".to_string(), 25)])],
             masked: vec!["name".to_string()],
             size_capped: false,
-            warning: None,
         };
         let v = query_structured("SELECT id, name FROM t", &q);
         assert_eq!(v["result_sets"][0]["columns"][0]["type"], "int4");

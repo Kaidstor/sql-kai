@@ -128,27 +128,6 @@ fn method_err(code: &'static str, message: impl Into<String>) -> MethodError {
     }
 }
 
-/// Отказ для батча, который сам прошёл, но итог которого не лёг или не
-/// проверен. Ok с флагом тут не годится: клиент, не знающий флага (sql-kai
-/// 1.30.1 и раньше), напечатал бы `-- 1 row(s) affected` с кодом 0 при
-/// откаченных данных. Ошибку видит любой клиент.
-fn settle_refusal(
-    write: bool,
-    left: Option<db::TxLeftover>,
-    settle_err: Option<&str>,
-) -> Option<String> {
-    if let Some(e) = settle_err {
-        return Some(format!(
-            "не удалось проверить состояние транзакции после батча ({e}); сессия \
-             закрыта, незакоммиченное откатит сервер — проверь, легли ли изменения"
-        ));
-    }
-    match left {
-        Some(left) if write => Some(left.warning(true)),
-        _ => None,
-    }
-}
-
 async fn dispatch(
     method: Method,
     state: &Arc<BrokerState>,
@@ -486,9 +465,9 @@ async fn do_query(
     *entry.last_used.lock().unwrap() = Instant::now();
 
     match result {
-        Ok(_) if settle_refusal(write, tx_rolled_back, settle_err.as_deref()).is_some() => {
+        Ok(_) if db::settle_refusal(tx_rolled_back, settle_err.as_deref()).is_some() => {
             let message =
-                settle_refusal(write, tx_rolled_back, settle_err.as_deref()).unwrap_or_default();
+                db::settle_refusal(tx_rolled_back, settle_err.as_deref()).unwrap_or_default();
             Err(MethodError {
                 notices: notices.notices,
                 notices_dropped: notices.dropped,
@@ -499,7 +478,6 @@ async fn do_query(
         Ok(mut exec) => {
             exec.notices = notices.notices;
             exec.notices_dropped = notices.dropped;
-            exec.tx_rolled_back = tx_rolled_back;
             let column_types: Option<WireColumnTypes> = if with_types {
                 Some(
                     db::statement_column_types(client, sql)
@@ -665,13 +643,11 @@ mod tests {
     #[test]
     fn rolled_back_write_is_refused_for_any_client() {
         let open = Some(db::TxLeftover::Open);
-        let msg = settle_refusal(true, open, None).expect("write + rollback → error");
+        let msg = db::settle_refusal(open, None).expect("rollback → error");
         assert!(msg.contains("НЕ применены"), "{msg}");
-        assert_eq!(settle_refusal(true, None, None), None);
-        // чтение (батч из одного ROLLBACK/COMMIT): откат без записи не отказ
-        assert_eq!(settle_refusal(false, open, None), None);
-        let unknown = settle_refusal(false, None, Some("connection closed"))
-            .expect("unverified state → error");
+        assert_eq!(db::settle_refusal(None, None), None);
+        let unknown =
+            db::settle_refusal(None, Some("connection closed")).expect("unverified state → error");
         assert!(unknown.contains("connection closed"), "{unknown}");
     }
 
