@@ -11,7 +11,10 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, HistoryEntry};
 
 use crate::output::{self, Format, FormatArgs};
-use crate::{broker_client, input, redact, session};
+use crate::{broker_client, envelope, input, redact, session};
+
+const READ_ONLY_HINT: &str =
+    "hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано";
 
 #[derive(Args)]
 pub struct QueryArgs {
@@ -145,8 +148,7 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             if let Some(mut c) = broker_client::reconnect(b.via).await {
                 let _ = c.cancel(&profile.id).await;
             }
-            eprintln!("sql-kai: отменено");
-            return Ok(Some(ExitCode::FAILURE));
+            return Ok(Some(envelope::fail("cancelled", "отменено", &[])));
         }
     };
     let record = |ok: bool| {
@@ -177,23 +179,28 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
         }) => {
             record(false);
             report_server_messages(&notices, notices_dropped, tx_rolled_back, Some(&message));
-            eprintln!("sql-kai: {message}");
+            let mut hints = Vec::new();
             // 25006 read_only_sql_transaction — код, а не поиск по тексту
             if sqlstate.as_deref() == Some("25006") {
-                eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
+                hints.push(READ_ONLY_HINT.to_string());
             }
             // Сессию сервера оставил в aborted прошлый батч, а сервер старый и
             // сам её не чистит. ROLLBACK без --write проходит и на нём.
             if sqlstate.as_deref() == Some("25P02")
                 || message.contains("current transaction is aborted")
             {
-                eprintln!(
+                hints.push(format!(
                     "hint: сессия сервера осталась в прерванной транзакции (старая версия GUI/holder) — \
                      `sql-kai {} -c ROLLBACK` без --write, либо `sql-kai holder stop`, либо --local",
                     a.alias
-                );
+                ));
             }
-            Ok(Some(ExitCode::FAILURE))
+            let kind = match sqlstate.as_deref() {
+                Some("25006") => "read_only",
+                Some(_) => "db",
+                None => "refused",
+            };
+            Ok(Some(envelope::fail(kind, &message, &hints)))
         }
         Err(broker_client::BrokerError::VaultLocked) => {
             // Брокер отверг запрос ДО выполнения — автономный путь безопасен.
@@ -220,12 +227,15 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             // нельзя: риск двойного применения.
             if a.write {
                 record(false);
-                eprintln!("sql-kai: связь с брокером оборвалась во время запроса ({e})");
-                eprintln!(
-                    "hint: запрос мог успеть выполниться — проверь состояние данных; \
-                     выполнить мимо брокера: sql-kai q --local …"
-                );
-                return Ok(Some(ExitCode::FAILURE));
+                return Ok(Some(envelope::fail(
+                    "connection_lost",
+                    &format!("связь с брокером оборвалась во время запроса ({e})"),
+                    &[
+                        "hint: запрос мог успеть выполниться — проверь состояние данных; \
+                       выполнить мимо брокера: sql-kai q --local …"
+                            .to_string(),
+                    ],
+                )));
             }
             if a.verbose {
                 eprintln!("… брокер недоступен ({e}) — автономный режим");
@@ -309,8 +319,7 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
                 tx_rolled_back,
                 Some(&message),
             );
-            eprintln!("sql-kai: {message}");
-            Ok(ExitCode::FAILURE)
+            Ok(envelope::fail("refused", &message, &[]))
         }
         Ok(mut exec) => {
             exec.notices = notices.notices;
@@ -325,14 +334,16 @@ pub async fn run(a: QueryArgs) -> Result<ExitCode, AppError> {
         }
         Err(e) => {
             report_server_messages(&notices.notices, notices.dropped, tx_rolled_back, None);
-            eprintln!("sql-kai: {e}");
+            let mut hints = Vec::new();
             if let Some(se) = &settle_err {
-                eprintln!("sql-kai: состояние транзакции после ошибки не проверено: {se}");
+                hints.push(format!(
+                    "sql-kai: состояние транзакции после ошибки не проверено: {se}"
+                ));
             }
             if e.is_read_only() {
-                eprintln!("hint: сессия read-only по умолчанию — повтори с --write, если изменение согласовано");
+                hints.push(READ_ONLY_HINT.to_string());
             }
-            Ok(ExitCode::FAILURE)
+            Ok(envelope::fail(e.code(), &e.to_string(), &hints))
         }
     }
 }

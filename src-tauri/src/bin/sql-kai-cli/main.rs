@@ -8,6 +8,7 @@
 
 mod broker_client;
 mod cmd;
+mod envelope;
 mod envvar;
 mod input;
 mod output;
@@ -19,7 +20,7 @@ mod session;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use sql_kai_lib::error::AppError;
 
 use cmd::completion::CompletionArgs;
@@ -60,7 +61,16 @@ use cmd::vault::VaultCmd;
         sql-kai discover coordinator       # ssh-хост -> профиль (+ пароль в vault)\n  \
         sql-kai exec coordinator -c \"SELECT 1\"   # fallback: ssh + docker exec psql\n  \
         sql-kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
-        sql-kai vault trust                # тихий доступ CLI к паролям vault"
+        sql-kai vault trust                # тихий доступ CLI к паролям vault\n\n\
+        Коды выхода:\n  \
+        0  сделано\n  \
+        1  отказ во время работы: ошибка SQL или сервера, откат оставленной транзакции,\n     \
+           профиль не найден, vault заперт, нет соединения; doctor — пароль не подходит\n  \
+        2  ошибка аргументов: неизвестная подкоманда или флаг, несовместимые флаги\n  \
+        exec и logs возвращают код удалённой команды (255 — ssh не подключился)\n\n\
+        --json: отказ приходит в stdout конвертом\n  \
+        {v, command, exit, data: null, warning?, error: {kind, message}};\n  \
+        успешный ответ — данные команды без конверта"
 )]
 // pub(crate), чтобы `sql-kai completion` мог отдать clap-описание генератору
 // скриптов — единственный источник правды о подкомандах и флагах.
@@ -148,7 +158,6 @@ enum Cmd {
 /// Single source of truth: новый вариант `Cmd` не может молча начать читаться
 /// как алиас профиля.
 fn subcommand_names() -> Vec<String> {
-    use clap::CommandFactory;
     Cli::command()
         .get_subcommands()
         .flat_map(|c| {
@@ -187,27 +196,68 @@ fn shortcut_hint(first: &str, profile_exists: impl FnOnce(&str) -> bool) -> Opti
     ))
 }
 
+/// Путь подкоманды по сырому argv (`saved list`) — для конверта ошибки разбора,
+/// когда `ArgMatches` ещё нет. Подкоманду clap узнаёт и по алиасу — путь
+/// пишется каноническими именами.
+fn subcommand_path(args: &[OsString]) -> String {
+    let mut cmd = Cli::command();
+    let mut path = Vec::new();
+    for a in args.iter().skip(1) {
+        let a = a.to_string_lossy();
+        let Some(sub) = cmd.find_subcommand(a.as_ref()).cloned() else {
+            break;
+        };
+        path.push(sub.get_name().to_string());
+        cmd = sub;
+    }
+    path.join(" ")
+}
+
 /// clap печатает ошибку разбора (и --help/--version) сам; мы дописываем к ней
-/// подсказку про заслонённый профиль и повторяем его код выхода.
+/// подсказку про заслонённый профиль и повторяем его код выхода. Под `--json`
+/// ошибка разбора уходит конвертом с `kind: usage`.
 fn report_parse_error(err: clap::Error, args: &[OsString]) -> ExitCode {
-    let _ = err.print();
-    if err.use_stderr() {
-        let hint = args.get(1).and_then(|first| {
+    let code = err.exit_code().clamp(0, 255) as u8;
+    let hint = if err.use_stderr() {
+        args.get(1).and_then(|first| {
             shortcut_hint(&first.to_string_lossy(), |alias| {
                 let profiles = sql_kai_lib::store::load_profiles().unwrap_or_default();
                 !session::filter_profiles(&profiles, alias).is_empty()
             })
-        });
-        if let Some(hint) = hint {
-            eprintln!("\n{hint}");
-        }
+        })
+    } else {
+        None
+    };
+    if err.use_stderr() && envelope::argv_wants_json(args) {
+        let command = subcommand_path(args);
+        let hints: Vec<String> = hint.into_iter().collect();
+        println!(
+            "{}",
+            envelope::render_failure(
+                &command,
+                code,
+                "usage",
+                &envelope::usage_message(&err),
+                &hints
+            )
+        );
+        return ExitCode::from(code);
     }
-    ExitCode::from(err.exit_code().clamp(0, 255) as u8)
+    let _ = err.print();
+    if let Some(hint) = hint {
+        eprintln!("\n{hint}");
+    }
+    ExitCode::from(code)
 }
 
 fn main() -> ExitCode {
     let args = preprocess(std::env::args_os().collect(), &subcommand_names());
-    let cli = match Cli::try_parse_from(&args) {
+    let matches = match Cli::command().try_get_matches_from(&args) {
+        Ok(m) => m,
+        Err(e) => return report_parse_error(e, &args),
+    };
+    envelope::set_json_command(envelope::json_command_of(&matches));
+    let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(e) => return report_parse_error(e, &args),
     };
@@ -222,10 +272,7 @@ fn main() -> ExitCode {
     sql_kai_lib::skills_sync::sync_all_stale();
     match res {
         Ok(code) => code,
-        Err(e) => {
-            eprintln!("sql-kai: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => envelope::fail(e.code(), &e.to_string(), &[]),
     }
 }
 
@@ -285,6 +332,16 @@ mod tests {
         }
         // без аргументов вообще: usage напечатает clap
         assert_eq!(preprocess(args(&["sql-kai"]), &known), args(&["sql-kai"]));
+    }
+
+    #[test]
+    fn subcommand_path_follows_nested_names_and_aliases() {
+        assert_eq!(
+            subcommand_path(&args(&["sql-kai", "saved", "list", "--bogus"])),
+            "saved list"
+        );
+        assert_eq!(subcommand_path(&args(&["sql-kai", "query", "x"])), "q");
+        assert_eq!(subcommand_path(&args(&["sql-kai", "--bogus"])), "");
     }
 
     /// Профиль, названный как подкоманда, шорткатом недоступен — обход должен

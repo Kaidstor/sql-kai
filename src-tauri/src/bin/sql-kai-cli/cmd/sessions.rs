@@ -7,6 +7,7 @@ use clap::Args;
 use sql_kai_lib::error::AppError;
 
 use crate::broker_client;
+use crate::envelope;
 use crate::output::{self, Format, FormatArgs};
 
 #[derive(Args)]
@@ -21,8 +22,11 @@ pub async fn run(a: SessionsArgs) -> Result<ExitCode, AppError> {
     let gui = broker_client::connect().await;
     let holder = broker_client::connect_holder().await;
     if gui.is_none() && holder.is_none() {
-        eprintln!("ни GUI, ни holder не запущены — sql-kai работает автономно");
-        return Ok(ExitCode::FAILURE);
+        return Ok(envelope::fail(
+            "no_server",
+            "ни GUI, ни holder не запущены — sql-kai работает автономно",
+            &[],
+        ));
     }
     let mut sources = Vec::new();
     let mut list = Vec::new();
