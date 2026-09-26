@@ -220,7 +220,7 @@ pub fn unlock_password(password: &str) -> Result<(), AppError> {
     let file = read_file()?;
     let kek = derive_kek(password, &file.kdf)?;
     let dek_vec = decrypt(&kek, &file.pw_wrap)
-        .map_err(|_| AppError::Msg("incorrect master password".into()))?;
+        .map_err(|_| AppError::Auth("incorrect master password".into()))?;
     let dek: [u8; 32] = dek_vec
         .try_into()
         .map_err(|_| AppError::Msg("vault is corrupted: bad key length".into()))?;
@@ -247,7 +247,7 @@ pub fn enable_biometric() -> Result<(), AppError> {
         let guard = VAULT.lock().unwrap();
         let v = guard
             .as_ref()
-            .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+            .ok_or_else(|| AppError::Auth("vault is locked".into()))?;
         biometric::store_dek(&v.dek).map_err(bio_err)?;
     }
     // Flip the header flag under the config lock, preserving on-disk secrets.
@@ -327,7 +327,7 @@ pub fn enable_cli_trust() -> Result<(), AppError> {
     let guard = VAULT.lock().unwrap();
     let v = guard
         .as_ref()
-        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+        .ok_or_else(|| AppError::Auth("vault is locked".into()))?;
     biometric::store_dek_cli(&v.dek).map_err(bio_err)
 }
 
@@ -347,7 +347,7 @@ pub fn unlock_cli_trust() -> Result<(), AppError> {
     let mut dek_vec = match biometric::read_dek_cli() {
         Ok(v) => v,
         Err(BioError::Stale) => {
-            return Err(AppError::Msg(
+            return Err(AppError::Config(
                 "CLI trust is not set up — run `sql-kai vault trust` first".into(),
             ))
         }
@@ -442,7 +442,7 @@ fn mutate_vault(
     let mut guard = VAULT.lock().unwrap();
     let v = guard
         .as_mut()
-        .ok_or_else(|| AppError::Msg("vault is locked".into()))?;
+        .ok_or_else(|| AppError::Auth("vault is locked".into()))?;
     let mut file = read_file().map_err(|e| AppError::Msg(format!("vault not updated — {e}")))?;
     let plain = match decrypt(&v.dek, &file.secrets) {
         Ok(plain) => plain,

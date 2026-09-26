@@ -62,14 +62,22 @@ use cmd::vault::VaultCmd;
         sql-kai exec coordinator -c \"SELECT 1\"   # fallback: ssh + docker exec psql\n  \
         sql-kai tables orchestrator --counts     # таблицы + примерное число строк\n  \
         sql-kai vault trust                # тихий доступ CLI к паролям vault\n\n\
-        Коды выхода:\n  \
+        Коды выхода (kind — класс отказа в --json):\n  \
         0  сделано\n  \
-        1  отказ во время работы: ошибка SQL или сервера, откат оставленной транзакции,\n     \
-           профиль не найден, vault заперт, нет соединения; doctor — пароль не подходит\n  \
-        2  ошибка аргументов: неизвестная подкоманда или флаг, несовместимые флаги\n  \
+        1  сервер ответил отказом: ошибка SQL (db, read_only), откат оставленной\n     \
+           транзакции (refused), обрыв сессии (connection_lost), прочие отказы (app);\n     \
+           history --scan — в истории найдены секреты (secrets_found)\n  \
+        2  аргументы (usage: алиас подходит нескольким профилям, нет SQL), настройки\n     \
+           (config: vault не создан, нет sec, TLS-файлы профиля), доступ (auth: vault\n     \
+           заперт, пароль не подошёл или не задан), сеть (network: отказ в\n     \
+           соединении, ssh не поднял туннель), запись в прод без разрешения\n     \
+           (prod_guard); doctor — пароль не прошёл проверку или сервер недоступен\n  \
+        3  не найдено (not_found): профиль, сохранённый запрос, файл -f, база на сервере\n  \
+        4  сервер не ответил при подключении (timeout) — повтор безопасен\n  \
         exec и logs возвращают код удалённой команды (255 — ssh не подключился)\n\n\
         --json: отказ приходит в stdout конвертом\n  \
-        {v, command, exit, data: null, warning?, error: {kind, message}};\n  \
+        {v, command, exit, data, warning?, error: {kind, message}}; data — null,\n  \
+        у doctor — таблица проверок, у history --scan — {file, found, report};\n  \
         успешный ответ — данные команды без конверта"
 )]
 // pub(crate), чтобы `sql-kai completion` мог отдать clap-описание генератору

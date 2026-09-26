@@ -53,11 +53,24 @@ fn ensure_askpass_script() -> Result<PathBuf, AppError> {
 /// `store::upsert_profile`.
 fn reject_optionlike(what: &str, v: &str) -> Result<(), AppError> {
     if v.trim_start().starts_with('-') {
-        return Err(AppError::Msg(format!(
+        return Err(AppError::Config(format!(
             "{what} must not start with '-' (looks like an ssh option)"
         )));
     }
     Ok(())
+}
+
+/// Класс отказа ssh по его последним словам в stderr: ключ не принят — `Auth`,
+/// хост не ответил за ConnectTimeout — `Timeout`, прочее (DNS, отказ в
+/// соединении, форвард не встал) — `Network`.
+fn ssh_exit_error(message: String) -> AppError {
+    if message.contains("Permission denied") {
+        AppError::Auth(message)
+    } else if message.contains("timed out") {
+        AppError::Timeout(message)
+    } else {
+        AppError::Network(message)
+    }
 }
 
 /// `ssh` command that never inherits the vault master password: ssh may run a
@@ -428,7 +441,7 @@ pub async fn open_tunnel(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| AppError::Msg(format!("failed to spawn ssh: {e}")))?;
+        .map_err(|e| AppError::Config(format!("failed to spawn ssh: {e}")))?;
 
     // Mux-нюанс: `-N`-клиент, придя к живому мастеру, лишь регистрирует в нём
     // форвард и сразу выходит с кодом 0 — слушающий порт остаётся у мастера.
@@ -450,7 +463,7 @@ pub async fn open_tunnel(
                     }
                     master_owned = true;
                 } else {
-                    return Err(AppError::Msg(format!(
+                    return Err(ssh_exit_error(format!(
                         "ssh tunnel exited ({status}): {}",
                         err.trim()
                     )));
@@ -465,7 +478,7 @@ pub async fn open_tunnel(
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(AppError::Msg(
+                return Err(AppError::Timeout(
                     "ssh tunnel: timed out waiting for the forwarded port".into(),
                 ));
             }
@@ -510,4 +523,33 @@ pub async fn open_tunnel(
         child,
         mux,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ssh_exit_error;
+
+    #[test]
+    fn ssh_exit_is_classified_by_its_stderr() {
+        let class = |stderr: &str| {
+            ssh_exit_error(format!("ssh tunnel exited (exit status: 255): {stderr}")).code()
+        };
+        assert_eq!(class("user@host: Permission denied (publickey)."), "auth");
+        assert_eq!(
+            class("ssh: connect to host 10.0.0.1 port 22: Operation timed out"),
+            "timeout"
+        );
+        assert_eq!(
+            class("ssh: connect to host 10.0.0.1 port 22: Connection timed out"),
+            "timeout"
+        );
+        assert_eq!(
+            class("ssh: Could not resolve hostname nope: nodename nor servname provided"),
+            "network"
+        );
+        assert_eq!(
+            class("ssh: connect to host 127.0.0.1 port 22: Connection refused"),
+            "network"
+        );
+    }
 }

@@ -8,7 +8,7 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store;
 
 use crate::output::{self, Format, FormatArgs};
-use crate::{sec, session};
+use crate::{envelope, sec, session};
 
 #[derive(Args)]
 pub struct HistoryArgs {
@@ -20,13 +20,14 @@ pub struct HistoryArgs {
     #[command(flatten)]
     fmt: FormatArgs,
     /// Прогнать history.json через `sec scan` — не утёк ли секрет в открытом виде
-    #[arg(long)]
+    /// (из форматов — только --json: отчёт sec текстовый, таблицы у него нет)
+    #[arg(long, conflicts_with_all = ["csv", "tuples"])]
     scan: bool,
 }
 
 pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
     if a.scan {
-        return history_scan();
+        return history_scan(a.fmt.pick() == Format::Json);
     }
     let mut entries = store::load_history()?;
     if let Some(alias) = &a.alias {
@@ -69,22 +70,44 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
 /// Прогоняет history.json через `sec scan` — не осел ли где секрет в открытом
 /// виде (sql-kai редактирует пароли при записи, но старые записи или неожиданные
 /// литералы мог поймать sec).
-fn history_scan() -> Result<ExitCode, AppError> {
+///
+/// `--json`: чисто — `{file, found: false, report}` без конверта, как успех
+/// остальных команд; найдено — конверт отказа `kind: secrets_found`, код 1,
+/// те же поля в `data`. `report` — текст sec как есть: своего JSON у
+/// `sec scan` нет.
+fn history_scan(json: bool) -> Result<ExitCode, AppError> {
     sec::available()?;
     let path = sql_kai_lib::fsio::config_path("history.json")?;
-    if !path.exists() {
-        println!("history.json пуст — сканировать нечего");
-        return Ok(ExitCode::SUCCESS);
-    }
-    let (found, report) = sec::scan(&path.to_string_lossy())?;
-    if found {
-        println!("{report}");
-        println!("⚠ в истории найдены значения секретов из sec — почисти: `sec forget <ключ>` и удали затронутые записи в history.json");
-        Ok(ExitCode::FAILURE)
+    let file = path.to_string_lossy().into_owned();
+    let (found, report) = if path.exists() {
+        sec::scan(&file)?
     } else {
-        println!("чисто: секретов sec в history.json не найдено");
-        Ok(ExitCode::SUCCESS)
+        (false, String::new())
+    };
+    let data = serde_json::json!({ "file": file, "found": found, "report": report });
+    if found {
+        let message = "в истории найдены значения секретов из sec — почисти: `sec forget <ключ>` \
+                       и удали затронутые записи в history.json";
+        if json {
+            return Ok(envelope::fail_with_data(
+                "secrets_found",
+                message,
+                &[],
+                data,
+            ));
+        }
+        println!("{report}");
+        println!("⚠ {message}");
+        return Ok(ExitCode::FAILURE);
     }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data).unwrap());
+    } else if path.exists() {
+        println!("чисто: секретов sec в history.json не найдено");
+    } else {
+        println!("history.json пуст — сканировать нечего");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn age(ms: i64) -> String {

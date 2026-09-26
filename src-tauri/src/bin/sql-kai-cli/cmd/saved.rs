@@ -111,7 +111,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
                 .filter(|q| q.scope.is_none() || q.scope.as_deref() == Some(&key))
                 .find(|q| q.name.eq_ignore_ascii_case(&name))
                 .ok_or_else(|| {
-                    AppError::Msg(format!(
+                    AppError::NotFound(format!(
                         "сохранённый запрос '{name}' не найден (см. `sql-kai saved list {alias}`)"
                     ))
                 })?;

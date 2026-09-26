@@ -20,7 +20,7 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
         return Ok(());
     }
     if !vault::exists() {
-        return Err(AppError::Msg(
+        return Err(AppError::Config(
             "vault не создан — `sql-kai vault setup` (или первый запуск GUI)".into(),
         ));
     }
@@ -30,7 +30,7 @@ pub fn unlock_vault_headless() -> Result<(), AppError> {
     if let Some(pw) = master_password_env() {
         return vault::unlock_password(&pw);
     }
-    Err(AppError::Msg(format!(
+    Err(AppError::Auth(format!(
         "vault заблокирован — настрой `sql-kai vault trust`, задай {} \
          или используй --password-env",
         envvar::VAULT_PASSWORD,
@@ -75,7 +75,7 @@ pub fn read_new_password() -> Result<String, AppError> {
         return Ok(pw);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(AppError::Msg(format!(
+        return Err(AppError::Config(format!(
             "нет TTY — задай мастер-пароль через {}",
             envvar::VAULT_PASSWORD,
         )));
@@ -104,7 +104,7 @@ pub(super) fn resolve_override(
     if let Some(v) = src.env {
         return std::env::var(v)
             .map(Some)
-            .map_err(|_| AppError::Msg(format!("env-переменная {v} не задана")));
+            .map_err(|_| AppError::Auth(format!("env-переменная {v} не задана")));
     }
     if src.from_sec || src.sec_key.is_some() {
         crate::sec::available()?;
@@ -114,7 +114,7 @@ pub(super) fn resolve_override(
             .unwrap_or_else(|| crate::sec::default_key(profile));
         return crate::sec::get(&key)?
             .map(Some)
-            .ok_or_else(|| AppError::Msg(format!("в sec нет ключа {key}")));
+            .ok_or_else(|| AppError::Auth(format!("в sec нет ключа {key}")));
     }
     Ok(None)
 }

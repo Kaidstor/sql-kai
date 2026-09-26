@@ -42,7 +42,7 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
         return Ok(by_name[0].clone());
     }
     if by_name.len() > 1 {
-        return Err(AppError::Msg(format!(
+        return Err(AppError::Usage(format!(
             "несколько профилей с именем '{alias}' — укажи id (sql-kai profiles list)"
         )));
     }
@@ -63,7 +63,7 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
                 .map(|p| p.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(AppError::Msg(format!(
+            Err(AppError::NotFound(format!(
                 "профиль '{alias}' не найден (есть: {known}); для нового прод-хоста: sql-kai discover {alias}"
             )))
         }
@@ -73,7 +73,7 @@ pub fn resolve_profile(alias: &str) -> Result<Profile, AppError> {
                 .map(|p| p.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(AppError::Msg(format!(
+            Err(AppError::Usage(format!(
                 "в группе '{alias}' несколько профилей — уточни: {names}"
             )))
         }

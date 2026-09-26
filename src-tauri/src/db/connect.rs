@@ -165,13 +165,15 @@ pub async fn connect(profile: &Profile, opts: ConnectOptions) -> Result<Connecte
         let conn = cfg
             .connect(tls)
             .await
-            .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
+            .inspect_err(|e| log_connect_fail(profile, &host, port, e))
+            .map_err(AppError::Connect)?;
         build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     } else {
         let conn = cfg
             .connect(NoTls)
             .await
-            .inspect_err(|e| log_connect_fail(profile, &host, port, e))?;
+            .inspect_err(|e| log_connect_fail(profile, &host, port, e))
+            .map_err(AppError::Connect)?;
         build_session(profile, conn.0, conn.1, tunnel, isolated, notices).await
     }
 }
@@ -189,7 +191,7 @@ fn build_tls_connector(ssl: &SslConfig) -> Result<native_tls::TlsConnector, AppE
     if let Some(ca) = ssl_path(&ssl.ca_cert) {
         let pem = read_pem(&ca, "CA certificate")?;
         let cert = native_tls::Certificate::from_pem(&pem)
-            .map_err(|e| AppError::Msg(format!("CA certificate {ca}: {e}")))?;
+            .map_err(|e| AppError::Config(format!("CA certificate {ca}: {e}")))?;
         b.add_root_certificate(cert);
     }
     match (ssl_path(&ssl.client_cert), ssl_path(&ssl.client_key)) {
@@ -197,18 +199,18 @@ fn build_tls_connector(ssl: &SslConfig) -> Result<native_tls::TlsConnector, AppE
             let cert_pem = read_pem(&cert, "client certificate")?;
             let key_pem = read_pem(&key, "client certificate key")?;
             let id = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)
-                .map_err(|e| AppError::Msg(format!("client certificate: {e}")))?;
+                .map_err(|e| AppError::Config(format!("client certificate: {e}")))?;
             b.identity(id);
         }
         (None, None) => {}
         _ => {
-            return Err(AppError::Msg(
+            return Err(AppError::Config(
                 "a client certificate needs both files: certificate and key".into(),
             ))
         }
     }
     b.build()
-        .map_err(|e| AppError::Msg(format!("could not set up TLS: {e}")))
+        .map_err(|e| AppError::Config(format!("could not set up TLS: {e}")))
 }
 
 /// The profile's TLS settings as libpq environment variables, for the external
@@ -252,7 +254,7 @@ fn ssl_path(v: &Option<String>) -> Option<String> {
 }
 
 fn read_pem(path: &str, what: &str) -> Result<Vec<u8>, AppError> {
-    std::fs::read(path).map_err(|e| AppError::Msg(format!("{what} {path}: {e}")))
+    std::fs::read(path).map_err(|e| AppError::Config(format!("{what} {path}: {e}")))
 }
 
 fn log_connect_fail(profile: &Profile, host: &str, port: u16, e: &tokio_postgres::Error) {

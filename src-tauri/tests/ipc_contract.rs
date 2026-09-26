@@ -291,6 +291,25 @@ fn app_error_shape() {
         to_json(&AppError::ReadOnlyRefused("needs write".into())),
         json!({ "code": "read_only", "message": "needs write" })
     );
+    // Классы отказов CLI (коды выхода 2/3/4) фронт не разбирает: они не должны
+    // совпасть с кодами, на которые он предлагает reconnect или прод-диалог.
+    for e in [
+        AppError::NotFound("profile not found".into()),
+        AppError::Usage("нет SQL".into()),
+        AppError::Auth("vault is locked".into()),
+        AppError::Config("CLI trust is not set up".into()),
+        AppError::Network("ssh tunnel exited".into()),
+        AppError::Timeout("ssh tunnel: timed out".into()),
+        AppError::ProdGuard("запись заблокирована".into()),
+    ] {
+        let v = to_json(&e);
+        assert_eq!(v["message"], e.to_string());
+        let code = v["code"].as_str().unwrap();
+        assert!(
+            !["connection_lost", "session_gone", "read_only"].contains(&code),
+            "{code}"
+        );
+    }
 }
 
 /// list_cli_sessions / метод sessions брокера → CliSessionInfo в types.ts.

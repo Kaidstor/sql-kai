@@ -65,7 +65,7 @@ fn env_allows(profile: &Profile) -> bool {
 /// Куда именно смотреть, когда запись отвергнута: без этого текста отказ
 /// выглядит как поломка, а не как политика.
 fn denied(profile: &Profile, why: &str) -> AppError {
-    AppError::Msg(format!(
+    AppError::ProdGuard(format!(
         "запись в production-профиль '{}' ({}@{}:{}/{}) заблокирована: {}\n\
          разрешить запись:\n  \
          • в терминале — повтори команду и подтверди, введя имя профиля;\n  \
@@ -141,7 +141,7 @@ pub fn authorize_prod_dump(profile: &Profile, explicit: bool) -> Result<(), AppE
         return Ok(());
     }
     let deny = |why: &str| {
-        AppError::Msg(format!(
+        AppError::ProdGuard(format!(
             "выгрузка данных production-профиля '{}' ({}@{}:{}/{}) заблокирована: {}\n\
              разрешить:\n  \
              • в терминале — повтори команду и подтверди, введя имя профиля;\n  \

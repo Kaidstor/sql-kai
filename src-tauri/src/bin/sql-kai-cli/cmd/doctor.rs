@@ -15,7 +15,7 @@ use sql_kai_lib::error::AppError;
 use sql_kai_lib::store::{self, Profile};
 
 use crate::output::{self, Format, FormatArgs};
-use crate::{sec, session};
+use crate::{envelope, sec, session};
 
 #[derive(Args)]
 pub struct DoctorArgs {
@@ -307,13 +307,58 @@ fn print_install(i: &InstallInfo, fmt: Format) {
     }
 }
 
-/// Итог проверки одного источника пароля.
-fn probe_label(res: &Result<(), AppError>) -> &'static str {
-    if res.is_ok() {
-        "ok"
-    } else {
-        "fail"
+/// Непрошедшая проверка: профиль, источник пароля (`vault` / `sec`), ошибка.
+struct Failure {
+    profile: String,
+    source: &'static str,
+    error: AppError,
+}
+
+/// Итог проверки одного источника пароля; отказ копится в `failures`.
+/// `unreachable` — до сервера не достучались, и про пароль это ничего не
+/// говорит; `fail` — всё остальное, в первую очередь неподошедший пароль.
+fn probe(
+    failures: &mut Vec<Failure>,
+    profile: &Profile,
+    source: &'static str,
+    res: Result<(), AppError>,
+) -> String {
+    match res {
+        Ok(()) => "ok".to_string(),
+        Err(error) => {
+            let state = match error.code() {
+                "network" | "timeout" => "unreachable",
+                _ => "fail",
+            };
+            failures.push(Failure {
+                profile: profile.name.clone(),
+                source,
+                error,
+            });
+            state.to_string()
+        }
     }
+}
+
+/// Класс и текст отказа doctor. Код берётся у первой проверки, упавшей не по
+/// таймауту: таймаут значит «повтори», а пароль, который не подошёл, повтор
+/// не вылечит. Все упали по таймауту — тогда `timeout`.
+fn summarize(failures: &[Failure]) -> (&'static str, String) {
+    let kind = failures
+        .iter()
+        .map(|f| f.error.code())
+        .find(|k| *k != "timeout")
+        .unwrap_or("timeout");
+    let list = failures
+        .iter()
+        .map(|f| {
+            let text = f.error.to_string();
+            let first = text.lines().next().unwrap_or_default().to_string();
+            format!("{} ({}): {first}", f.profile, f.source)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    (kind, format!("проверка не прошла — {list}"))
 }
 
 async fn can_connect(profile: &Profile, password: Option<String>) -> Result<(), AppError> {
@@ -349,7 +394,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         // Единый резолв с `sql-kai q`: id, имя или группа.
         profiles = session::filter_profiles(&profiles, alias);
         if profiles.is_empty() {
-            return Err(AppError::Msg(format!("профиль '{alias}' не найден")));
+            return Err(AppError::NotFound(format!("профиль '{alias}' не найден")));
         }
     }
     // Разлочим vault best-effort, чтобы проверить vault-пароли; не вышло — просто
@@ -358,7 +403,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
     let sec_ok = sec::available().is_ok();
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    let mut any_problem = false;
+    let mut failures: Vec<Failure> = Vec::new();
 
     for p in &profiles {
         // vault
@@ -367,7 +412,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         } else if !vault_ok {
             "locked".to_string()
         } else {
-            probe_label(&can_connect(p, None).await).to_string()
+            probe(&mut failures, p, "vault", can_connect(p, None).await)
         };
 
         // sec (по конвенционному ключу)
@@ -379,19 +424,21 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         };
         let sec_state = match &sec_value {
             None => "absent".to_string(),
-            Some(v) => probe_label(&can_connect(p, Some(v.clone())).await).to_string(),
+            Some(v) => probe(
+                &mut failures,
+                p,
+                "sec",
+                can_connect(p, Some(v.clone())).await,
+            ),
         };
 
-        // "fail" бывает только когда пароль реально был и не подошёл — это и есть
-        // проблема (дрейф/протухший креденшел); absent/no-pw/locked/ok — нет.
-        let problem = vault_state == "fail" || sec_state == "fail";
-        if problem {
-            any_problem = true;
-        }
+        // Проблема — "fail" (пароль был и не прошёл: дрейф, протухший креденшел)
+        // и "unreachable"; absent/no-pw/locked/ok — нет.
         let note = match (vault_state.as_str(), sec_state.as_str()) {
             ("ok", _) => "",
             ("fail", "ok") => "дрейф: vault не подходит, работает sec",
             ("fail", _) => "vault-пароль не подходит",
+            ("unreachable", _) | (_, "unreachable") => "сервер недоступен — пароль не проверен",
             ("no-pw", "ok") => "sec-only ok",
             ("no-pw", "fail") => "sec-пароль не подходит",
             ("no-pw", "absent") => "нет сохранённого пароля — только --password-env",
@@ -408,7 +455,18 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         }));
     }
 
+    let failure = (!failures.is_empty()).then(|| summarize(&failures));
     if fmt == Format::Json {
+        // Отказ — конвертом, таблица проверок в `data`; успех — пока массивом
+        // без конверта, как у остальных команд.
+        if let Some((kind, message)) = &failure {
+            return Ok(envelope::fail_with_data(
+                kind,
+                message,
+                &[],
+                serde_json::Value::Array(rows),
+            ));
+        }
         println!("{}", serde_json::to_string_pretty(&rows).unwrap());
     } else {
         let table: Vec<Vec<Option<String>>> = rows
@@ -431,10 +489,9 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
         }
     }
 
-    Ok(if any_problem {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+    Ok(match failure {
+        Some((kind, message)) => envelope::fail(kind, &message, &[]),
+        None => ExitCode::SUCCESS,
     })
 }
 

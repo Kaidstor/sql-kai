@@ -176,7 +176,7 @@ pub fn profile_by_id(id: &str) -> Result<Profile, AppError> {
     load_profiles()?
         .into_iter()
         .find(|p| p.id == id)
-        .ok_or_else(|| AppError::Msg("profile not found".into()))
+        .ok_or_else(|| AppError::NotFound("profile not found".into()))
 }
 
 /// `secret`: None = keep existing, Some("") = clear, Some(v) = replace.
@@ -253,7 +253,7 @@ pub fn duplicate_profile(id: &str) -> Result<Profile, AppError> {
     let original = all
         .iter_mut()
         .find(|p| p.id == id)
-        .ok_or_else(|| AppError::Msg("profile not found".into()))?;
+        .ok_or_else(|| AppError::NotFound("profile not found".into()))?;
     let group = original
         .group
         .clone()

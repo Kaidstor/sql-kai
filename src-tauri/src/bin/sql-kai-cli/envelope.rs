@@ -3,14 +3,15 @@
 //!
 //! Успешный `--json` пока печатает данные без конверта (форма, которую читают
 //! потребители `q --json`), поэтому исход под `--json` различается полем `v`:
-//! есть — это отказ.
+//! есть — это отказ. Код выхода отказа выводится из `kind` ([`exit_for`]) и в
+//! текстовом режиме тот же.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
 use clap::ArgMatches;
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub const VERSION: u32 = 1;
 
@@ -35,6 +36,18 @@ fn json_command() -> Option<&'static str> {
     JSON_COMMAND.get().and_then(|c| c.as_deref())
 }
 
+/// Код выхода по классу отказа — таблица семьи kai-cli: 2 — инструмент,
+/// аргументы, настройки, доступ; 3 — не найдено; 4 — сервер не ответил в срок,
+/// повтор безопасен. Остальное (ошибка SQL, откат, потеря сессии) — 1.
+pub fn exit_for(kind: &str) -> u8 {
+    match kind {
+        "usage" | "config" | "auth" | "network" | "prod_guard" => 2,
+        "not_found" => 3,
+        "timeout" => 4,
+        _ => 1,
+    }
+}
+
 pub fn render_failure(
     command: &str,
     exit: u8,
@@ -42,11 +55,22 @@ pub fn render_failure(
     message: &str,
     warning: &[String],
 ) -> String {
+    render_failure_with(command, exit, kind, message, warning, Value::Null)
+}
+
+fn render_failure_with(
+    command: &str,
+    exit: u8,
+    kind: &str,
+    message: &str,
+    warning: &[String],
+    data: Value,
+) -> String {
     let mut env = json!({
         "v": VERSION,
         "command": command,
         "exit": exit,
-        "data": null,
+        "data": data,
     });
     if !warning.is_empty() {
         env["warning"] = json!(warning);
@@ -55,12 +79,23 @@ pub fn render_failure(
     serde_json::to_string_pretty(&env).expect("конверт сериализуется")
 }
 
-/// Отказ с кодом 1. `kind` — машинный класс (`db`, `read_only`, `app`, …),
-/// `hints` — подсказки: в тексте идут строками после ошибки, в конверте —
-/// полем `warning`.
+/// Отказ с кодом по [`exit_for`]. `kind` — машинный класс (`db`, `read_only`,
+/// `not_found`, …), `hints` — подсказки: в тексте идут строками после ошибки,
+/// в конверте — полем `warning`.
 pub fn fail(kind: &str, message: &str, hints: &[String]) -> ExitCode {
+    fail_with_data(kind, message, hints, Value::Null)
+}
+
+/// Отказ, у которого есть что показать: `doctor` отдаёт в `data` таблицу
+/// проверок, чтобы было видно, какой профиль и какой источник не прошли.
+/// В текстовом режиме `data` уже напечатана командой.
+pub fn fail_with_data(kind: &str, message: &str, hints: &[String], data: Value) -> ExitCode {
+    let exit = exit_for(kind);
     match json_command() {
-        Some(command) => println!("{}", render_failure(command, 1, kind, message, hints)),
+        Some(command) => println!(
+            "{}",
+            render_failure_with(command, exit, kind, message, hints, data)
+        ),
         None => {
             eprintln!("sql-kai: {message}");
             for h in hints {
@@ -68,7 +103,7 @@ pub fn fail(kind: &str, message: &str, hints: &[String]) -> ExitCode {
             }
         }
     }
-    ExitCode::FAILURE
+    ExitCode::from(exit)
 }
 
 /// Ошибка разбора clap случилась раньше, чем появились `ArgMatches`, поэтому
@@ -113,6 +148,34 @@ mod tests {
         );
         // отступ 2, порядок полей как у эталона
         assert!(out.starts_with("{\n  \"v\": 1,\n  \"command\""), "{out}");
+    }
+
+    #[test]
+    fn exit_codes_follow_the_family_table() {
+        for (kind, exit) in [
+            ("usage", 2),
+            ("config", 2),
+            ("auth", 2),
+            ("network", 2),
+            ("prod_guard", 2),
+            ("not_found", 3),
+            ("timeout", 4),
+            ("db", 1),
+            ("read_only", 1),
+            ("refused", 1),
+            ("connection_lost", 1),
+            ("app", 1),
+        ] {
+            assert_eq!(exit_for(kind), exit, "{kind}");
+        }
+    }
+
+    #[test]
+    fn failure_can_carry_data() {
+        let out = render_failure_with("doctor", 2, "auth", "m", &[], json!([{"name": "x"}]));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["exit"], 2);
+        assert_eq!(v["data"][0]["name"], "x");
     }
 
     #[test]

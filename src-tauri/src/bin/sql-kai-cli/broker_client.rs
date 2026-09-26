@@ -52,6 +52,9 @@ pub enum BrokerError {
     Connect(String),
     /// Vault в GUI заблокирован — sql-kai разблокирует сам (автономный путь).
     VaultLocked,
+    /// Прод-барьер сервера отверг запись — финальный ответ, как `Query`, но
+    /// с классом `prod_guard`: разрешение даёт человек, а не правка SQL.
+    ProdGuard(String),
     /// Сервер выполнил запрос и вернул ошибку (SQL и т.п.) — финальный ответ.
     /// `sqlstate` — код ошибки Postgres (например 25006 read-only), если есть.
     Query {
@@ -118,6 +121,7 @@ impl std::fmt::Display for BrokerError {
             BrokerError::Transport(m) => write!(f, "broker: {m}"),
             BrokerError::Connect(m) => write!(f, "{m}"),
             BrokerError::VaultLocked => write!(f, "vault заблокирован в GUI"),
+            BrokerError::ProdGuard(m) => write!(f, "{m}"),
             BrokerError::Query { message, .. } => write!(f, "{message}"),
         }
     }
@@ -277,6 +281,7 @@ impl BrokerClient {
             return Err(match code {
                 "vault_locked" => BrokerError::VaultLocked,
                 "connect" => BrokerError::Connect(err.to_string()),
+                "prod_write" => BrokerError::ProdGuard(err.to_string()),
                 // Отказ по существу запроса. `read_only_tx` здесь обязателен:
                 // это решение брокера («батч вывел бы себя из read-only
                 // транзакции», «открыта чужая read-write транзакция»), а не сбой
@@ -286,7 +291,7 @@ impl BrokerClient {
                 // `write_setup` — сервер не смог снять read-only ДО батча, SQL
                 // не выполнялся. Как транспортная она печатала «запрос мог
                 // успеть выполниться», а на чтении ушла бы в автономный повтор.
-                "query" | "read_only_tx" | "prod_write" | "write_setup" => BrokerError::Query {
+                "query" | "read_only_tx" | "write_setup" => BrokerError::Query {
                     message: err.to_string(),
                     sqlstate: v
                         .get("sqlstate")

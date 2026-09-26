@@ -202,6 +202,10 @@ async fn try_broker_query(a: &QueryArgs, sql: &str) -> Result<Option<ExitCode>, 
             };
             Ok(Some(envelope::fail(kind, &message, &hints)))
         }
+        Err(broker_client::BrokerError::ProdGuard(message)) => {
+            record(false);
+            Ok(Some(envelope::fail("prod_guard", &message, &[])))
+        }
         Err(broker_client::BrokerError::VaultLocked) => {
             // Брокер отверг запрос ДО выполнения — автономный путь безопасен.
             if a.verbose {

@@ -33,7 +33,7 @@ pub fn is_interactive() -> bool {
 /// когда TTY нет и спросить некого.
 pub fn confirm(question: &str, skip_flag: &str) -> Result<bool, AppError> {
     if !is_interactive() {
-        return Err(AppError::Msg(format!(
+        return Err(AppError::Usage(format!(
             "нет TTY для подтверждения — добавь {skip_flag}"
         )));
     }
@@ -53,8 +53,14 @@ pub fn collect_sql(commands: &[String], files: &[PathBuf]) -> Result<String, App
         parts.push(format!("{};", c.trim_end().trim_end_matches(';')));
     }
     for f in files {
-        let text = std::fs::read_to_string(f)
-            .map_err(|e| AppError::Msg(format!("чтение {}: {e}", f.display())))?;
+        let text = std::fs::read_to_string(f).map_err(|e| {
+            let message = format!("чтение {}: {e}", f.display());
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::NotFound(message)
+            } else {
+                AppError::Msg(message)
+            }
+        })?;
         parts.push(text);
     }
     if parts.is_empty() && !std::io::stdin().is_terminal() {
@@ -66,7 +72,7 @@ pub fn collect_sql(commands: &[String], files: &[PathBuf]) -> Result<String, App
     }
     let sql = parts.join("\n");
     if sql.trim().is_empty() {
-        return Err(AppError::Msg(
+        return Err(AppError::Usage(
             "нет SQL: передай -c \"...\", -f file.sql или подай на stdin".into(),
         ));
     }

@@ -38,14 +38,14 @@ pub fn available() -> Result<(), AppError> {
         .stdin(Stdio::null())
         .output()
         .map_err(|e| {
-            AppError::Msg(format!(
+            AppError::Config(format!(
                 "sec не найден в PATH ({e}); установи sec или задай {}",
                 envvar::SEC_BIN,
             ))
         })?;
     let help = String::from_utf8_lossy(&out.stdout);
     if !help.contains("scan") {
-        return Err(AppError::Msg(
+        return Err(AppError::Config(
             "sec в PATH устарел (нет команды scan) — пересобери его (`just install` в sec/cli)"
                 .into(),
         ));
