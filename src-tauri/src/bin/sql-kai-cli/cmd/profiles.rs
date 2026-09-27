@@ -78,7 +78,7 @@ pub async fn run(cmd: ProfilesCmd) -> Result<ExitCode, AppError> {
             }
             // --json отдаёт полные объекты профилей, не табличную проекцию
             if fmt.pick() == Format::Json {
-                println!("{}", serde_json::to_string_pretty(&profiles).unwrap());
+                crate::envelope::print_data(&profiles);
                 return Ok(ExitCode::SUCCESS);
             }
             let rows: Vec<Vec<Option<String>>> = profiles

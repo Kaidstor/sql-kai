@@ -8,7 +8,7 @@ use clap::Args;
 use sql_kai_lib::db;
 use sql_kai_lib::error::AppError;
 
-use crate::output::{self, FormatArgs};
+use crate::output::{self, Format, FormatArgs};
 use crate::session;
 
 #[derive(Args)]
@@ -55,7 +55,12 @@ pub async fn run(a: TableArgs, kind: TableInfoKind) -> Result<ExitCode, AppError
     let client = &connected.session.client;
     match kind {
         TableInfoKind::Ddl => {
-            println!("{}", db::table_ddl(client, &schema, &table).await?);
+            let ddl = db::table_ddl(client, &schema, &table).await?;
+            if a.fmt.pick() == Format::Json {
+                crate::envelope::print_success(serde_json::json!({ "ddl": ddl }), &[]);
+            } else {
+                println!("{ddl}");
+            }
         }
         TableInfoKind::Columns => {
             let sql = db::columns_sql(&db::regclass_literal(&schema, &table));

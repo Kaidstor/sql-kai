@@ -202,7 +202,7 @@ MCP-tool <code>query</code> и <code>exec</code> на ssh-хост, к кото�
 <table>
 <tr><th>Флаг</th><th>Формат</th></tr>
 <tr><td><span class="muted">(без флага)</span></td><td>pretty-таблица + <code>(N rows)</code>; не-SELECT — <code>-- N row(s) affected</code></td></tr>
-<tr><td><code>--json</code></td><td><code>{results:[{columns, rows, rowsAffected, truncated}], durationMs}</code>; значения приведены к JSON-типам по реальным типам колонок: числа числами, bool как <code>true/false</code>, NULL = <code>null</code>, <code>json/jsonb</code> — объектами, остальное строками. Типы берутся честно (Parse каждого стейтмента, без выполнения), а не угадываются по виду значения: <code>'3'::text</code> останется строкой. Если тип не определился (редкость: стейтмент ссылается на объект, созданный/удалённый тем же батчем) — значения этого результата строками + предупреждение в stderr. Нужна точная строковая форма числа (огромный <code>numeric</code>, значимые нули) — кастуй в <code>::text</code></td></tr>
+<tr><td><code>--json</code></td><td>Конверт <code>{v, command, exit, data, warning?, error}</code>: при успехе <code>error: null</code>, в <code>data</code> — <code>{results:[{columns, rows, rowsAffected, truncated}], durationMs}</code>, при отказе <code>error: {kind, message}</code>; предупреждения (маскировка, нетипизированные колонки) — в <code>warning</code>. Значения приведены к JSON-типам по реальным типам колонок: числа числами, bool как <code>true/false</code>, NULL = <code>null</code>, <code>json/jsonb</code> — объектами, остальное строками. Типы берутся честно (Parse каждого стейтмента, без выполнения), а не угадываются по виду значения: <code>'3'::text</code> останется строкой. Если тип не определился (редкость: стейтмент ссылается на объект, созданный/удалённый тем же батчем) — значения этого результата строками + предупреждение в <code>warning</code>. Нужна точная строковая форма числа (огромный <code>numeric</code>, значимые нули) — кастуй в <code>::text</code></td></tr>
 <tr><td><code>--csv</code></td><td>CSV с заголовком (RFC 4180)</td></tr>
 <tr><td><code>-t</code> / <code>--tuples</code></td><td>Только значения через <code>|</code>, без заголовков — для <code>grep/awk</code></td></tr>
 </table>
@@ -537,7 +537,7 @@ ssh-туннели живут между запусками sql-kai, повто�
 <code>BEGIN</code>/<code>COMMIT</code> в нём не нужны.</p>
 <p>Сообщения сервера (<code>RAISE NOTICE</code>, WARNING, INFO) печатаются в stderr как у
 psql — <code>NOTICE: hello 42</code> — во всех режимах (брокер, holder, <code>--local</code>,
-<code>--no-mux</code>); в <code>--json</code> они же лежат полем <code>notices</code>.</p>
+<code>--no-mux</code>); в <code>--json</code> они же лежат полем <code>data.notices</code>.</p>
 <ul>
   <li><strong>Жизненный цикл:</strong> спавнится первым <code>sql-kai q</code>, только если vault
       разлочивается тихо (keychain-trust / <code>SQL_KAI_VAULT_PASSWORD</code>) — иначе sql-kai молча

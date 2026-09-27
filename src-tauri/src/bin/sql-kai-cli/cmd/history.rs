@@ -48,7 +48,7 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
     entries.truncate(a.limit);
     // --json отдаёт полные записи (id/at/ok), не табличную проекцию
     if a.fmt.pick() == Format::Json {
-        println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+        envelope::print_data(&entries);
         return Ok(ExitCode::SUCCESS);
     }
     let now = store::now_ms();
@@ -71,9 +71,8 @@ pub fn run(a: HistoryArgs) -> Result<ExitCode, AppError> {
 /// виде (sql-kai редактирует пароли при записи, но старые записи или неожиданные
 /// литералы мог поймать sec).
 ///
-/// `--json`: чисто — `{file, found: false, report}` без конверта, как успех
-/// остальных команд; найдено — конверт отказа `kind: secrets_found`, код 1,
-/// те же поля в `data`. `report` — текст sec как есть: своего JSON у
+/// `--json`: чисто — конверт успеха с `{file, found: false, report}` в `data`;
+/// найдено — конверт отказа `kind: secrets_found`, код 1, те же поля в `data`. `report` — текст sec как есть: своего JSON у
 /// `sec scan` нет.
 fn history_scan(json: bool) -> Result<ExitCode, AppError> {
     sec::available()?;
@@ -101,7 +100,7 @@ fn history_scan(json: bool) -> Result<ExitCode, AppError> {
         return Ok(ExitCode::FAILURE);
     }
     if json {
-        println!("{}", serde_json::to_string_pretty(&data).unwrap());
+        envelope::print_success(data, &[]);
     } else if path.exists() {
         println!("чисто: секретов sec в history.json не найдено");
     } else {

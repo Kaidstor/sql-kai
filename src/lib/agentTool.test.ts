@@ -80,6 +80,33 @@ describe("normalizeToolResult", () => {
     expect(output?.kind).toBe("exec");
   });
 
+  it("конверт `sql-kai q --json` из shell → таблица из data", () => {
+    const envelope = JSON.stringify(
+      { v: 1, command: "q", exit: 0, data: JSON.parse(execJson), error: null },
+      null,
+      2,
+    );
+    const { output } = normalizeToolResult({
+      content: [{ type: "content", content: { type: "text", text: envelope } }],
+    });
+    expect(output?.kind).toBe("exec");
+    if (output?.kind !== "exec") return;
+    expect(output.results[0].rows[0]).toEqual(["1", "alice"]);
+    expect(output.durationMs).toBe(12);
+  });
+
+  it("конверт отказа остаётся текстом", () => {
+    const failure = JSON.stringify({
+      v: 1,
+      command: "q",
+      exit: 1,
+      data: null,
+      error: { kind: "db", message: "ERROR: boom" },
+    });
+    const { output } = normalizeToolResult({ rawOutput: failure });
+    expect(output?.kind).toBe("text");
+  });
+
   it("контент из content-блоков важнее rawOutput", () => {
     const { output } = normalizeToolResult({
       content: [

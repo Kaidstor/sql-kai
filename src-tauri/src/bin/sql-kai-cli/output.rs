@@ -8,7 +8,7 @@ use sql_kai_lib::format::csv_field;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Table,
-    /// JSON с типизацией значений по колонкам — рендерится print_exec_json.
+    /// JSON с типизацией значений по колонкам — рендерится exec_json.
     Json,
     Csv,
     Tuples,
@@ -69,19 +69,22 @@ pub fn print_exec(exec: &ExecResult, fmt: Format) {
                     println!("{}", vals.join("|"));
                 }
             }
-            Format::Json => unreachable!("Json рендерится print_exec_json"),
+            Format::Json => unreachable!("Json рендерится exec_json"),
         }
     }
 }
 
-/// --json: {results:[{columns, rows, rowsAffected, truncated}], durationMs,
-/// notices?, noticesDropped?} — два последних только когда непустые,
-/// значения приведены к JSON-типам по типам колонок из Parse
+/// `data` конверта `q --json`: {results:[{columns, rows, rowsAffected,
+/// truncated}], durationMs, notices?, noticesDropped?} — два последних только
+/// когда непустые, значения приведены к JSON-типам по типам колонок из Parse
 /// (`db::statement_column_types`). `stmt_types` идёт в порядке стейтментов и
 /// сверяется с результатом по именам колонок; при несовпадении (или None)
-/// значения того результата остаются строками. Возвращает число result-set'ов
-/// с колонками, для которых типизация не удалась, — для предупреждения в stderr.
-pub fn print_exec_json(exec: &ExecResult, stmt_types: &[Option<Vec<(String, Type)>>]) -> usize {
+/// значения того результата остаются строками. Вторым — число result-set'ов
+/// с колонками, для которых типизация не удалась, — для предупреждения.
+pub fn exec_json(
+    exec: &ExecResult,
+    stmt_types: &[Option<Vec<(String, Type)>>],
+) -> (serde_json::Value, usize) {
     use serde_json::{json, Value};
     let mut untyped = 0usize;
     let mut types_iter = stmt_types.iter();
@@ -127,8 +130,7 @@ pub fn print_exec_json(exec: &ExecResult, stmt_types: &[Option<Vec<(String, Type
     if exec.notices_dropped > 0 {
         out["noticesDropped"] = json!(exec.notices_dropped);
     }
-    println!("{}", serde_json::to_string_pretty(&out).unwrap());
-    untyped
+    (out, untyped)
 }
 
 /// Текст значения (simple-query отдаёт всё текстом) -> JSON-значение по типу
@@ -168,7 +170,8 @@ fn typed_value(text: &str, ty: &Type) -> serde_json::Value {
 }
 
 /// Интроспекция/списки (столбцы заданы кодом, не сервером): pretty-таблица,
-/// JSON как массив объектов, CSV с заголовком или tuples-only.
+/// JSON — конверт с массивом объектов в `data`, CSV с заголовком или
+/// tuples-only.
 pub fn print_rows(columns: &[&str], rows: &[Vec<Option<String>>], fmt: Format) {
     match fmt {
         Format::Json => {
@@ -187,7 +190,7 @@ pub fn print_rows(columns: &[&str], rows: &[Vec<Option<String>>], fmt: Format) {
                     serde_json::Value::Object(obj)
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&arr).unwrap());
+            crate::envelope::print_success(serde_json::Value::Array(arr), &[]);
         }
         Format::Csv => {
             println!(

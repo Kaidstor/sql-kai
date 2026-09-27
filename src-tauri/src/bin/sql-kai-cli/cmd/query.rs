@@ -80,24 +80,30 @@ fn report_server_messages(
 /// verbose-времена. `types` пустой, когда формат не json.
 fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(String, db::Type)>>]) {
     report_server_messages(&exec.notices, exec.notices_dropped, None, None);
+    let fmt = a.fmt.pick();
+    // под --json предупреждения едут полем warning конверта, иначе — в stderr
+    let mut warnings = Vec::new();
     if !a.no_redact {
         let masked = redact::redact_exec(&mut exec);
         if !masked.is_empty() {
-            eprintln!(
-                "⚠ sql-kai: маскированы чувствительные колонки: {} (показать: --no-redact)",
+            warnings.push(format!(
+                "маскированы чувствительные колонки: {} (показать: --no-redact)",
                 masked.join(", ")
-            );
+            ));
         }
     }
-    let fmt = a.fmt.pick();
     if fmt == Format::Json {
-        let untyped = output::print_exec_json(&exec, types);
+        let (data, untyped) = output::exec_json(&exec, types);
         if untyped > 0 {
-            eprintln!(
-                "⚠ sql-kai: не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
-            );
+            warnings.push(format!(
+                "не удалось определить типы колонок для {untyped} стейтмент(а/ов) — их значения строками"
+            ));
         }
+        envelope::print_success(data, &warnings);
     } else {
+        for w in &warnings {
+            eprintln!("⚠ sql-kai: {w}");
+        }
         output::print_exec(&exec, fmt);
     }
     if a.verbose {
@@ -105,7 +111,7 @@ fn render_exec(a: &QueryArgs, mut exec: db::ExecResult, types: &[Option<Vec<(Str
     }
 }
 
-/// (имя, oid) с провода → типы для print_exec_json; незнакомый oid (кастомный
+/// (имя, oid) с провода → типы для exec_json; незнакомый oid (кастомный
 /// enum и т.п.) выводится как text — так же он выглядит и в автономном пути.
 fn wire_types(wire: sql_kai_lib::broker::WireColumnTypes) -> Vec<Option<Vec<(String, db::Type)>>> {
     wire.into_iter()

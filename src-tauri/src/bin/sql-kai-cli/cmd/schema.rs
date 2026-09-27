@@ -325,14 +325,16 @@ pub async fn run(a: SchemaArgs) -> Result<ExitCode, AppError> {
     check_parts(&exec.results)?;
 
     let dump = build_dump(&profile.database, &connected.server_version, &exec.results);
-    if dump.truncated {
-        eprintln!(
-            "sql-kai: каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema/--table"
-        );
-    }
+    let truncated = dump.truncated.then(|| {
+        format!("каталог обрезан на {MAX_ROWS} строк — сузь вывод через --schema/--table")
+    });
     if a.json {
-        println!("{}", serde_json::to_string_pretty(&dump).unwrap());
+        let data = serde_json::to_value(&dump).expect("дамп сериализуется");
+        crate::envelope::print_success(data, truncated.as_slice());
     } else {
+        if let Some(w) = &truncated {
+            eprintln!("sql-kai: {w}");
+        }
         print!("{}", render_text(&dump, &opts));
     }
     Ok(ExitCode::SUCCESS)

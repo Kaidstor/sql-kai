@@ -75,10 +75,12 @@ use cmd::vault::VaultCmd;
         3  не найдено (not_found): профиль, сохранённый запрос, файл -f, база на сервере\n  \
         4  сервер не ответил при подключении (timeout) — повтор безопасен\n  \
         exec и logs возвращают код удалённой команды (255 — ssh не подключился)\n\n\
-        --json: отказ приходит в stdout конвертом\n  \
-        {v, command, exit, data, warning?, error: {kind, message}}; data — null,\n  \
-        у doctor — таблица проверок, у history --scan — {file, found, report};\n  \
-        успешный ответ — данные команды без конверта"
+        --json: ответ приходит в stdout конвертом\n  \
+        {v, command, exit, data, warning?, error}; предупреждения — в warning\n  \
+        успех: exit 0, error null, данные команды в data (q — {results, durationMs},\n     \
+           списки и doctor — массив, schema — дерево, ddl — {ddl})\n  \
+        отказ: error {kind, message}; data — null, у doctor — таблица проверок,\n     \
+           у history --scan — {file, found, report}"
 )]
 // pub(crate), чтобы `sql-kai completion` мог отдать clap-описание генератору
 // скриптов — единственный источник правды о подкомандах и флагах.

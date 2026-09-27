@@ -52,7 +52,9 @@ export type AgentToolOutput =
     }
   | { kind: "text"; text: string; capped?: boolean };
 
-/** Ответ sql-kai-тулов — JSON ExecResult; всё остальное — не наш формат. */
+/** Ответ sql-kai-тулов — JSON ExecResult: у MCP-тула голый, у `sql-kai q
+ *  --json` в shell — в `data` конверта `{v, command, exit, data, error}`;
+ *  всё остальное — не наш формат. */
 function parseExecJson(text: string): {
   results: StatementResult[];
   durationMs?: number;
@@ -64,6 +66,9 @@ function parseExecJson(text: string): {
     v = JSON.parse(text);
   } catch {
     return null;
+  }
+  if (v && typeof v === "object" && "v" in v && "data" in v) {
+    v = (v as { data: unknown }).data;
   }
   if (!v || typeof v !== "object" || !Array.isArray((v as { results?: unknown }).results)) {
     return null;

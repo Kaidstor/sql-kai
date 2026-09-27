@@ -294,7 +294,7 @@ fn print_install_table(i: &InstallInfo) {
 
 fn print_install(i: &InstallInfo, fmt: Format) {
     match fmt {
-        Format::Json => println!("{}", serde_json::to_string_pretty(&i.json()).unwrap()),
+        Format::Json => envelope::print_success(i.json(), &[]),
         Format::Table => print_install_table(i),
         Format::Csv | Format::Tuples => {
             let rows: Vec<Vec<Option<String>>> = i
@@ -457,8 +457,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
 
     let failure = (!failures.is_empty()).then(|| summarize(&failures));
     if fmt == Format::Json {
-        // Отказ — конвертом, таблица проверок в `data`; успех — пока массивом
-        // без конверта, как у остальных команд.
+        // Таблица проверок — в `data` конверта и при успехе, и при отказе.
         if let Some((kind, message)) = &failure {
             return Ok(envelope::fail_with_data(
                 kind,
@@ -467,7 +466,7 @@ pub async fn run(a: DoctorArgs) -> Result<ExitCode, AppError> {
                 serde_json::Value::Array(rows),
             ));
         }
-        println!("{}", serde_json::to_string_pretty(&rows).unwrap());
+        envelope::print_success(serde_json::Value::Array(rows), &[]);
     } else {
         let table: Vec<Vec<Option<String>>> = rows
             .iter()

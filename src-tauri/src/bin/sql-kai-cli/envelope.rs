@@ -1,10 +1,8 @@
-//! Отказ команды: текстом в stderr, а под `--json` — конвертом семьи kai-cli в
-//! stdout: `{v, command, exit, data: null, warning?, error: {kind, message}}`.
-//!
-//! Успешный `--json` пока печатает данные без конверта (форма, которую читают
-//! потребители `q --json`), поэтому исход под `--json` различается полем `v`:
-//! есть — это отказ. Код выхода отказа выводится из `kind` ([`exit_for`]) и в
-//! текстовом режиме тот же.
+//! Вывод под `--json` — конверт семьи kai-cli в stdout:
+//! `{v, command, exit, data, warning?, error}`. Успех — данные команды в `data`
+//! и `error: null`; отказ — `error: {kind, message}`, `data` обычно `null`.
+//! Без `--json` отказ идёт текстом в stderr. Код выхода отказа выводится из
+//! `kind` ([`exit_for`]) и в текстовом режиме тот же.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -48,6 +46,50 @@ pub fn exit_for(kind: &str) -> u8 {
     }
 }
 
+fn render(
+    command: &str,
+    exit: u8,
+    data: Value,
+    warning: &[String],
+    error: Option<(&str, &str)>,
+) -> String {
+    let mut env = json!({
+        "v": VERSION,
+        "command": command,
+        "exit": exit,
+        "data": data,
+    });
+    if !warning.is_empty() {
+        env["warning"] = json!(warning);
+    }
+    env["error"] = match error {
+        Some((kind, message)) => json!({ "kind": kind, "message": message }),
+        None => Value::Null,
+    };
+    serde_json::to_string_pretty(&env).expect("конверт сериализуется")
+}
+
+fn render_success(command: &str, data: Value, warning: &[String]) -> String {
+    render(command, 0, data, warning, None)
+}
+
+/// Успех под `--json`: данные команды — в `data`, код 0. Зовётся только в
+/// JSON-ветке команды; `warning` — то, что в текстовом режиме ушло бы в stderr.
+pub fn print_success(data: Value, warning: &[String]) {
+    println!(
+        "{}",
+        render_success(json_command().unwrap_or_default(), data, warning)
+    );
+}
+
+/// [`print_success`] для сериализуемых структур команды, без предупреждений.
+pub fn print_data<T: serde::Serialize + ?Sized>(data: &T) {
+    print_success(
+        serde_json::to_value(data).expect("данные команды сериализуются"),
+        &[],
+    );
+}
+
 pub fn render_failure(
     command: &str,
     exit: u8,
@@ -66,17 +108,7 @@ fn render_failure_with(
     warning: &[String],
     data: Value,
 ) -> String {
-    let mut env = json!({
-        "v": VERSION,
-        "command": command,
-        "exit": exit,
-        "data": data,
-    });
-    if !warning.is_empty() {
-        env["warning"] = json!(warning);
-    }
-    env["error"] = json!({ "kind": kind, "message": message });
-    serde_json::to_string_pretty(&env).expect("конверт сериализуется")
+    render(command, exit, data, warning, Some((kind, message)))
 }
 
 /// Отказ с кодом по [`exit_for`]. `kind` — машинный класс (`db`, `read_only`,
@@ -148,6 +180,31 @@ mod tests {
         );
         // отступ 2, порядок полей как у эталона
         assert!(out.starts_with("{\n  \"v\": 1,\n  \"command\""), "{out}");
+    }
+
+    #[test]
+    fn success_envelope_wraps_data_unchanged() {
+        let data = json!({"results": [{"columns": ["n"], "rows": [[1]]}], "durationMs": 3});
+        let out = render_success("q", data.clone(), &[]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["v"], 1);
+        assert_eq!(v["command"], "q");
+        assert_eq!(v["exit"], 0);
+        assert_eq!(v["data"], data);
+        assert!(v.get("warning").is_none());
+        assert!(v["error"].is_null());
+        assert!(out.starts_with("{\n  \"v\": 1,\n  \"command\""), "{out}");
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["v", "command", "exit", "data", "error"]);
+    }
+
+    #[test]
+    fn success_envelope_carries_warnings_and_arrays() {
+        let out = render_success("saved list", json!([]), &["w".into()]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["data"], json!([]));
+        assert_eq!(v["warning"], json!(["w"]));
+        assert!(v["error"].is_null());
     }
 
     #[test]

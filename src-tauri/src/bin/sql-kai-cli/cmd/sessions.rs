@@ -53,10 +53,7 @@ pub async fn run(a: SessionsArgs) -> Result<ExitCode, AppError> {
     let fmt = a.fmt.pick();
     // --json отдаёт полные объекты (profileId и т.п.), не табличную проекцию
     if fmt == Format::Json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into())
-        );
+        envelope::print_data(&list);
         return Ok(ExitCode::SUCCESS);
     }
     if list.is_empty() && fmt == Format::Table {

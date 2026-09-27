@@ -313,7 +313,7 @@ pub async fn run(a: FeedbackArgs) -> Result<ExitCode, AppError> {
             "title": title,
             "diagnostics": serde_json::Value::Object(obj),
         });
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        crate::envelope::print_success(out, &[]);
         return Ok(ExitCode::SUCCESS);
     }
     if fmt == Format::Csv || fmt == Format::Tuples {

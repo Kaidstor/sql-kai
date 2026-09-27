@@ -73,7 +73,7 @@ pub async fn run(cmd: SavedCmd) -> Result<ExitCode, AppError> {
             }
             // --json отдаёт полные объекты (id/sql/scope), не табличную проекцию
             if fmt.pick() == Format::Json {
-                println!("{}", serde_json::to_string_pretty(&queries).unwrap());
+                crate::envelope::print_data(&queries);
                 return Ok(ExitCode::SUCCESS);
             }
             let rows: Vec<Vec<Option<String>>> = queries
