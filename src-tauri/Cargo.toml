@@ -55,7 +55,7 @@ native-tls = "0.2"
 postgres-native-tls = "0.5"
 # SCRAM-verifier для `sql-kai rotate` — пароль не уходит на сервер открытым текстом
 postgres-protocol = "0.6"
-dirs = "6"
+dirs = "7"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 tauri-plugin-clipboard-manager = "2.3.2"
