@@ -219,6 +219,7 @@ export function FilterBar({
   columns,
   dataColumns,
   onHide,
+  focusSignal,
 }: {
   tabId: string;
   profileId: string;
@@ -228,6 +229,8 @@ export function FilterBar({
   /** Page columns — fallback list until ColumnInfo loads. */
   dataColumns: string[];
   onHide: () => void;
+  /** Bumped by ⌘F: open the column picker (raw mode — focus the input). */
+  focusSignal: number;
 }) {
   const refreshTablePage = useApp((s) => s.refreshTablePage);
   const loadSchemaEnums = useApp((s) => s.loadSchemaEnums);
@@ -253,6 +256,10 @@ export function FilterBar({
     return parsed?.length ? parsed : [blankRow()];
   });
   const [rawDraft, setRawDraft] = useState(filter);
+  const rawInputRef = useRef<HTMLInputElement>(null);
+  const [picker, setPicker] = useState<{ row: number; signal: number } | null>(
+    null,
+  );
   // Applies from this bar must not resync (and drop not-yet-active rows);
   // external changes (FK navigation) must.
   const lastApplied = useRef(filter);
@@ -277,6 +284,22 @@ export function FilterBar({
     setRows((rs) => rs.map((r) => (r.column ? r : { ...r, column: defaultColumn })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultColumn]);
+
+  // ⌘F: column picker of the trailing blank row; when every row is already
+  // an active condition, a new AND row is added instead of retargeting one.
+  useEffect(() => {
+    if (focusSignal === 0) return;
+    if (mode === "raw") {
+      rawInputRef.current?.focus();
+      rawInputRef.current?.select();
+      return;
+    }
+    const last = rows[rows.length - 1];
+    const blank = last && last.value === null && opDef(last.op).needsValue;
+    if (!blank) setRows([...rows, blankRow()]);
+    setPicker({ row: blank ? rows.length - 1 : rows.length, signal: focusSignal });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSignal]);
 
   const colByName = useMemo(
     () => new Map((columns ?? []).map((c) => [c.name, c])),
@@ -345,6 +368,7 @@ export function FilterBar({
                 options={colOptions}
                 placeholder="Search column…"
                 emptyLabel="column"
+                openSignal={picker?.row === i ? picker.signal : 0}
                 onSelect={(column) => setRow(i, { column }, true)}
               />
               <OpSelect
@@ -395,6 +419,7 @@ export function FilterBar({
             WHERE
           </span>
           <input
+            ref={rawInputRef}
             autoFocus={!filter}
             value={rawDraft}
             onChange={(e) => setRawDraft(e.target.value)}

@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLazyTabLoad } from "../hooks/useLazyTabLoad";
+import { isKey } from "../lib/keys";
+import { isMac } from "../lib/platform";
 import { quoteIdent, relIdent } from "../lib/sql";
 import {
   columnsKey,
@@ -84,6 +86,23 @@ export function TableTab({ tab }: { tab: Tab }) {
   const [hiddenCols, setHiddenCols] = useState<ReadonlySet<number>>(new Set());
   // WHERE bar (see FilterBar): auto-shown while a filter is on.
   const [filterOpen, setFilterOpen] = useState(Boolean(state.filter));
+
+  const [filterFocus, setFilterFocus] = useState(0);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (!isKey(e, "f")) return;
+      const s = useApp.getState();
+      // overlays on top of the tab own the keyboard
+      if (s.palette || s.dialog.open || s.settingsOpen || s.logViewerOpen) return;
+      e.preventDefault();
+      setFilterOpen(true);
+      setFilterFocus((n) => n + 1);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
 
   // External filter changes (FK navigation onto this tab) pop the bar open.
   useEffect(() => {
@@ -256,9 +275,13 @@ export function TableTab({ tab }: { tab: Tab }) {
           <FileCode2 size={13} />
         </IconButton>
         <IconButton
-          title="Filter (WHERE …)"
+          title={`Filter (WHERE …) — ${isMac ? "⌘F" : "Ctrl+F"}`}
           className={state.filter ? "text-amber-400" : undefined}
-          onClick={() => setFilterOpen((v) => !v || Boolean(state.filter))}
+          onClick={() => {
+            // a stale ⌘F count would pop the column picker on a plain reopen
+            setFilterFocus(0);
+            setFilterOpen((v) => !v || Boolean(state.filter));
+          }}
         >
           <Funnel size={13} />
         </IconButton>
@@ -339,6 +362,7 @@ export function TableTab({ tab }: { tab: Tab }) {
           columns={cols}
           dataColumns={state.data?.result.columns ?? []}
           onHide={() => setFilterOpen(false)}
+          focusSignal={filterFocus}
         />
       )}
 

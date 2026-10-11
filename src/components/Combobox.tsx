@@ -18,6 +18,7 @@ export function Combobox({
   placeholder = "Search…",
   triggerClassName,
   emptyLabel = "—",
+  openSignal = 0,
 }: {
   value: string;
   options: ComboOption[];
@@ -26,6 +27,8 @@ export function Combobox({
   triggerClassName?: string;
   /** Trigger text while no value is selected. */
   emptyLabel?: string;
+  /** Bump to open the list from outside (⌘F in the filter bar); 0 = never. */
+  openSignal?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -42,6 +45,10 @@ export function Combobox({
         .sort((a, b) => b.score - a.score)
         .map((x) => x.o)
     : options;
+
+  useEffect(() => {
+    if (openSignal > 0) setOpen(true);
+  }, [openSignal]);
 
   // Keep the highlighted row valid and visible as the query narrows the list.
   useEffect(() => {

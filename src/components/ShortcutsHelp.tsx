@@ -57,6 +57,7 @@ const sections = (
   {
     title: "Data grid",
     items: [
+      { keys: [MOD, "F"], label: "Filter table by column" },
       { keys: [MOD, "C"], label: "Copy cell / rows" },
       { keys: [MOD, "V"], label: "Paste TSV into cells" },
       { keys: [MOD, "D"], label: "Duplicate rows" },
