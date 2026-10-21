@@ -172,6 +172,31 @@ sql-kai exec <ssh-alias> --dry-run       # показать команду, не
 выбирай явно: `--container <имя>`. Отказ здесь дешевле, чем выполнить SQL не в
 той базе.
 
+## Временная база: отдельный конфиг через `SQL_KAI_CONFIG_DIR`
+
+Под одноразовый Postgres (тестовый контейнер, проба ревьюера) профиль не
+заводи в общий список: он остаётся там после удаления контейнера, а
+повторный `import` с тем же именем (без `--replace`) профиль пропустит, и
+запросы уйдут на порт прошлого контейнера. Вместо этого направь CLI в свой
+каталог конфигурации — там свои `profiles.json` и лог:
+
+```bash
+export SQL_KAI_CONFIG_DIR="$WORKDIR/sql-kai-config"   # WORKDIR — свой каталог из mktemp -d
+echo '[{"id":"probe","name":"probe","host":"127.0.0.1","port":32785,"database":"app_test","user":"postgres","hasPassword":false}]' \
+  | sql-kai import --no-passwords
+sql-kai q probe --local --no-history -c "select 1"
+sql-kai q probe --local --no-history --write -f seed.sql
+```
+
+- Переменную выставляй в каждой команде (или `export` в той же оболочке): без
+  неё CLI молча смотрит в основной конфиг и ответит `not_found` по профилю.
+- `--local` — своя сессия без GUI: GUI держит основной конфиг и про такой
+  профиль не знает.
+- Пароля у такого профиля нет (`hasPassword:false`): контейнер поднимай с
+  `POSTGRES_HOST_AUTH_METHOD=trust` или передавай пароль через `--password-env`.
+- Убирать нечего, кроме каталога: `rm -rf "$WORKDIR/sql-kai-config"` вместе
+  с контейнером.
+
 ## Интроспекция: начинай со `schema`
 
 ```bash
