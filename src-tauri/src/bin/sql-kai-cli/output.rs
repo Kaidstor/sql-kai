@@ -5,6 +5,8 @@ use clap::Args;
 use sql_kai_lib::db::{ExecResult, StatementResult, Type};
 use sql_kai_lib::format::csv_field;
 
+mod pg_array;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Table,
@@ -18,7 +20,7 @@ pub enum Format {
 #[derive(Args, Default)]
 pub struct FormatArgs {
     /// JSON-вывод; у запросов значения приведены к типам колонок БД:
-    /// числа/bool/null/json (точное строковое представление — кастуй в ::text)
+    /// числа/bool/null/json/массивы (строковое представление — кастуй в ::text)
     #[arg(long, group = "fmt")]
     json: bool,
     /// CSV-вывод
@@ -138,6 +140,9 @@ pub fn exec_json(
 /// колонке, NaN, numeric за пределами f64), остаётся строкой.
 fn typed_value(text: &str, ty: &Type) -> serde_json::Value {
     use serde_json::Value;
+    if let tokio_postgres::types::Kind::Array(element) = ty.kind() {
+        return pg_array::decode(text, element).unwrap_or_else(|| Value::String(text.to_string()));
+    }
     if *ty == Type::BOOL {
         return match text {
             "t" | "true" => Value::Bool(true),
@@ -159,7 +164,13 @@ fn typed_value(text: &str, ty: &Type) -> serde_json::Value {
             .parse::<f64>()
             .ok()
             .filter(|f| f.is_finite())
-            .and_then(serde_json::Number::from_f64)
+            .and_then(|f| {
+                if *ty == Type::NUMERIC {
+                    text.parse::<serde_json::Number>().ok()
+                } else {
+                    serde_json::Number::from_f64(f)
+                }
+            })
             .map(Value::Number)
             .unwrap_or_else(|| Value::String(text.to_string()));
     }
@@ -413,5 +424,108 @@ mod tests {
             typed_value("NaN", &Type::NUMERIC),
             Value::String("NaN".into())
         );
+    }
+
+    #[test]
+    fn typed_arrays_preserve_shape_nulls_and_escaping() {
+        assert_eq!(
+            typed_value("{185.71.67.15}", &Type::TEXT_ARRAY),
+            json!(["185.71.67.15"])
+        );
+        assert_eq!(typed_value("{}", &Type::TEXT_ARRAY), json!([]));
+        assert_eq!(
+            typed_value(
+                r#"{NULL,"NULL","","a,b","a\"b","a\\b","{a,b}"," пробел "}"#,
+                &Type::TEXT_ARRAY
+            ),
+            json!([null, "NULL", "", "a,b", "a\"b", "a\\b", "{a,b}", " пробел "])
+        );
+        assert_eq!(
+            typed_value("{{1,NULL},{3,4}}", &Type::INT4_ARRAY),
+            json!([[1, null], [3, 4]])
+        );
+        assert_eq!(
+            typed_value("[0:1][-1:0]={{a,b},{c,d}}", &Type::TEXT_ARRAY),
+            json!([["a", "b"], ["c", "d"]])
+        );
+        assert_eq!(
+            typed_value("{t,f,NULL}", &Type::BOOL_ARRAY),
+            json!([true, false, null])
+        );
+        assert_eq!(
+            typed_value(
+                "{9223372036854775807,-9223372036854775808}",
+                &Type::INT8_ARRAY
+            ),
+            json!([i64::MAX, i64::MIN])
+        );
+        assert_eq!(
+            typed_value("{42,1.5,NaN,1e400}", &Type::NUMERIC_ARRAY),
+            json!([42, 1.5, "NaN", "1e400"])
+        );
+        assert_eq!(typed_value("{a,b}", &Type::TEXT), json!("{a,b}"));
+        assert_eq!(
+            typed_value("[redacted]", &Type::TEXT_ARRAY),
+            json!("[redacted]")
+        );
+    }
+
+    #[test]
+    fn exec_json_keeps_null_arrays_and_untyped_text() {
+        let exec = sql_kai_lib::db::ExecResult {
+            results: vec![sql_kai_lib::db::StatementResult {
+                columns: vec!["value".into()],
+                rows: vec![vec![None], vec![Some("{}".into())]],
+                rows_affected: None,
+                truncated: false,
+            }],
+            duration_ms: 0,
+            notices: vec![],
+            notices_dropped: 0,
+        };
+        let (typed, missing) =
+            super::exec_json(&exec, &[Some(vec![("value".into(), Type::TEXT_ARRAY)])]);
+        assert_eq!(missing, 0);
+        assert_eq!(typed["results"][0]["rows"], json!([[null], [[]]]));
+        let (untyped, missing) = super::exec_json(&exec, &[None]);
+        assert_eq!(missing, 1);
+        assert_eq!(untyped["results"][0]["rows"], json!([[null], ["{}"]]));
+    }
+
+    #[test]
+    fn numeric_arrays_keep_the_scalar_policy_without_rounding() {
+        let number = "9007199254740993.1234567890123456789";
+        let scalar = typed_value(number, &Type::NUMERIC);
+        assert_eq!(scalar.to_string(), number);
+        assert_eq!(
+            typed_value(&format!("{{{number}}}"), &Type::NUMERIC_ARRAY),
+            json!([scalar])
+        );
+        assert_eq!(
+            typed_value("{NaN,Infinity,-Infinity}", &Type::FLOAT8_ARRAY),
+            json!(["NaN", "Infinity", "-Infinity"])
+        );
+    }
+
+    #[test]
+    fn typed_arrays_handle_box_json_and_invalid_values() {
+        assert_eq!(
+            typed_value("{(3,4),(1,2);(7,8),(5,6)}", &Type::BOX_ARRAY),
+            json!(["(3,4),(1,2)", "(7,8),(5,6)"])
+        );
+        assert_eq!(
+            typed_value(r#"{"{\"a\": 1}","[1, 2]",NULL}"#, &Type::JSONB_ARRAY),
+            json!([{"a":1},[1,2],null])
+        );
+        for text in [
+            "{",
+            "{a,}",
+            "{\"a}",
+            "{a}junk",
+            "[x:1]={a}",
+            "{{{{{{{a}}}}}}}",
+        ] {
+            assert_eq!(typed_value(text, &Type::TEXT_ARRAY), json!(text));
+        }
     }
 }
