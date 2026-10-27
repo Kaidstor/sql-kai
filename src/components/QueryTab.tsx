@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "sql-formatter";
 import { copyText, readClipboardText } from "../lib/clipboard";
 import { searchExtensions } from "../lib/editorSearch";
+import { nestedSchemaCompletionSource } from "../lib/sqlCompletion";
 import { resetOnVaultLock } from "../lib/moduleCaches";
 import { useApp, type QueryTabState, type Tab } from "../lib/store";
 import { editorThemes } from "../lib/editorTheme";
@@ -377,8 +378,13 @@ export function QueryTab({ tab }: { tab: Tab }) {
     return [
       sql({
         dialect: PostgreSQL,
-        schema: namespace as SQLNamespace,
-        defaultSchema: "public",
+      }),
+      PostgreSQL.language.data.of({
+        autocomplete: nestedSchemaCompletionSource({
+          dialect: PostgreSQL,
+          schema: namespace as SQLNamespace,
+          defaultSchema: "public",
+        }),
       }),
       EditorView.updateListener.of((u) => {
         if (u.selectionSet || u.docChanged) {
