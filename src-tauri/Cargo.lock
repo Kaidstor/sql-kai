@@ -4410,7 +4410,7 @@ dependencies = [
 
 [[package]]
 name = "sql-kai"
-version = "1.33.1"
+version = "1.33.2"
 dependencies = [
  "aes",
  "aes-gcm",
