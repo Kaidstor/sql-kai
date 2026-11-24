@@ -37,9 +37,9 @@ sql-kai <alias> -c "SELECT ..."          # alias = имя профиля, id и�
 echo "SELECT now()" | sql-kai <alias>    # SQL со stdin; или -f query.sql
 sql-kai <alias> -c "..." --json          # структурный вывод, значения типизированы
 sql-kai <alias> -c "..." -t              # tuples-only (значения через |); есть и --csv
-sql-kai schema <alias>                   # вся структура базы одним вызовом
+sql-kai schema <alias>                   # вся структура базы одним вызовом (без --local!)
 sql-kai schema <alias> --table t         # структура одной таблицы одним вызовом
-sql-kai profiles list [фильтр]           # профили; фильтруй по имени сервиса: profiles list vuln
+sql-kai profiles list [фильтр] [--json]  # профили; фильтруй по имени сервиса: profiles list vuln (флагов --human, --sql, --profile нет)
 ```
 
 **Профиль ищи с фильтром, а не полным списком**: `sql-kai profiles list <сервис>` —
@@ -198,7 +198,8 @@ sql-kai q probe --local --no-history --write -f seed.sql
 - Переменную выставляй в каждой команде (или `export` в той же оболочке): без
   неё CLI молча смотрит в основной конфиг и ответит `not_found` по профилю.
 - `--local` — своя сессия без GUI: GUI держит основной конфиг и про такой
-  профиль не знает.
+  профиль не знает. Флаг `--local` есть **только у `q`**; `schema` всегда
+  подключается напрямую и `--local` не принимает (`unexpected argument`).
 - Пароля у такого профиля нет (`hasPassword:false`): контейнер поднимай с
   `POSTGRES_HOST_AUTH_METHOD=trust` или передавай пароль через `--password-env`.
 - Убирать нечего, кроме каталога: `rm -rf "$WORKDIR/sql-kai-config"` вместе
