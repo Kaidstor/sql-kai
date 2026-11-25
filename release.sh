@@ -12,5 +12,6 @@ FORGE=github
 BREW_CASK=../homebrew-tap/Casks/sql-kai.rb
 # архив старого имени CLI — не должен уезжать в релиз
 LEGACY_ARTIFACTS="kai-darwin-aarch64.tar.gz"
+DMG_ACCENT="#10B981"
 
 source ../_release/tauri-release.sh
