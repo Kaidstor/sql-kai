@@ -31,6 +31,16 @@ import {
 } from "./ContextMenu";
 import { CliBadge, cn, IconButton, Input, ProdBadge } from "./ui";
 
+function openLauncherProfile(profileId: string) {
+  const s = useApp.getState();
+  if (s.connecting[profileId] || s.pendingDelete[profileId]) return;
+  if (s.sessions[profileId] || (s.lost[profileId] && !s.connectError[profileId])) {
+    s.selectProfile(profileId);
+  } else {
+    void s.connect(profileId);
+  }
+}
+
 function ProfileCard({ profile }: { profile: Profile }) {
   const sessions = useApp((s) => s.sessions);
   const cliSessions = useApp((s) => s.cliSessions);
@@ -40,7 +50,6 @@ function ProfileCard({ profile }: { profile: Profile }) {
   const connect = useApp((s) => s.connect);
   const disconnect = useApp((s) => s.disconnect);
   const reconnect = useApp((s) => s.reconnect);
-  const selectProfile = useApp((s) => s.selectProfile);
   const openDialog = useApp((s) => s.openDialog);
   const requestDeleteProfile = useApp((s) => s.requestDeleteProfile);
   const undoDeleteProfile = useApp((s) => s.undoDeleteProfile);
@@ -65,13 +74,7 @@ function ProfileCard({ profile }: { profile: Profile }) {
   const color = accentColor(profile.color);
   const last = lastConnectedOf(profile);
 
-  const open = () => {
-    if (busy) return;
-    // selectProfile also leaves the launcher (store-side); a live or lost
-    // profile has a workspace to return to, refused/idle just (re)connects
-    if (connected || state === "lost") selectProfile(profile.id);
-    else void connect(profile.id);
-  };
+  const open = () => openLauncherProfile(profile.id);
 
   // Deletion is scheduled with an undo grace period instead of a confirm():
   // the card flips into a countdown state and a click anywhere cancels it.
@@ -423,6 +426,14 @@ export function Launcher() {
                     if (e.key === "Escape" && filter) {
                       e.stopPropagation();
                       setFilter("");
+                    }
+                    if (e.key === "Enter" && needle && visible.length === 1) {
+                      // WebKit can report isComposing=false on the IME's Enter.
+                      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.repeat) {
+                        return;
+                      }
+                      e.preventDefault();
+                      openLauncherProfile(visible[0].id);
                     }
                   }}
                 />
